@@ -168,16 +168,19 @@ func (d *domain) state() contract.State { return d.lifecycle().State() }
 type reporter func(rd []byte) (report, certs []byte, err error)
 
 type monitor struct {
-	vtpm    *vtpmclient.Client // guest-owned hardware report channel; nil on unchanged legacy images
-	mu      sync.Mutex
-	doms    map[int]*domain
-	byUID   map[int]*domain // by the FRONT's uid: the only caller a report is ever made for
-	next    int
-	snp     bool
-	plat    string
-	root    string
-	basePrt uint32
-	baseUID int
+	vtpm *vtpmclient.Client // guest-owned hardware report channel; nil on unchanged legacy images
+	mu   sync.Mutex
+	// the Shield model volumes this boot has opened and mounted (shieldvolume.go)
+	volMu      sync.Mutex
+	volMounted map[string]bool
+	doms       map[int]*domain
+	byUID      map[int]*domain // by the FRONT's uid: the only caller a report is ever made for
+	next       int
+	snp        bool
+	plat       string
+	root       string
+	basePrt    uint32
+	baseUID    int
 
 	hostPort  uint32 // non-zero: no hardware signs here; the host launcher signs report_data over vsock (T0-hv)
 	tier      string // what a report from this monitor is: contract.TierSNP / TierHyperV
@@ -491,11 +494,27 @@ func (m *monitor) load(br *bufio.Reader, req request) (*domain, error) {
 			if _, err := os.Stat(filepath.Join(m.plat, "shield-nucbox.enabled")); err != nil {
 				return nil, fmt.Errorf("Shield profile is not in this measured image")
 			}
-			if inference.Model != contract.ShieldModel || inference.GPUMilli < 500 || inference.GPUMilli > 1000 {
-				return nil, fmt.Errorf("NucBox Shield requires qwen2.5-0.5b-q8-gguf and 500..1000 GPU milli")
+			// One 12 GiB card: both measured models need at least half of it (the 0.5B by its pool, Z-Image by its
+			// 4.85 GiB of int8 DiT rows and scratch at the 0.95 budget fraction = 462 milli).
+			switch inference.Model {
+			case contract.ShieldModel:
+			case contract.ShieldZImageModel:
+				if _, err := os.Stat(filepath.Join(m.plat, "rt-shield-sd", "wasmtime")); err != nil {
+					return nil, fmt.Errorf("the Z-Image Shield runtime is not in this measured image")
+				}
+			default:
+				return nil, fmt.Errorf("NucBox Shield serves %s or %s, not %q", contract.ShieldModel, contract.ShieldZImageModel, inference.Model)
+			}
+			if inference.GPUMilli < 500 || inference.GPUMilli > 1000 {
+				return nil, fmt.Errorf("NucBox Shield requires 500..1000 GPU milli")
 			}
 			if pol.MemMiB < 8192 || pol.CPUPercent < 400 || manifest.Policy.Vcpus < 4 {
 				return nil, fmt.Errorf("Shield profile requires 8192 MiB and four vCPUs")
+			}
+			if inference.Model == contract.ShieldZImageModel {
+				if err := m.mountShieldVolume(inference.Model); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -591,7 +610,8 @@ func (m *monitor) start(d *domain, app []byte) error {
 	}
 	if d.Inference != nil {
 		// Derived only from the hashed bundle, never from host flags/environment.
-		if err := os.WriteFile(filepath.Join(d.dir, "shield.profile"), []byte(strconv.Itoa(d.Inference.GPUMilli)+"\n"), 0444); err != nil {
+		// "<milli> <model>": domexec selects the model's measured runtime and graph by the model, never by host input
+		if err := os.WriteFile(filepath.Join(d.dir, "shield.profile"), []byte(strconv.Itoa(d.Inference.GPUMilli)+" "+d.Inference.Model+"\n"), 0444); err != nil {
 			return fail(err)
 		}
 		if err := os.Mkdir(filepath.Join(d.dir, "run", "enclave-shield"), 0755); err != nil {

@@ -51,6 +51,11 @@
 #include "../m2/app-seccomp.h"   /* the app runtime's seccomp filter, shared with the SNP guest's m2/dominit.c */
 
 static int shield_on = 0;
+/* shield_sd: the Z-Image profile (stable-diffusion.cpp on the guest CPU, its calibrated DiT matmuls offloaded through
+ * the Shield backend; the model on the monitor's dm-verity mount under /plat/models). Chosen by the model the monitor
+ * wrote from the measured bundle into /shield.profile, never by host input. */
+static int shield_sd = 0;
+#define SHIELD_SD_MODEL "z-image-turbo-q4km-sd"
 static char shield_workers[192], shield_vram[80];
 static const char *dom_id = "?";
 static volatile sig_atomic_t front_pid_g = -1;
@@ -256,7 +261,30 @@ static pid_t spawn(char *const argv[], uid_t uid, int quiet, int filter) {
             if (secret_pipe[1] != 7) close(secret_pipe[1]);
         }
         char *envp[48] = {"HOME=/tmp", "PATH=/plat", NULL};
-        if (shield_on && filter) {
+        if (shield_on && filter && shield_sd) {
+            /* The metal0 shield_sd profile (m2/dominit.c), on one card and without the pad spill: every image token
+             * goes through every linear at every step, so batches are wide: SHIELDED_WIDE=1 exchanges them in
+             * SHIELDED_MAX_M-row chunks, each masked and Freivalds-checked on its own. A backend that fails to load
+             * fails every generation (SD_ACCEL_BACKEND), never a silent CPU run. */
+            const char *fixed[] = {
+                "ENCLAVE_HTTP_POOL=1",
+                "SD_ACCEL_BACKEND=/plat/rt-shield-sd/backends/libggml-shielded.so",
+                "ENCLAVE_SD_USE_GPU=0", "ENCLAVE_SD_MMAP=1",
+                "ENCLAVE_SD_DIFFUSION_FILE=diffusion.gguf", "ENCLAVE_SD_LLM_FILE=llm.gguf",
+                "ENCLAVE_SD_VAE_FILE=vae.safetensors", "ENCLAVE_SD_VAE_TILING=64:0.25", "ENCLAVE_SD_FLASH_ATTN=1",
+                "SHIELDED_HOST=unix:/run/enclave-shield/gpu0", "SHIELDED_PORT=19595",
+                "SHIELDED_CALIB=/plat/rt-shield-sd/calib/" SHIELD_SD_MODEL ".calib",
+                "ENCLAVE_NN_SERVE_KIND=RAM", "ENCLAVE_NN_SERVE_BYTES=6442450944",
+                "SHIELDED_WIDE=1", "SHIELDED_MAX_M=64", "SHIELDED_POOL_DEPTH=64",
+                "SHIELDED_REFILL_THREADS=4", "SHIELDED_REFILL_BATCH=64",
+                "SHIELDED_COMPACT_WEIGHTS=1", "SHIELDED_SOURCE_WEIGHTS=1",
+                "SHIELDED_SPLIT_COLS=1", "SHIELDED_OVERLAP_VERIFY=1", "SHIELDED_WEIGHT_BUDGET_FRAC=0.95",
+                "ENCLAVE_MODELS=" SHIELD_SD_MODEL, NULL
+            };
+            int i=2;
+            for (int j=0; fixed[j]; j++) envp[i++]=(char *)fixed[j];
+            envp[i++]=shield_workers; envp[i++]=shield_vram; envp[i]=NULL;
+        } else if (shield_on && filter) {
             const char *fixed[] = {
                 "ENCLAVE_GGML_BACKEND_DIR=/plat/rt-shield/backends",
                 "GGML_BACKEND_PATH=/plat/rt-shield/backends/libggml-shielded.so",
@@ -398,9 +426,16 @@ int main(int argc, char **argv) {
     if (stat("/shield.profile", &profile_st) == 0) {
         if (!S_ISREG(profile_st.st_mode) || profile_st.st_uid != 0 || (profile_st.st_mode & 0222)) die("Shield profile permissions");
         FILE *f = fopen("/shield.profile", "r");
-        int milli=0; char extra=0;
-        if (!f || fscanf(f, "%d %c", &milli, &extra) != 1 || milli < 500 || milli > 1000) die("Shield profile");
+        int milli=0; char model[64]="", extra=0;
+        /* "<milli> <model>" (an older monitor wrote "<milli>": the 0.5B) */
+        int got = f ? fscanf(f, "%d %63s %c", &milli, model, &extra) : -1;
+        if (!f || (got != 1 && got != 2) || milli < 500 || milli > 1000) die("Shield profile");
         fclose(f);
+        if (got == 2 && !strcmp(model, SHIELD_SD_MODEL)) {
+            struct stat ms;
+            if (stat("/plat/models/" SHIELD_SD_MODEL "/diffusion.gguf", &ms) != 0) die("Shield model volume not mounted");
+            shield_sd = 1;
+        } else if (got == 2 && strcmp(model, "qwen2.5-0.5b-q8-gguf")) die("Shield profile model");
         unsigned long long bytes = (12ULL<<30) * (unsigned)milli / 1000;
         snprintf(shield_workers,sizeof shield_workers,"SHIELDED_WORKERS=unix:/run/enclave-shield/gpu0|19595|0|%llu",bytes);
         snprintf(shield_vram,sizeof shield_vram,"ENCLAVE_VRAM_BYTES=%llu",bytes);
@@ -419,16 +454,27 @@ int main(int argc, char **argv) {
             if (i>=1000 || waitpid(shield_pid,&st,WNOHANG)!=0) die("Shield broker readiness");
             usleep(10000);
         }
-        front[2]="/plat/rt-shield/runtime.json";
+        front[2]=shield_sd ? "/plat/rt-shield-sd/runtime.json" : "/plat/rt-shield/runtime.json";
         front[4]="/run/front/front.sock"; front[6]="/run/front/monitor.sock";
         run_front[4]="/run/front/front.sock"; run_front[6]="/run/front/monitor.sock";
-        run_front[2]="/plat/rt-shield/runtime.json";
+        run_front[2]=front[2];
     } else if (errno != ENOENT) die("stat Shield profile");
     char **base = run_port ? run : rt;
     char *shield_app[64]; int ai=0;
     for (int i=0; base[i]; i++) {
         char *v=base[i];
-        if (shield_on) {
+        if (shield_sd) {
+            if (!strcmp(v,"/plat/rt/ld-linux-x86-64.so.2")) v="/plat/rt-shield-sd/ld-linux-x86-64.so.2";
+            else if (!strcmp(v,"/plat/rt")) v="/plat/rt-shield-sd";
+            else if (!strcmp(v,"/plat/rt/wasmtime")) v="/plat/rt-shield-sd/wasmtime";
+            else if (!strcmp(v,"/app.wasm")) {
+                /* the sd graph reads the verified mount; the app sees the same files under /models/<volume> */
+                shield_app[ai++]="-S"; shield_app[ai++]="nn";
+                shield_app[ai++]="-S"; shield_app[ai++]="nn-graph=sd::/plat/models/" SHIELD_SD_MODEL;
+                shield_app[ai++]="--dir"; shield_app[ai++]="/plat/models::/models";
+                shield_app[ai++]="--env"; shield_app[ai++]="ENCLAVE_MODELS";
+            }
+        } else if (shield_on) {
             if (!strcmp(v,"/plat/rt/ld-linux-x86-64.so.2")) v="/plat/rt-shield/ld-linux-x86-64.so.2";
             else if (!strcmp(v,"/plat/rt")) v="/plat/rt-shield";
             else if (!strcmp(v,"/plat/rt/wasmtime")) v="/plat/rt-shield/wasmtime";
