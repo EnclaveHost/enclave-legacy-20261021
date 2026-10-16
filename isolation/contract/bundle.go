@@ -52,8 +52,13 @@ func (m Manifest) AppConfig() ([]byte, error) {
 		return nil, nil
 	}
 	validWorld := (m.World == WorldHTTP && m.HTTP == 0) || (m.World == WorldCLI && m.HTTP >= 1 && m.HTTP <= MaxHTTPPort)
-	if !validWorld || m.Inference != nil || (len(m.Ports) != 0 && m.SecretDeployment == "") {
+	if !validWorld || (len(m.Ports) != 0 && m.SecretDeployment == "") {
 		return nil, errors.New("app configuration requires a CPU HTTP component or single-port command bundle")
+	}
+	// A measured Shield model may carry public config only as an HTTP component with no ports and no secrets (the
+	// NucBox GPU image delivers /app.config like the CPU image; nothing else of a secret domain runs there).
+	if m.Inference != nil && (m.World != WorldHTTP || len(m.Ports) != 0 || m.SecretDeployment != "") {
+		return nil, errors.New("app configuration with a Shield model requires an HTTP component without ports or secrets")
 	}
 	if err := ValidatePorts(m.Ports, m.World, m.HTTP); err != nil {
 		return nil, err

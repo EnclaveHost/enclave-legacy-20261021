@@ -86,3 +86,23 @@ func TestSecretCommandProtectedPorts(t *testing.T) {
 		t.Fatal("configured ports accepted without deployment identity")
 	}
 }
+
+// A measured Shield model's HTTP component may carry public config (the NucBox GPU image delivers it, e.g. image-generator
+// selecting its Z-Image volume); a command, ports or secrets with a model stay refused.
+func TestShieldModelConfig(t *testing.T) {
+	cfg := base64.StdEncoding.EncodeToString([]byte(`{"model_volume":"z-image-turbo-q4km-sd"}`))
+	inf := &Inference{Model: ShieldZImageModel, GPUMilli: 500}
+	ok := Manifest{ABI: ABI, World: WorldHTTP, Policy: Policy{CPUPercent: 400, MemMiB: 8192, Vcpus: 4}, ConfigBase64: cfg, Inference: inf}
+	if b, err := ok.AppConfig(); err != nil || !strings.Contains(string(b), "z-image") {
+		t.Fatalf("HTTP component with a model and config: %q %v", b, err)
+	}
+	for name, m := range map[string]Manifest{
+		"command": {ABI: ABI, World: WorldCLI, HTTP: 8080, Policy: ok.Policy, ConfigBase64: cfg, Inference: inf},
+		"ports":   {ABI: ABI, World: WorldHTTP, Ports: []string{"tcp:9000"}, Policy: ok.Policy, ConfigBase64: cfg, Inference: inf, SecretDeployment: "0x" + strings.Repeat("ab", 32)},
+		"secrets": {ABI: ABI, World: WorldHTTP, Policy: ok.Policy, ConfigBase64: cfg, Inference: inf, SecretDeployment: "0x" + strings.Repeat("ab", 32)},
+	} {
+		if _, err := m.AppConfig(); err == nil {
+			t.Fatalf("%s with a Shield model and config was accepted", name)
+		}
+	}
+}
