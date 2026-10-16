@@ -10,6 +10,9 @@ stored mappings are reconstructed with it in isolation/m4/guestd/store_test.go.
 """
 import hashlib, json, re, struct, sys
 
+# contract/inference.go shieldProfiles: the measured Shield models and their minimum per-card share.
+SHIELD_MIN_MILLI={"qwen2.5-0.5b-q8-gguf":65,"qwen3.8-27b-mtp-q4-vl-gguf":500,"z-image-turbo-q4km-sd":100}
+
 MAGIC = b"ENCLAVE-BUNDLE/1\n"
 ABI = "enclave-domain-abi/1"
 V1 = "enclave-catalog-bundle/1"
@@ -42,7 +45,7 @@ def validate(rec):
     ports = rec.get("ports", [])
     if rec.get("derivation") == V4:
         inf=rec.get("inference")
-        if not isinstance(inf,dict) or set(inf)!={"model","gpuMilli"} or inf["model"] not in ("qwen2.5-0.5b-q8-gguf","qwen3.8-27b-mtp-q4-vl-gguf") or type(inf["gpuMilli"]) is not int or not (500 if inf["model"]=="qwen3.8-27b-mtp-q4-vl-gguf" else 65)<=inf["gpuMilli"]<=1000:
+        if not isinstance(inf,dict) or set(inf)!={"model","gpuMilli"} or inf["model"] not in SHIELD_MIN_MILLI or type(inf["gpuMilli"]) is not int or not SHIELD_MIN_MILLI[inf["model"]]<=inf["gpuMilli"]<=1000:
             raise ValueError("invalid inference")
     elif "inference" in rec:
         raise ValueError("inference requires V4")
@@ -118,10 +121,12 @@ def vectors():
     ok("v4 measured GPU allocation",v4)
     ok("v4 changed allocation changes AppID",{**v4,"inference":{**v4["inference"],"gpuMilli":200}})
     ok("v4 command and protected port",{**v4,"http":8000,"ports":["tcp:2222"]})
+    ok("v4 z-image at its minimum share",{**v4,"inference":{"model":"z-image-turbo-q4km-sd","gpuMilli":100}})
     for name, rec, comp_override in [
         ("v4 missing inference",{**good,"derivation":V4},None),
         ("v4 unsupported model",{**v4,"inference":{"model":"other","gpuMilli":100}},None),
         ("v4 undersized share",{**v4,"inference":{**v4["inference"],"gpuMilli":64}},None),
+        ("v4 z-image undersized share",{**v4,"inference":{"model":"z-image-turbo-q4km-sd","gpuMilli":99}},None),
         ("v4 oversized share",{**v4,"inference":{**v4["inference"],"gpuMilli":1001}},None),
         ("v4 undeclared command port",{**v4,"ports":["tcp:2222"]},None),
         ("v1 cannot hide inference",{**v4,"derivation":V1},None),

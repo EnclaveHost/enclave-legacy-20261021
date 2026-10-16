@@ -6,7 +6,7 @@ func TestInferenceModelReservation(t *testing.T) {
 	for _, tc := range []struct {
 		model      string
 		min, floor int
-	}{{ShieldModel, 65, 8192}, {Shield27BModel, 500, 73728}} {
+	}{{ShieldModel, 65, 8192}, {Shield27BModel, 500, 73728}, {ShieldZImageModel, 100, 6144}} {
 		for _, milli := range []int{0, tc.min - 1, tc.min, 1000, 1001} {
 			i := &Inference{Model: tc.model, GPUMilli: milli}
 			valid := milli >= tc.min && milli <= 1000

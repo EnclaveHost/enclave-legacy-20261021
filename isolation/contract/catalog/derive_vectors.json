@@ -485,6 +485,53 @@
     ],
     "runtimeId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
    }
+  },
+  {
+   "bundleSha256": "75a4c5ef12dab7b91708ad4c19bd3766a757df77ce66b5c65ba17bb057f4c471",
+   "mapping": {
+    "appId": "75a4c5ef12dab7b91708ad4c19bd3766a757df77ce66b5c65ba17bb057f4c471",
+    "bundleBytes": 500,
+    "componentBytes": 200,
+    "componentSha256": "2be7e87b844aa7ac2555e6a079370289965acaf08f1ad6bd0947cf3d2207e8dc",
+    "record": {
+     "catalog": {
+      "app": "0xabababababababababababababababababababababababababababababababab",
+      "version": 7
+     },
+     "cid": "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+     "derivation": "enclave-catalog-bundle/4",
+     "inference": {
+      "gpuMilli": 100,
+      "model": "z-image-turbo-q4km-sd"
+     },
+     "policy": {
+      "cpuPercent": 100,
+      "memMiB": 512,
+      "vcpus": 1
+     },
+     "runtimeId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    "recordSha256": "1e4fa4f648f17fbe3ecc909b4daa1c05cf508cf2dcf7d5c20148317b5f956f41"
+   },
+   "name": "v4 z-image at its minimum share",
+   "record": {
+    "catalog": {
+     "app": "0xabababababababababababababababababababababababababababababababab",
+     "version": 7
+    },
+    "cid": "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+    "derivation": "enclave-catalog-bundle/4",
+    "inference": {
+     "gpuMilli": 100,
+     "model": "z-image-turbo-q4km-sd"
+    },
+    "policy": {
+     "cpuPercent": 100,
+     "memMiB": 512,
+     "vcpus": 1
+    },
+    "runtimeId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+   }
   }
  ],
  "refused": [
@@ -541,6 +588,28 @@
     "inference": {
      "gpuMilli": 64,
      "model": "qwen2.5-0.5b-q8-gguf"
+    },
+    "policy": {
+     "cpuPercent": 100,
+     "memMiB": 512,
+     "vcpus": 1
+    },
+    "runtimeId": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+   }
+  },
+  {
+   "component_hex": "0061736d0d000100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+   "name": "v4 z-image undersized share",
+   "record": {
+    "catalog": {
+     "app": "0xabababababababababababababababababababababababababababababababab",
+     "version": 7
+    },
+    "cid": "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+    "derivation": "enclave-catalog-bundle/4",
+    "inference": {
+     "gpuMilli": 99,
+     "model": "z-image-turbo-q4km-sd"
     },
     "policy": {
      "cpuPercent": 100,
