@@ -705,6 +705,12 @@ static pid_t spawn(char *const argv[], char *extra, int fd3, int flags) {
             envp[ei++] = "SHIELDED_FIELD_THREADS=4";
             envp[ei++] = "SHIELDED_FIELD_SPINS=20000";
             envp[ei++] = "SHIELDED_PAD_WAIT_US=5000";
+            /* Wide matmuls pipelined over the ring: chunk c on the GPU while the link finishes
+             * c-1 and prepares c+1 (the guest's field work and the GPU used to take turns). And
+             * minting waits 8 s after the last pad is taken, not 2: the decode and PNG encode run
+             * right after the last DiT step and the mint competed with them for the vCPUs. */
+            envp[ei++] = "SHIELDED_PIPELINE=1";
+            envp[ei++] = "SHIELDED_PAD_SPILL_IDLE_MS=8000";
             if (access("/rt/shield-diag-stderr.enabled", R_OK) == 0) envp[ei++] = "SHIELDED_PROFILE=1";   /* diagnostic only */
             /* stable-diffusion.cpp: RoPE in one fused pass (bit-identical), and the measured tiny
              * autoencoder (TAEF1, FLUX.1's latent space, which Z-Image uses) for the decode. */
