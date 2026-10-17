@@ -201,6 +201,12 @@ int  sh_pipe_ring_exchange(sh_pipe *p, const sh_frame *f, size_t want, sh_reply 
  * socket must not ask for the work twice. NULL work is the plain exchange. */
 /* Idle spin after the work callback: the overlap budget still unused. */
 void sh_pipe_idle(const sh_pipe *p, double *ms, uint64_t *n);
+/* The two halves of sh_pipe_ring_exchange_work, for one request in flight while the caller
+ * works on the previous reply. publish refuses (SH_ERR_IO) BEFORE publishing exactly when the
+ * combined call would; collect waits for the last published request and copies its reply
+ * into the pipe's buffer (valid until the next collect or exchange). */
+int  sh_pipe_ring_publish(sh_pipe *p, const sh_frame *f, size_t want);
+int  sh_pipe_ring_collect(sh_pipe *p, size_t want, sh_reply *out);
 int  sh_pipe_ring_exchange_work(sh_pipe *p, const sh_frame *f, size_t want, sh_reply *out,
                                 sh_pipe_work_fn work, void *ctx);
 

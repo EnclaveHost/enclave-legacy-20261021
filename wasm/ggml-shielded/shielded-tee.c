@@ -442,7 +442,13 @@ struct sh_link {
      * spill inside this chunk's GPU window into the buffer no chunk is using
      * (la_fill). Rule 1 holds: a pad taken here serves the next chunk or nobody. */
     bool lookahead;
-    int32_t *la_r[2], *la_u[2]; size_t la_rcap[2], la_ucap[2];
+    int32_t *la_r[4], *la_u[4]; size_t la_rcap[4], la_ucap[4];   /* 0-1: the serial lookahead; 0-3: the pipeline's pad slots */
+    /* The pipelined wide matmul (SHIELDED_PIPELINE): masked planes and header per chunk parity,
+     * pad row pointers and Freivalds RHS per pad slot. */
+    int8_t *pl_planes[2]; size_t pl_planes_cap[2];
+    uint8_t *pl_hdr[2]; size_t pl_hdr_cap[2];
+    const int32_t **pl_rp[4], **pl_up[4]; size_t pl_rp_cap[4], pl_up_cap[4];
+    int64_t *pl_rhs[4]; size_t pl_rhs_cap[4];
     const sh_group *la_g; int la_n, la_buf;              /* ready: la_n pads of la_g in buffer la_buf */
     int la_in_use;                                       /* the buffer the running chunk reads, -1 none */
     uint64_t la_imported;
@@ -821,7 +827,9 @@ void sh_link_close(sh_link *l) {
         l->la_thread_on = false;
     }
     free(l->la_io); l->la_io = NULL;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) { if (l->pl_planes[i]) { sp_wipe(l->pl_planes[i], l->pl_planes_cap[i]); free(l->pl_planes[i]); } free(l->pl_hdr[i]); }
+    for (int i = 0; i < 4; i++) { free(l->pl_rp[i]); free(l->pl_up[i]); free(l->pl_rhs[i]); }
+    for (int i = 0; i < 4; i++) {
         if (l->la_r[i]) { sp_wipe(l->la_r[i], l->la_rcap[i]); free(l->la_r[i]); }
         if (l->la_u[i]) { sp_wipe(l->la_u[i], l->la_ucap[i]); free(l->la_u[i]); }
     }
@@ -2641,10 +2649,10 @@ typedef struct {
  * takes the next chunk's pads from the spill into the buffer the running chunk is not
  * reading, while the running chunk masks, travels and unmasks. Each pad still serves one
  * exchange: what the next chunk does not use is burned (la_n = 0), never reused. */
-static int la_import(sh_link *l, const sh_group *g, int want, int target, uint8_t *io) {
+static int la_import(sh_link *l, const sh_group *g, int want, int target, uint8_t *io, int row0) {
     if (!g || want <= 0 || !io || !spill_usable(l)) return 0;
-    if (ensure((void **)&l->la_r[target], &l->la_rcap[target], (size_t)want * g->K * sizeof(int32_t)) != SH_OK ||
-        ensure((void **)&l->la_u[target], &l->la_ucap[target], (size_t)want * g->u_len * sizeof(int32_t)) != SH_OK) return 0;
+    if (ensure((void **)&l->la_r[target], &l->la_rcap[target], (size_t)(row0 + want) * g->K * sizeof(int32_t)) != SH_OK ||
+        ensure((void **)&l->la_u[target], &l->la_ucap[target], (size_t)(row0 + want) * g->u_len * sizeof(int32_t)) != SH_OK) return 0;
     sh_group *gw = &l->groups[g - l->groups];
     int have = 0;
     while (have < want) {                                 /* a take moves at most SP_TAKE_MAX */
@@ -2655,7 +2663,7 @@ static int la_import(sh_link *l, const sh_group *g, int want, int target, uint8_
         pthread_mutex_unlock(&l->pool_mu);
         if (n <= 0) break;
         const int rc = sh_spill_read(l->spill, (size_t)(g - l->groups), slot0, n, wid,
-                                     l->la_r[target] + (size_t)have * g->K, l->la_u[target] + (size_t)have * g->u_len, io);
+                                     l->la_r[target] + (size_t)(row0 + have) * g->K, l->la_u[target] + (size_t)(row0 + have) * g->u_len, io);
         pthread_mutex_lock(&l->pool_mu);
         spill_retire(l, gw, slot0, n);
         if (rc == SH_OK) l->la_imported += (uint64_t)n;
@@ -2674,7 +2682,7 @@ static void *la_main(void *arg) {
         if (l->la_quit) break;
         const sh_group *g = l->job_g; const int want = l->job_want, target = l->job_target;
         pthread_mutex_unlock(&l->la_mu);
-        const int n = la_import(l, g, want, target, l->la_io);
+        const int n = la_import(l, g, want, target, l->la_io, 0);
         pthread_mutex_lock(&l->la_mu);
         l->job_n = n; l->la_job = 0;
         pthread_cond_broadcast(&l->la_cv);
@@ -2691,24 +2699,40 @@ static void la_collect(sh_link *l) {
     l->job_g = NULL; l->job_n = 0;
     pthread_mutex_unlock(&l->la_mu);
 }
-/* Request thread: the next chunk's pads, into the buffer the coming chunk will not read. */
-static void la_post(sh_link *l, const sh_group *g, int want) {
-    if (!l->la_thread_on) {
-        if (!l->spill || !(l->la_io = sh_spill_io_alloc(l->spill))) { l->lookahead = false; return; }
-        pthread_mutex_init(&l->la_mu, NULL); pthread_cond_init(&l->la_cv, NULL);
-        l->la_quit = false; l->la_job = 0;
-        if (pthread_create(&l->la_thread, NULL, la_main, l) != 0) {
-            pthread_mutex_destroy(&l->la_mu); pthread_cond_destroy(&l->la_cv);
-            free(l->la_io); l->la_io = NULL; l->lookahead = false; return;
-        }
-        l->la_thread_on = true;
+static bool la_start(sh_link *l) {
+    if (l->la_thread_on) return true;
+    if (!l->spill || !(l->la_io = sh_spill_io_alloc(l->spill))) { l->lookahead = false; return false; }
+    pthread_mutex_init(&l->la_mu, NULL); pthread_cond_init(&l->la_cv, NULL);
+    l->la_quit = false; l->la_job = 0;
+    if (pthread_create(&l->la_thread, NULL, la_main, l) != 0) {
+        pthread_mutex_destroy(&l->la_mu); pthread_cond_destroy(&l->la_cv);
+        free(l->la_io); l->la_io = NULL; l->lookahead = false; return false;
     }
+    l->la_thread_on = true;
+    return true;
+}
+/* One job into buffer `target` (the caller has collected the previous one). */
+static void la_post_to(sh_link *l, const sh_group *g, int want, int target) {
+    if (!la_start(l)) return;
     pthread_mutex_lock(&l->la_mu);
-    l->job_g = g; l->job_want = want; l->job_n = 0;
-    l->job_target = l->la_n > 0 ? 1 - l->la_buf : 0;     /* la_buf is what the coming chunk reads */
+    l->job_g = g; l->job_want = want; l->job_n = 0; l->job_target = target;
     l->la_job = 1;
     pthread_cond_broadcast(&l->la_cv);
     pthread_mutex_unlock(&l->la_mu);
+}
+/* Request thread: the next chunk's pads, into the buffer the coming chunk will not read. */
+static void la_post(sh_link *l, const sh_group *g, int want) {
+    la_post_to(l, g, want, l->la_n > 0 ? 1 - l->la_buf : 0);   /* la_buf is what the coming chunk reads */
+}
+/* The pipeline's collect: how many pads the posted job left in its buffer (0 with no job). */
+static int la_wait_n(sh_link *l) {
+    if (!l->la_thread_on) return 0;
+    pthread_mutex_lock(&l->la_mu);
+    while (l->la_job == 1) pthread_cond_wait(&l->la_cv, &l->la_mu);
+    const int n = l->job_g ? l->job_n : 0;
+    l->job_g = NULL; l->job_n = 0;
+    pthread_mutex_unlock(&l->la_mu);
+    return n;
 }
 
 /* The window with no RHS to compute: the hook alone. Same contract. */
@@ -2830,6 +2854,9 @@ static int sh_wide(void) {
     return v;
 }
 
+static int sh_pipeline_mode(void);
+static int sh_link_gemm_stride_pipelined(sh_link *l, const int *nodes, size_t n_nodes,
+                 const int64_t *x_field, int32_t m, int64_t **y_out, const int64_t *y_stride);
 int sh_link_gemm_stride(sh_link *l, const int *nodes, size_t n_nodes,
                  const int64_t *x_field, int32_t m, int64_t **y_out,
                  const int64_t *y_stride) {
@@ -2842,6 +2869,9 @@ int sh_link_gemm_stride(sh_link *l, const int *nodes, size_t n_nodes,
         return sh_link_gemm_stride_one(l, nodes, n_nodes, x_field, m, y_out, y_stride);
     for (size_t i = 0; i < n_nodes; i++)
         if (nodes[i] < 0 || (size_t)nodes[i] >= l->n_nodes || !y_out[i]) return SH_ERR_PROTO;
+    if (sh_pipeline_mode() && l->lookahead && l->verify && l->overlap_verify && !l->dealt && l->threads_running &&
+        spill_usable(l) && (sh_pipeline_mode() == 2 || sh_pipe_ring_live(l->pipe)))
+        return sh_link_gemm_stride_pipelined(l, nodes, n_nodes, x_field, m, y_out, y_stride);
     int64_t *yp[SH_GROUP_MAX];
     for (int32_t at = 0; at < m; at += step) {
         const int32_t rows = m - at < step ? m - at : step;
@@ -3165,6 +3195,204 @@ fail:
     /* Whatever failed, the pads were consumed the moment they were taken:
      * releasing the slots lets a refill overwrite them, never re-issues them. */
     release_pads(l, g, took);
+    return rc;
+}
+
+
+/* ---- the pipelined wide matmul (SHIELDED_PIPELINE) ------------------------
+ * The serial chunk loop does mask -> send -> wait -> unmask/verify, one chunk at a time, so
+ * the guest's field work and the GPU never overlap (Z-Image 512px in the live guest: ~11 s of
+ * GPU waits and ~7 s of mask/unmask/verify per image, end to end). Here chunk c is published,
+ * and while the worker computes it this thread finishes chunk c-1 (reply range check, unmask
+ * + Freivalds) and prepares chunk c+1 (pads, mask, header, RHS); then it collects c. Every rule
+ * of the serial path holds per chunk: the activation range is checked first, one pad per row,
+ * used once (pads come from the spill through the lookahead helper, into one of four slots, or
+ * are minted here), the reply's range is checked before any unmask, and a Freivalds mismatch
+ * fails the matmul as SH_ERR_VERIFY. Planes and header are kept per chunk parity so a ring
+ * miss resends the same frame on the socket. 1 = ring only (the guest); 2 = also over the
+ * socket (a host check of the same code). */
+static int sh_pipeline_mode(void) { static int v = -1; if (v < 0) v = env_int("SHIELDED_PIPELINE", 0, 0, 2); return v; }
+
+typedef struct {
+    sh_link *l; const int *nodes; size_t n_nodes; sh_group *g; const int64_t *x_field; int64_t **y_out;
+    const int64_t *y_stride; int32_t m, step; int64_t K;
+} sh_pl;
+
+static int32_t pl_rows(const sh_pl *P, int c) { const int32_t at = c * P->step; return P->m - at < P->step ? P->m - at : P->step; }
+
+/* Pads for chunk c into slot c%4: the helper's `have` rows, then the spill here, then minted. */
+static int pl_pads(sh_pl *P, int c, int have) {
+    sh_link *l = P->l; sh_group *g = P->g; const int64_t K = P->K;
+    const int s = c % 4; const int32_t rows = pl_rows(P, c);
+    int rc;
+    if ((rc = ensure((void **)&l->la_r[s], &l->la_rcap[s], (size_t)rows * K * sizeof(int32_t))) != SH_OK) return rc;
+    if ((rc = ensure((void **)&l->la_u[s], &l->la_ucap[s], (size_t)rows * g->u_len * sizeof(int32_t))) != SH_OK) return rc;
+    if (have > rows) have = rows;
+    if (have < rows) {
+        const double tg = now_ms();
+        const int got = l->spill_io ? la_import(l, g, rows - have, s, l->spill_io, have) : 0;
+        if (got > 0) { pthread_mutex_lock(&l->pool_mu); l->spill_onpath += (uint64_t)got; pthread_mutex_unlock(&l->pool_mu); }
+        const int mint = rows - have - got;
+        if (mint > 0) {
+            if ((rc = ensure((void **)&l->gplanes, &l->gplanes_cap, (size_t)3 * mint * K)) != SH_OK) return rc;
+            if ((rc = ensure((void **)&l->acc, &l->acc_cap, (size_t)12 * l->Nmax * sizeof(int32_t))) != SH_OK) return rc;
+            gen_scratch gs = { l->gplanes, l->acc };
+            const int off = have + got;
+            rc = generate(l, g, mint, l->la_r[s] + (size_t)off * K, l->la_u[s] + (size_t)off * g->u_len, &gs);
+            if (rc != SH_OK) { snprintf(l->err, sizeof l->err, "pad bank exhausted; stall the request"); return rc; }
+            l->pads_missed += (uint64_t)mint; g->pads_missed += (uint64_t)mint; l->profile.missed_pads += mint;
+        }
+        const double el = now_ms() - tg; l->profile.refill_ms += el; g->on_path_ms += el;
+    }
+    for (int32_t i = 0; i < rows; i++) {
+        l->pl_rp[s][i] = l->la_r[s] + (size_t)i * K;
+        l->pl_up[s][i] = l->la_u[s] + (size_t)i * g->u_len;
+    }
+    l->pads_used += (uint64_t)rows; l->profile.used_pads += (uint64_t)rows; g->pads_used += (uint64_t)rows;
+    return SH_OK;
+}
+
+/* Mask, header and Freivalds RHS of chunk c (its pads are in slot c%4). */
+static size_t pl_prepare(sh_pl *P, int c) {
+    sh_link *l = P->l; const int64_t K = P->K;
+    const int s = c % 4, par = c % 2; const int32_t rows = pl_rows(P, c);
+    const int64_t *x = P->x_field + (size_t)c * P->step * K;
+    const double t0 = now_ms();
+    sh_mask_rows mr = { l->simd, x, (const int32_t *const *)l->pl_rp[s], l->pl_planes[par], rows, K };
+    sh_par_for(rows, 1, sh_mask_rows_fn, &mr);
+    const size_t hn = sh_pack_field_gemm(l->pl_hdr[par], (uint32_t)P->n_nodes, (uint32_t)rows, P->nodes);
+    const double t1 = now_ms(); l->profile.mask_ms += t1 - t0;
+    for (size_t i = 0; i < P->n_nodes; i++) {
+        const sh_node *nd = &l->nodes[P->nodes[i]];
+        for (int32_t row = 0; row < rows; row++)
+            l->simd->fv_dots_x(x + (size_t)row * K, nd->st32, SH_FV_REPS, K, l->pl_rhs[s] + (i * (size_t)rows + row) * SH_FV_REPS);
+    }
+    l->profile.rhs_ms += now_ms() - t1;
+    return hn;
+}
+
+/* The reply of chunk c (yw bytes a value): range check, unmask + Freivalds into y. */
+static int pl_finish(sh_pl *P, int c, const uint8_t *ym, size_t len, size_t yw) {
+    sh_link *l = P->l; const int64_t K = P->K;
+    const int s = c % 4; const int32_t rows = pl_rows(P, c);
+    size_t want = 0;
+    for (size_t i = 0; i < P->n_nodes; i++) want += (size_t)rows * l->nodes[P->nodes[i]].N * yw;
+    if (len != want) { snprintf(l->err, sizeof l->err, "worker returned %zu bytes, expected %zu", len, want); return SH_ERR_VIOLATION; }
+    const double tc = now_ms();
+    const bool reply_ok = !(yw == 4) || l->simd->reply32_balanced((const int32_t *)ym, want / 4);
+    l->profile.check_ms += now_ms() - tc;
+    if (!reply_ok) { snprintf(l->err, sizeof l->err, "worker returned an int32 value outside the balanced field range"); return SH_ERR_VIOLATION; }
+    const int64_t *x = P->x_field + (size_t)c * P->step * K;
+    size_t off = 0;
+    const double t3 = now_ms();
+    for (size_t i = 0; i < P->n_nodes; i++) {
+        const sh_node *nd = &l->nodes[P->nodes[i]];
+        const int64_t ystr = P->y_stride && P->y_stride[i] ? P->y_stride[i] : nd->N;
+        int64_t *y = P->y_out[i] + (size_t)c * P->step * (size_t)ystr;
+        sh_unmask_rows ur = { l->simd, ym + off, yw, (const int32_t *const *)l->pl_up[s], nd->u_off, nd->s32, nd->st32, nd->N, K,
+                              y, ystr, x, l->pl_rhs[s] + i * (size_t)rows * SH_FV_REPS, true, 0 };
+        sh_par_for(rows, 1, sh_unmask_rows_fn, &ur);
+        off += (size_t)rows * nd->N * yw;
+        l->macs += (uint64_t)rows * (uint64_t)nd->K * (uint64_t)nd->N;
+        if (atomic_load(&ur.bad)) {
+            l->verify_fail++;
+            snprintf(l->err, sizeof l->err,
+                     "%s: verification FAILED -- the worker lied or the field wrapped. "
+                     "Link retired; recreate trusted state. Do not sample, stream, or cache this.", nd->name);
+            fprintf(stderr, "[shielded] verify failure (pipelined): %s rows=%d chunk=%d width=%zu\n", nd->name, (int)rows, c, yw);
+            return SH_ERR_VERIFY;
+        }
+    }
+    l->profile.unmask_lhs_ms += now_ms() - t3;
+    l->profile.completed_calls++;
+    return SH_OK;
+}
+
+/* Chunk c over the socket, synchronously: the reply stays in the pipe's buffer. */
+static int pl_socket(sh_pl *P, int c, size_t hn, sh_reply *rep, size_t *yw) {
+    sh_link *l = P->l; const int32_t rows = pl_rows(P, c); const int par = c % 2;
+    *yw = (size_t)l->ywidth;
+    sh_frame f = { *yw == 3 ? SH_CMD_FIELD_GEMM24 : SH_CMD_FIELD_GEMM, l->pl_hdr[par], hn, l->pl_planes[par], (size_t)3 * rows * P->K };
+    const double t = now_ms();
+    const int rc = sh_pipe_exchange_work(l->pipe, &f, 1, rep, NULL, NULL);
+    l->profile.wire_ms += now_ms() - t;
+    if (rc != SH_OK) { snprintf(l->err, sizeof l->err, "exchange: %s", sh_pipe_last_error(l->pipe)); return rc == SH_ERR_PROTO ? SH_ERR_VIOLATION : rc; }
+    l->exchanges++;
+    return SH_OK;
+}
+
+static int sh_link_gemm_stride_pipelined(sh_link *l, const int *nodes, size_t n_nodes,
+                 const int64_t *x_field, int32_t m, int64_t **y_out, const int64_t *y_stride) {
+    if (sh_integrity_failed(l)) { snprintf(l->err, sizeof l->err, "link retired after verification failure; recreate trusted state"); return SH_ERR_VERIFY; }
+    sh_group *g = &l->groups[l->nodes[nodes[0]].group];
+    for (size_t i = 0; i < n_nodes; i++)
+        if (l->nodes[nodes[i]].group != l->nodes[nodes[0]].group) { snprintf(l->err, sizeof l->err, "exchanged nodes do not share an activation"); return SH_ERR_PROTO; }
+    sh_pl P = { l, nodes, n_nodes, g, x_field, y_out, y_stride, m, g->max_m, g->K };
+    const int64_t K = g->K;
+    if (!l->simd->values_within(x_field, (size_t)m * K, SH_FV_X_LIMIT)) {
+        snprintf(l->err, sizeof l->err, "activation outside the supported integer range; abort the request");
+        return SH_ERR_VERIFY;
+    }
+    const int C = (int)((m + P.step - 1) / P.step);
+    int rc;
+    for (int i = 0; i < 2; i++) {
+        if ((rc = ensure((void **)&l->pl_planes[i], &l->pl_planes_cap[i], (size_t)3 * P.step * K)) != SH_OK) return rc;
+        if ((rc = ensure((void **)&l->pl_hdr[i], &l->pl_hdr_cap[i], 8 + 4 * n_nodes)) != SH_OK) return rc;
+    }
+    for (int i = 0; i < 4; i++) {
+        if ((rc = ensure((void **)&l->pl_rp[i], &l->pl_rp_cap[i], (size_t)P.step * sizeof(int32_t *))) != SH_OK) return rc;
+        if ((rc = ensure((void **)&l->pl_up[i], &l->pl_up_cap[i], (size_t)P.step * sizeof(int32_t *))) != SH_OK) return rc;
+        if ((rc = ensure((void **)&l->pl_rhs[i], &l->pl_rhs_cap[i], n_nodes * (size_t)P.step * SH_FV_REPS * sizeof(int64_t))) != SH_OK) return rc;
+    }
+    if (!la_start(l)) return SH_ERR_IO;
+    l->la_n = 0;                                          /* nothing of the serial lookahead carries over */
+    la_wait_n(l);                                         /* and no stale job */
+    size_t wantN = 0;
+    for (size_t i = 0; i < n_nodes; i++) wantN += (size_t)l->nodes[nodes[i]].N;
+    size_t hn[2] = { 0, 0 };
+
+    la_post_to(l, g, pl_rows(&P, 0), 0);
+    if ((rc = pl_pads(&P, 0, la_wait_n(l))) != SH_OK) return rc;
+    if (C > 1) la_post_to(l, g, pl_rows(&P, 1), 1);
+    hn[0] = pl_prepare(&P, 0);
+
+    int pending = -1; const uint8_t *pdata = NULL; size_t plen = 0, pyw = 4;
+    for (int c = 0; c < C; c++) {
+        const int par = c % 2; const int32_t rows = pl_rows(&P, c);
+        sh_frame f = { SH_CMD_FIELD_GEMM, l->pl_hdr[par], hn[par], l->pl_planes[par], (size_t)3 * rows * K };
+        const size_t want4 = (size_t)rows * wantN * 4;
+        const double tw = now_ms();
+        rc = (sh_pipeline_mode() == 1 || sh_pipe_ring_live(l->pipe)) ? sh_pipe_ring_publish(l->pipe, &f, want4) : SH_ERR_IO;
+        const bool published = rc == SH_OK;
+        if (!published && rc != SH_ERR_IO) goto out;
+        sh_reply rep;
+        size_t yw = 4;
+        if (!published) {
+            if (pending >= 0) { if ((rc = pl_finish(&P, pending, pdata, plen, pyw)) != SH_OK) goto out; pending = -1; }
+            if ((rc = pl_socket(&P, c, hn[par], &rep, &yw)) != SH_OK) goto out;
+            pending = c; pdata = rep.data; plen = rep.len; pyw = yw;
+        } else if (pending >= 0) {
+            if ((rc = pl_finish(&P, pending, pdata, plen, pyw)) != SH_OK) goto out;
+            pending = -1;
+        }
+        if (c + 1 < C) {                                  /* the next chunk, while this one is out */
+            const int have = la_wait_n(l);
+            if (c + 2 < C) la_post_to(l, g, pl_rows(&P, c + 2), (c + 2) % 4);
+            if ((rc = pl_pads(&P, c + 1, have)) != SH_OK) goto out;
+            hn[(c + 1) % 2] = pl_prepare(&P, c + 1);
+        }
+        if (published) {
+            rc = sh_pipe_ring_collect(l->pipe, want4, &rep);
+            if (rc == SH_ERR_IO) rc = pl_socket(&P, c, hn[par], &rep, &yw);      /* the same frame, on the socket */
+            else if (rc == SH_OK) l->exchanges++;
+            if (rc != SH_OK) { if (rc == SH_ERR_PROTO) rc = SH_ERR_VIOLATION; goto out; }
+            l->profile.wire_ms += now_ms() - tw;
+            pending = c; pdata = rep.data; plen = rep.len; pyw = yw;
+        }
+    }
+    if (pending >= 0) rc = pl_finish(&P, pending, pdata, plen, pyw);
+out:
+    la_wait_n(l);                                         /* nothing outlives the matmul; unused pads are burned */
     return rc;
 }
 
