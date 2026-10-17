@@ -97,9 +97,10 @@ static void lo_up(void) {
  * A PUBLIC-WEB domain (the monitor's root-owned /egress.public-web, from the measured config) also gets the front's DNS
  * stub on 127.0.0.2:53, which resolv.conf names and which glibc can only reach on port 53: its floor is 53 instead,
  * with the same reasoning (the stub is bound before the tenant starts, and the namespace's one interface is lo). */
-static void unprivileged_https_bind(int public_web) {
+static void set_port_floor(int port) {
     static const char path[] = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
-    const char *floor = public_web ? "53\n" : "443\n";
+    char floor[16];
+    snprintf(floor, sizeof floor, "%d\n", port);
     int fd = open(path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) die("open ip_unprivileged_port_start");
     if (write(fd, floor, strlen(floor)) != (ssize_t)strlen(floor)) die("set ip_unprivileged_port_start");
@@ -108,8 +109,21 @@ static void unprivileged_https_bind(int public_web) {
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0 || read(fd, b, sizeof b - 1) <= 0 || strcmp(b, floor) != 0) { errno = EPERM; die("ip_unprivileged_port_start did not hold"); }
     close(fd);
-    printf("DOM%s egress: this namespace's unprivileged port floor is %s (the front's %s, no capability)\n", dom_id,
-           public_web ? "53" : "443", public_web ? "forwarders, SOCKS front and DNS stub" : "forwarders");
+}
+
+/* A run-mode app's measured raw ports (/app.ports, from the bundle the monitor hashed) may sit below 1024 (EnclaveDNS:
+ * udp/tcp 53, tcp 853). The runtime has no capability, so this namespace's floor is lowered to the LOWEST of its HTTP
+ * port and its measured ports, with the reasoning above: per namespace, the namespace's one interface is lo, and the
+ * front's own listeners are bound before the tenant starts. 0 = nothing below the kernel default. */
+static int app_port_floor = 0;
+
+static void unprivileged_https_bind(int public_web) {
+    int floor = public_web ? 53 : 443;
+    if (app_port_floor && app_port_floor < floor) floor = app_port_floor;
+    set_port_floor(floor);
+    printf("DOM%s egress: this namespace's unprivileged port floor is %d (the front's %s%s, no capability)\n", dom_id,
+           floor, public_web ? "forwarders, SOCKS front and DNS stub" : "forwarders",
+           floor < (public_web ? 53 : 443) ? " and the app's measured ports" : "");
 }
 
 /* What this domain can reach, printed once the workloads are running (so the process count is the
@@ -397,6 +411,7 @@ int main(int argc, char **argv) {
             return 2;
         }
         snprintf(ports_env, sizeof ports_env, "ENCLAVE_PORTS=http:%d=%d", run_port, run_port);
+        int lowest = run_port;
         FILE *pf = fopen("/app.ports", "r");
         if (pf) {
             char line[32], proto[4]; int pn;
@@ -406,10 +421,12 @@ int main(int argc, char **argv) {
                 size_t used = strlen(ports_env);
                 int n = snprintf(ports_env+used, sizeof ports_env-used, ",%s:%d=%d", proto,pn,pn);
                 if (n < 0 || (size_t)n >= sizeof ports_env-used) die("too many measured ports");
+                if (pn < lowest) lowest = pn;
             }
             if (ferror(pf)) die("read measured ports");
             fclose(pf);
         } else if (errno != ENOENT) die("open measured ports");
+        if (lowest < 1024) app_port_floor = lowest;
         snprintf(upstream, sizeof upstream, "127.0.0.1:%d", run_port);
         snprintf(data_opts, sizeof data_opts, "size=64m,mode=0700,uid=%u,gid=%u", (unsigned)uid, (unsigned)uid);
         mkdir("/data", 0700);
@@ -511,6 +528,11 @@ int main(int argc, char **argv) {
         char **secret_front = run_port ? run_front : front;
         int j=0;while(secret_front[j])j++;secret_front[j++]="-shield-secrets-fd";secret_front[j++]="7";secret_front[j]=NULL;
     } else if (errno != ENOENT) die("secret deployment stat");
+    if (app_port_floor && secret_pipe[0] < 0) {          /* a secret domain's floor was set with its forwarders above */
+        set_port_floor(app_port_floor);
+        printf("DOM%s this namespace's unprivileged port floor is %d (the app's lowest measured port, no capability)\n",
+               dom_id, app_port_floor);
+    }
     pid_t rt_pid, front_pid;
     if (argc > 3 && strcmp(argv[3], "probe") == 0) {
         if (seccomp_fd >= 0) { close(seccomp_fd); seccomp_fd = -1; }   /* the probe states no filter */

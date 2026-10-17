@@ -30,7 +30,7 @@ if ! command -v unshare >/dev/null 2>&1 || ! unshare --map-root-user --map-auto 
 fi
 gcc -static -O2 -o "$d/probe" "$here/egress-probe.c" 2>/dev/null
 
-run_one() {  # <domexec binary> <secret: 1|0> [mode] [public web marker: 1|0]
+run_one() {  # <domexec binary> <secret: 1|0> [mode] [public web marker: 1|0] [measured ports, one per line]
   reclaim; mkdir -p "$d/root/plat/rt" "$d/root/run" "$d/root/tmp" "$d/root/proc" "$d/root/probe-out"
   chmod 0755 "$d/root" "$d/root/plat" "$d/root/plat/rt"; chmod 1777 "$d/root/probe-out"
   cp "$1" "$d/root/plat/domexec"
@@ -52,6 +52,7 @@ run_one() {  # <domexec binary> <secret: 1|0> [mode] [public web marker: 1|0]
       printf 'nameserver 127.0.0.2\noptions use-vc timeout:10 attempts:2\n' > "$d/root/etc/resolv.conf"; chmod 0444 "$d/root/etc/resolv.conf"
     fi
   fi
+  [ -n "${5:-}" ] && { printf '%b' "$5" > "$d/root/app.ports"; chmod 0444 "$d/root/app.ports"; }
   mode=${3:-app}
   timeout 60 unshare --map-root-user --map-auto -mpfn -- sh -c "chown 1001:1001 '$d/root/run' && chmod 0700 '$d/root/run' && $own_hosts exec chroot '$d/root' /plat/domexec 7 1000:1001 $mode 64 8000 3<>/dev/null" > "$d/console.txt" 2>&1 || true
 }
@@ -89,6 +90,21 @@ run_all() {  # <domexec.c>
   done
   if grep -q "^DOM7 egress: this namespace's unprivileged port floor is 53" "$d/console.txt"; then echo "ok   domexec stated the public-web floor"
   else echo "FAIL no public-web floor statement: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
+  # EnclaveDNS's shape: a command app whose measured raw ports sit below 1024. The floor drops to the lowest of them,
+  # in its own namespace only; with secrets it goes below the front's 443 too.
+  run_one "$d/domexec" 0 run 0 'udp:53\ntcp:53\ntcp:853\n'
+  if grep -q "^DOM7 this namespace's unprivileged port floor is 53 (the app's lowest measured port" "$d/console.txt" && grep -q 'mode=run http=8000' "$d/console.txt"
+  then echo "ok   a command domain with measured raw ports 53/853: floor 53"
+  else echo "FAIL raw measured ports, no 53 floor: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
+  run_one "$d/domexec" 1 run 0 'tcp:853\n'
+  if grep -q "^DOM7 egress: this namespace's unprivileged port floor is 443" "$d/console.txt"; then echo "ok   a secret command domain with a raw port above 443 keeps the front's 443 floor"
+  else echo "FAIL secret command domain, raw port 853: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
+  run_one "$d/domexec" 1 run 0 'udp:53\n'
+  if grep -q "^DOM7 egress: this namespace's unprivileged port floor is 53 (the front's forwarders and the app's measured ports" "$d/console.txt"; then echo "ok   a secret command domain with raw port 53: floor 53"
+  else echo "FAIL secret command domain, raw port 53: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
+  run_one "$d/domexec" 0 app 0 'udp:53\n'   # serve mode never reads measured ports: no floor
+  if ! grep -q "port floor" "$d/console.txt"; then echo "ok   a served (not command) domain with a ports file keeps the kernel's floor"
+  else echo "FAIL a served domain lowered its floor: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
   run_one "$d/domexec" 0 app 1   # a marker on a domain without secrets: domexec refuses to start it
   if grep -q "public web needs a secret domain" "$d/console.txt" && [ ! -s "$d/root/probe-out/front.egress" ]; then echo "ok   a public-web marker without secrets starts nothing"
   else echo "FAIL a public-web marker without secrets: $(tr '\n' ' ' < "$d/console.txt" | cut -c1-200)"; rc=1; fi
@@ -123,8 +139,11 @@ mut() {  # <label> <sed expression>
 k=0
 mut "the floor never lowered" '/unprivileged_https_bind(public_web);   \/\* the front/d' || k=1
 mut "the floor lowered for every domain" 's/^    lo_up();$/    lo_up(); unprivileged_https_bind(0);/' || k=1
-mut "public web keeps the 443 floor" 's/const char \*floor = public_web ? "53\\n" : "443\\n";/const char *floor = "443\\n";/' || k=1
-mut "the 53 floor for every secret domain" 's/const char \*floor = public_web ? "53\\n" : "443\\n";/const char *floor = "53\\n";/' || k=1
+mut "public web keeps the 443 floor" 's/int floor = public_web ? 53 : 443;/int floor = 443;/' || k=1
+mut "the 53 floor for every secret domain" 's/int floor = public_web ? 53 : 443;/int floor = 53;/' || k=1
+mut "measured raw ports never lower the floor" 's/if (lowest < 1024) app_port_floor = lowest;/(void)lowest;/' || k=1
+mut "the HTTP port alone sets the floor" 's/if (pn < lowest) lowest = pn;/(void)pn;/' || k=1
+mut "a command domain without secrets never sets its floor" 's/set_port_floor(app_port_floor);/(void)0;/' || k=1
 mut "public web without secrets" '/public web needs a secret domain/d' || k=1
 mut "a secret domain's runtime unfiltered" 's/rt_pid = spawn(secret_pipe\[0\]>=0 ? secret_app : shield_app, uid, 1, 1);/rt_pid = spawn(secret_pipe[0]>=0 ? secret_app : shield_app, uid, 1, 0);/' || k=1
 [ $k = 0 ] && echo "domexec egress mutants: all killed" || echo "domexec egress mutants: FAIL"
