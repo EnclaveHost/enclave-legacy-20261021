@@ -111,6 +111,43 @@ exhaustion and never mints (shielded-tee.c, `l->dealt`). Changes: derive `r` fro
 key (format v4) instead of a seed; fetch from the PS endpoint; verify the PS certificate. The
 in-guest pad spill and refill minting go away for consumers of a host bank.
 
+### Failure of the pad service (enclave-88, 2026-10-17)
+
+One PS per host is a shared point of failure, so no consumer may depend on it being up:
+
+- **Consumers keep a local reserve.** A consumer imports ahead of use (its ring plus a sealed
+  in-guest buffer of `reserve rows`, sized to the app's largest burst: one 512px Z-Image image,
+  a few thousand prompt tokens for eyesoff). A PS crash, preemption or update leaves every
+  consumer serving from what it holds; it re-fetches when the PS returns.
+- **A consumer whose reserve and PS are both gone falls back to minting in its own guest**
+  (today's path, slower), never to failing the request. This keeps today's code as the floor.
+- **Test (H2):** kill the PS mid-load while a consumer runs a long request; the request
+  completes from the reserve, the consumer logs the outage, re-fetches after the PS restarts,
+  and no index is ever issued twice (checked against the ledger).
+
+### Priority between consumers (enclave-88)
+
+The PS mints and serves by consumer priority, not first come: a consumer below its reserve's
+low-water mark is served before any refill for another, and per-host policy names the
+protected consumers (eyesoff on metal0). Bank refill minting never runs while a protected
+consumer has a request in flight, and its CPU/IO budget comes from what the host leaves after
+the protected guests (cgroup limits on the PS unit, measured, not weights alone: on 2026-10-17
+CPUWeight/IOWeight=20 on the Z-Image guest did not stop eyesoff's latency spikes).
+
+### Migration (enclave-88)
+
+- No consumer relaunches to move. A running guest keeps its per-app bank and in-guest minting;
+  it moves to the PS at its next natural relaunch, on a release that supports both (per-app
+  bank as the fallback above).
+- eyesoff (512 GiB per-app spill, relaunch costs 5-33 min of eyesoff) moves last, in a quiet
+  window agreed with enclave-88, with a rollback release that keeps today's per-app bank.
+- Z-Image moves first.
+
+### Reviews
+
+Security review of the per-pad keys, the v4 format and the per-bank relay ledger by enclave-a8
+or enclave-87 before H3. enclave-88 reviews uptime/rollout (REQUEST -> ACK for every step).
+
 ## What it does not change
 
 The masking construction, the Freivalds checks, and the total minting work (three int8 MACs
