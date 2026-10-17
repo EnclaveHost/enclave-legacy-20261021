@@ -507,29 +507,9 @@ int main(void) {
         fflush(stdout);
         reboot(RB_POWER_OFF);
     }
-    char upstream[32], ports_env[2048];
+    char upstream[32], ports_env[64];
     snprintf(upstream, sizeof upstream, "127.0.0.1:%d", port ? port : 8080);
     snprintf(ports_env, sizeof ports_env, "ENCLAVE_PORTS=http:%d=%d", port, port);
-    /* This measured list is produced by the contract parser (the front reads the same /app.ports for its
-     * tunnels). Fail closed if it is malformed; never let a host-supplied environment expand the list. The
-     * floor below is lowered to the LOWEST measured port, so a raw port under the HTTP one (EnclaveDNS:
-     * udp/tcp 53, tcp 853) binds as the app uid. (401fd2020) */
-    int lowest_port = port;
-    FILE *pf = fopen("/app.ports", "r");
-    if (pf) {
-        char line[32], proto[4], extra; int pn, count = 0;
-        while (fgets(line, sizeof line, pf)) {
-            if (++count > 32 || sscanf(line, "%3[a-z]:%d%c", proto, &pn, &extra) != 3 || extra != '\n' ||
-                (strcmp(proto, "tcp") && strcmp(proto, "udp")) || pn < 1 || pn > 49999 || !port) {
-                printf("DOM ERROR invalid measured ports\n"); fflush(stdout); reboot(RB_POWER_OFF); _exit(1);
-            }
-            size_t used = strlen(ports_env);
-            int n = snprintf(ports_env + used, sizeof ports_env - used, ",%s:%d=%d", proto, pn, pn);
-            if (n < 0 || (size_t)n >= sizeof ports_env - used) { reboot(RB_POWER_OFF); _exit(1); }
-            if (pn < lowest_port) lowest_port = pn;
-        }
-        fclose(pf);
-    }
     char *run[] = {"/rt/ld-linux-x86-64.so.2", "--library-path", "/rt", "/rt/wasmtime", "run", "-S", "cli",
                    "-S", "tcp", "-S", "udp", "-S", "inherit-network", "-S", "allow-ip-name-lookup",
                    "-C", "cache=n", "--dir", "/data::/data", "--env", ports_env, "/app.wasm", NULL};
@@ -543,7 +523,7 @@ int main(void) {
             reboot(RB_POWER_OFF);
             _exit(1);
         }
-        if (!unpriv_port(lowest_port, "/proc/sys/net/ipv4/ip_unprivileged_port_start", write_sysctl, pl, sizeof pl)) {
+        if (!unpriv_port(port, "/proc/sys/net/ipv4/ip_unprivileged_port_start", write_sysctl, pl, sizeof pl)) {
             printf("DOM ERROR %s: the app is not started\n", pl);
             fflush(stdout);
             reboot(RB_POWER_OFF);
