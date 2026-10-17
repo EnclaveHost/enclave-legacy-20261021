@@ -21,7 +21,9 @@ int main(int argc,char **argv) {
     sh_pads_reader r={0};memcpy(r.seed_id,sid,16);memcpy(r.sk,sk,32);
     sh_pads_file f;assert(file_open(&r,path,&f)==SH_OK);file_close(&f);
     uint64_t off,row,len;
-    assert(shipment_layout(&group,1,1,&off,&row,&len) && off==4096 && row==25 && len==4121);
+    assert(shipment_layout(&group,1,1,false,&off,&row,&len) && off==4096 && row==25 && len==4121);
+    /* format 4 (keyed cells): each cell carries its 32-byte mask key ahead of u */
+    { uint64_t koff,krow,klen; assert(shipment_layout(&group,1,1,true,&koff,&krow,&klen) && koff==4096 && krow==25+32 && klen==4096+57); }
     for(int kind=0;kind<10;kind++) {
         sh_pads_hdr h=header;sh_pads_group g=group;
         if(kind==0)h.data_off=0;

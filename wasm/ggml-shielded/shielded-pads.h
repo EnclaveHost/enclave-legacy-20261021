@@ -28,6 +28,12 @@ extern "C" {
 #define SH_PADS_VERSION   2u          /* 2: ChaCha20-Poly1305 cells (1 was XSalsa20-Poly1305) */
 #define SH_PADS_NAME_MAX  64
 #define SH_PADS_CELL_TAG  16          /* Poly1305 */
+/* Format 4 (host pad bank, shielded/dealer/HOST-BANK.md): every cell carries its own 32-byte
+ * mask key ahead of u inside the same box, so a consumer derives the masks of the cells it was
+ * given and of nothing else; r = sh_pad_r(cellkey, 0, 0, K). Readers and writers are opened
+ * for one format and refuse the other. */
+#define SH_PADS_VERSION_KEYED 4u
+#define SH_PADS_CELL_KEY  32
 #define SH_PADS_HDR_BYTES 256
 /* ChaCha counter fields: group16 | index24 | block24; 8 values per block.
  * Exhaustion requires a fresh seed, never masking/reducing an index. */
@@ -66,6 +72,9 @@ typedef struct {
 #endif
 } sh_pads_hdr;
 
+/* A keyed cell's mask key: ChaCha20(bank, (group << 48) | (index << 24))[0:32], a PRF output. */
+void sh_pad_cellkey(const uint8_t bank[32], uint32_t group, uint64_t index, uint8_t key_out[32]);
+
 /* The engine's ChaCha20 block (64-bit counter, zero nonce). */
 void sh_chacha20_block(const uint32_t key[8], uint64_t counter, uint32_t out[16]);
 /* The cells' AEAD (RFC 8439 ChaCha20-Poly1305, no associated data) under a
@@ -100,6 +109,13 @@ sh_pads_writer *sh_pads_writer_open(const char *path, const uint8_t model_digest
  * u is the balanced row (u_len values in (-M/2, M/2]). This scratch-owning form
  * is serialized; concurrent callers use cell_with and disjoint private scratch. */
 int  sh_pads_writer_cell(sh_pads_writer *w, uint64_t index, uint32_t group, const int32_t *u);
+/* Format 4: the same writer, every cell sealed with its mask key (sh_pads_writer_cell* refuse
+ * such a writer, and the keyed call refuses a format-2 one). */
+sh_pads_writer *sh_pads_writer_open_keyed(const char *path, const uint8_t model_digest[32],
+                                          const uint8_t delivery_id[16], const sh_pads_group *groups, uint32_t n_groups,
+                                          uint64_t index0, uint64_t index_count, const uint8_t consumer_pk[32], int *err);
+int  sh_pads_writer_cell_keyed_with(sh_pads_writer *w, uint64_t index, uint32_t group, const uint8_t cellkey[32],
+                                    const int32_t *u, uint8_t *plain, uint8_t *cell);
 /* thread-safe form: caller-owned scratch of sh_pads_writer_scratch_bytes(w) bytes each */
 int  sh_pads_writer_cell_with(sh_pads_writer *w, uint64_t index, uint32_t group, const int32_t *u, uint8_t *plain, uint8_t *cell);
 size_t sh_pads_writer_scratch_bytes(const sh_pads_writer *w);
@@ -114,6 +130,12 @@ typedef struct sh_pads_reader sh_pads_reader;
 /* Scans `dir` for shipments of `seed_id` readable with `consumer_sk` and keeps
  * the ones whose header verifies. Rescans on demand when an index is missing. */
 sh_pads_reader *sh_pads_reader_open(const char *dir, const uint8_t seed_id[16], const uint8_t consumer_sk[32], int *err);
+/* A reader of format-4 shipments only (cells carry their mask keys). */
+sh_pads_reader *sh_pads_reader_open_keyed(const char *dir, const uint8_t delivery_id[16], const uint8_t consumer_sk[32], int *err);
+bool sh_pads_reader_keyed(const sh_pads_reader *r);
+/* A keyed reader's cell: u and the cell's mask key (wiped by the caller after deriving r). */
+int  sh_pads_reader_cell_keyed(sh_pads_reader *r, uint32_t group, uint64_t index,
+                               int32_t *u_out, uint8_t key_out[32], uint32_t *shipment_group);
 /* The group table of the first shipment the reader holds (for tools that
  * bind without a model): copies up to `cap` entries, returns the count. */
 uint32_t sh_pads_reader_groups(const sh_pads_reader *r, sh_pads_group *out, uint32_t cap);

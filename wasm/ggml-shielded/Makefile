@@ -98,6 +98,10 @@ refill-selftest: refill-selftest.c shielded-simd-avx512.o shielded-field.o
 dealt-selftest: dealt-selftest.c $(DEALER_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+# Keyed pads (format 4, shielded/dealer/HOST-BANK.md): host-bank cells with their own mask keys.
+keyed-selftest: keyed-selftest.c $(DEALER_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
 # Node<->C interop helpers for dealt pads (test/pads-interop.test.mjs).
 pads-unbox: pads-unbox.c $(CORE_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)

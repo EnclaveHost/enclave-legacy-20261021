@@ -483,6 +483,7 @@ struct sh_link {
     uint64_t   receipt_pads, receipt_rows;  /* what has been reported so far */
     bool       receipt_failed;              /* logged once */
     uint8_t    pad_seed[32], pad_seed_id[16], pad_sk[32];
+    bool       pad_keyed;   /* SHIELDED_PAD_KEYED=1: format-4 shipments from a host pad bank; each cell's own key gives r, no seed */
     uint64_t   pad_window, win_lo, win_hi;
     int        pad_bank_wait_ms;
     sh_pads_reader *pads;
@@ -700,7 +701,10 @@ sh_link *sh_link_open(const char *host, int port, bool verify, int *err) {
         /* The ledger path may be empty when the host installs a window
          * provider before start (sh_link_set_window_provider); start_pools
          * refuses to run with neither. */
-        const bool ok = sh_pads_hex2bin(getenv("SHIELDED_PAD_SEED"), l->pad_seed, 32)
+        /* SHIELDED_PAD_KEYED=1 (a host pad bank, HOST-BANK.md): no seed at all - every cell
+         * carries its mask key - and SHIELDED_PAD_SEED_ID names the delivery stream. */
+        l->pad_keyed = env_int("SHIELDED_PAD_KEYED", 0, 0, 1) == 1;
+        const bool ok = (l->pad_keyed || sh_pads_hex2bin(getenv("SHIELDED_PAD_SEED"), l->pad_seed, 32))
                      && sh_pads_hex2bin(getenv("SHIELDED_PAD_SEED_ID"), l->pad_seed_id, 16)
                      && sh_pads_hex2bin(getenv("SHIELDED_PAD_SK"), l->pad_sk, 32);
         if (!ok) {
@@ -1480,9 +1484,11 @@ static int dealt_import(sh_link *l, const sh_group *g, uint32_t gi, uint64_t ind
         int rc;
         sh_sp_stamp sp = sh_sp_now();
         uint32_t shipment_group = UINT32_MAX;
+        uint8_t cellkey[SH_PADS_CELL_KEY];
         for (;;) {
-            rc = sh_pads_reader_cell_ordinal(l->pads, gi, index,
-                                           u_out + (size_t)i * g->u_len, &shipment_group);
+            rc = l->pad_keyed
+               ? sh_pads_reader_cell_keyed(l->pads, gi, index, u_out + (size_t)i * g->u_len, cellkey, &shipment_group)
+               : sh_pads_reader_cell_ordinal(l->pads, gi, index, u_out + (size_t)i * g->u_len, &shipment_group);
             if (rc != SH_ERR_EXHAUST || l->stop || now_ms() - t0 >= (double)l->pad_bank_wait_ms) break;
             usleep(50000);
         }
@@ -1497,7 +1503,12 @@ static int dealt_import(sh_link *l, const sh_group *g, uint32_t gi, uint64_t ind
         /* The reader matches by name, not by position. Use the ordinal of
          * the authenticated cell we just opened, even when the consumer's
          * registration order differs or it uses only a subset of groups. */
-        sh_pad_r(l->pad_seed, shipment_group, index, g->K, r_out + (size_t)i * g->K);
+        if (l->pad_keyed) {
+            /* A keyed cell: r from its own key (format 4), never from anything shared. */
+            sh_pad_r(cellkey, 0, 0, g->K, r_out + (size_t)i * g->K);
+            volatile uint8_t *ck = cellkey;
+            for (size_t k = 0; k < sizeof cellkey; k++) ck[k] = 0;
+        } else sh_pad_r(l->pad_seed, shipment_group, index, g->K, r_out + (size_t)i * g->K);
         SH_SP_END(sp, "pad_prg", gi, g->K);
         sp = sh_sp_now();
         /* The pad check: every node of the group, (u . s) == (r . (W s)) mod M. */
@@ -1984,7 +1995,8 @@ static int dealt_bind(sh_link *l) {
             l->padbank = sh_bank_open(l->bank_url, l->pad_seed_id_hex, l->pad_dir, l->bank_cache_max, &err);
             if (!l->padbank) { snprintf(l->err, sizeof l->err, "dealt pads: cannot start the bank client for %s (cache %s)", l->bank_url, l->pad_dir); return err ? err : SH_ERR_IO; }
         }
-        l->pads = sh_pads_reader_open(l->pad_dir, l->pad_seed_id, l->pad_sk, &err);
+        l->pads = l->pad_keyed ? sh_pads_reader_open_keyed(l->pad_dir, l->pad_seed_id, l->pad_sk, &err)
+                               : sh_pads_reader_open(l->pad_dir, l->pad_seed_id, l->pad_sk, &err);
         if (!l->pads) { snprintf(l->err, sizeof l->err, "dealt pads: cannot read %s", l->pad_dir); return err ? err : SH_ERR_IO; }
         const char *dh = getenv("SHIELDED_PAD_MODEL_DIGEST");
         uint8_t digest[32];

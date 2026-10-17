@@ -82,6 +82,26 @@ void sh_pad_r(const uint8_t seed[32], uint32_t group, uint64_t index, int64_t K,
     }
 }
 
+/* A keyed cell's own mask key (format 4, HOST-BANK.md): the first 32 bytes of ChaCha20 under the
+ * bank secret at counter (group << 48) | (index << 24) - a PRF output, so any set of cell keys
+ * reveals neither the bank secret nor another cell's key. r for the cell is
+ * sh_pad_r(cellkey, 0, 0, K): the seed stream, keyed per cell. */
+void sh_pad_cellkey(const uint8_t bank[32], uint32_t group, uint64_t index, uint8_t key_out[32]) {
+    if (!bank || !key_out || group >= SH_PADS_GROUP_LIMIT || index >= SH_PADS_INDEX_LIMIT) abort();
+    uint32_t key[8], blk[16];
+    for (int i = 0; i < 8; i++)
+        key[i] = (uint32_t)bank[4 * i] | ((uint32_t)bank[4 * i + 1] << 8) |
+                 ((uint32_t)bank[4 * i + 2] << 16) | ((uint32_t)bank[4 * i + 3] << 24);
+    sh_chacha20_block(key, ((uint64_t)group << 48) | (index << 24), blk);
+    for (int i = 0; i < 8; i++) {
+        key_out[4 * i] = (uint8_t)blk[i]; key_out[4 * i + 1] = (uint8_t)(blk[i] >> 8);
+        key_out[4 * i + 2] = (uint8_t)(blk[i] >> 16); key_out[4 * i + 3] = (uint8_t)(blk[i] >> 24);
+    }
+    volatile uint32_t *vk = key, *vb = blk;
+    for (int i = 0; i < 8; i++) vk[i] = 0;
+    for (int i = 0; i < 16; i++) vb[i] = 0;
+}
+
 /* ---- helpers ------------------------------------------------------------ */
 static void pads_wipe(void *p, size_t n) {
     volatile uint8_t *v = (volatile uint8_t *)p;
@@ -120,18 +140,20 @@ static void key_nonce(uint8_t n[24], const uint8_t seed_id[16]) { memcpy(n, seed
  * stream counter, size_t allocations, signed pread sizes, or file offsets. */
 static bool cell_size_valid(uint64_t u_len) {
     return u_len && u_len <= (UINT64_C(64) * UINT32_MAX) / 3 &&
-        u_len <= (SIZE_MAX - SH_PADS_CELL_TAG) / 3 &&
-        u_len <= (INT64_MAX - SH_PADS_CELL_TAG) / 3;
+        u_len <= (SIZE_MAX - SH_PADS_CELL_TAG - SH_PADS_CELL_KEY) / 3 &&
+        u_len <= (INT64_MAX - SH_PADS_CELL_TAG - SH_PADS_CELL_KEY) / 3;
 }
 static uint64_t cell_bytes(uint64_t u_len) { return SH_PADS_CELL_TAG + 3 * u_len; }
-static bool shipment_layout(const sh_pads_group *groups, uint32_t n_groups, uint64_t count,
+/* A format-4 cell carries its 32-byte mask key ahead of u, inside the same box. */
+static uint64_t cell_bytes_k(uint64_t u_len, bool keyed) { return cell_bytes(u_len) + (keyed ? SH_PADS_CELL_KEY : 0); }
+static bool shipment_layout(const sh_pads_group *groups, uint32_t n_groups, uint64_t count, bool keyed,
                             uint64_t *data_off, uint64_t *row_bytes, uint64_t *file_bytes) {
     if (!groups || !n_groups || n_groups >= SH_PADS_GROUP_LIMIT || !count || count > SH_PADS_INDEX_LIMIT) return false;
     uint64_t row = 0;
     for (uint32_t g = 0; g < n_groups; g++) {
         if (!groups[g].K || groups[g].K > SH_PADS_K_LIMIT || groups[g].group >= SH_PADS_GROUP_LIMIT ||
             !cell_size_valid(groups[g].u_len)) return false;
-        uint64_t cb = cell_bytes(groups[g].u_len);
+        uint64_t cb = cell_bytes_k(groups[g].u_len, keyed);
         if (row > INT64_MAX - cb) return false;
         row += cb;
     }
@@ -194,6 +216,7 @@ struct sh_pads_writer {
     uint8_t *claimed;                 /* atomically claim each AEAD nonce once */
     uint64_t total_cells, completed;
     int failed;
+    bool keyed;                       /* format 4: every cell carries its own mask key */
 };
 
 static int writer_fail(sh_pads_writer *w, int rc) {
@@ -215,18 +238,19 @@ static int writer_pwrite_all(int fd, const void *buffer, size_t length, uint64_t
     return SH_OK;
 }
 
-sh_pads_writer *sh_pads_writer_open(const char *path, const uint8_t model_digest[32],
-                                    const uint8_t seed_id[16], const sh_pads_group *groups, uint32_t n_groups,
-                                    uint64_t index0, uint64_t index_count, const uint8_t consumer_pk[32], int *err) {
+static sh_pads_writer *writer_open(const char *path, const uint8_t model_digest[32],
+                                   const uint8_t seed_id[16], const sh_pads_group *groups, uint32_t n_groups,
+                                   uint64_t index0, uint64_t index_count, const uint8_t consumer_pk[32], bool keyed, int *err) {
     if (!err) return NULL;
     *err = SH_OK;
     if (!path || !*path || !model_digest || !seed_id || !consumer_pk || !groups || !n_groups || n_groups >= SH_PADS_GROUP_LIMIT || !index_count ||
         index0 >= SH_PADS_INDEX_LIMIT || index_count > SH_PADS_INDEX_LIMIT - index0 ||
         index_count > SH_PADS_WRITER_MAX_CELLS / n_groups) { *err = SH_ERR_RANGE; return NULL; }
     uint64_t layout_off, layout_row, layout_bytes;
-    if (!shipment_layout(groups, n_groups, index_count, &layout_off, &layout_row, &layout_bytes)) { *err = SH_ERR_RANGE; return NULL; }
+    if (!shipment_layout(groups, n_groups, index_count, keyed, &layout_off, &layout_row, &layout_bytes)) { *err = SH_ERR_RANGE; return NULL; }
     sh_pads_writer *w = (sh_pads_writer *)calloc(1, sizeof *w);
     if (!w) { *err = SH_ERR_NOMEM; return NULL; }
+    w->keyed = keyed;
     uint8_t esk[32] = {0}, shared[32] = {0};
     w->fd = w->dirfd = -1;
     w->total_cells = index_count * n_groups;
@@ -256,7 +280,7 @@ sh_pads_writer *sh_pads_writer_open(const char *path, const uint8_t model_digest
     uint64_t row = 0, biggest = 0;
     for (uint32_t g = 0; g < n_groups; g++) {
         w->group_off[g] = row;
-        const uint64_t cb = cell_bytes(groups[g].u_len);
+        const uint64_t cb = cell_bytes_k(groups[g].u_len, keyed);
         row += cb;
         if (cb > biggest) biggest = cb;
     }
@@ -268,7 +292,7 @@ sh_pads_writer *sh_pads_writer_open(const char *path, const uint8_t model_digest
     sh_pads_hdr *h = &w->hdr;
     memset(h, 0, sizeof *h);
     memcpy(h->magic, SH_PADS_MAGIC, 8);
-    h->version = SH_PADS_VERSION;
+    h->version = keyed ? SH_PADS_VERSION_KEYED : SH_PADS_VERSION;
     h->group_count = n_groups;
     memcpy(h->model_digest, model_digest, 32);
     memcpy(h->seed_id, seed_id, 16);
@@ -306,6 +330,26 @@ fail:
     return NULL;
 }
 
+static int writer_cell(sh_pads_writer *w, uint64_t index, uint32_t group, const uint8_t *cellkey,
+                       const int32_t *u, uint8_t *plain, uint8_t *cell);
+sh_pads_writer *sh_pads_writer_open(const char *path, const uint8_t model_digest[32],
+                                    const uint8_t seed_id[16], const sh_pads_group *groups, uint32_t n_groups,
+                                    uint64_t index0, uint64_t index_count, const uint8_t consumer_pk[32], int *err) {
+    return writer_open(path, model_digest, seed_id, groups, n_groups, index0, index_count, consumer_pk, false, err);
+}
+sh_pads_writer *sh_pads_writer_open_keyed(const char *path, const uint8_t model_digest[32],
+                                          const uint8_t seed_id[16], const sh_pads_group *groups, uint32_t n_groups,
+                                          uint64_t index0, uint64_t index_count, const uint8_t consumer_pk[32], int *err) {
+    return writer_open(path, model_digest, seed_id, groups, n_groups, index0, index_count, consumer_pk, true, err);
+}
+int sh_pads_writer_cell_with(sh_pads_writer *w, uint64_t index, uint32_t group, const int32_t *u, uint8_t *plain, uint8_t *cell) {
+    return writer_cell(w, index, group, NULL, u, plain, cell);
+}
+int sh_pads_writer_cell_keyed_with(sh_pads_writer *w, uint64_t index, uint32_t group, const uint8_t cellkey[32],
+                                   const int32_t *u, uint8_t *plain, uint8_t *cell) {
+    if (!cellkey) return SH_ERR_RANGE;
+    return writer_cell(w, index, group, cellkey, u, plain, cell);
+}
 int sh_pads_writer_cell(sh_pads_writer *w, uint64_t index, uint32_t group, const int32_t *u) {
     return w ? sh_pads_writer_cell_with(w, index, group, u, w->plain, w->cell) : SH_ERR_RANGE;
 }
@@ -313,8 +357,10 @@ int sh_pads_writer_cell(sh_pads_writer *w, uint64_t index, uint32_t group, const
 /* With caller-owned disjoint scratch (each >= cell_cap bytes), distinct cells
  * may seal/write concurrently. Atomic nonce claims reject colliding callers;
  * completion advances only after every ciphertext byte was written. */
-int sh_pads_writer_cell_with(sh_pads_writer *w, uint64_t index, uint32_t group, const int32_t *u, uint8_t *plain, uint8_t *cell) {
+static int writer_cell(sh_pads_writer *w, uint64_t index, uint32_t group, const uint8_t *cellkey,
+                       const int32_t *u, uint8_t *plain, uint8_t *cell) {
     if (!w || !u || !plain || !cell || group >= w->hdr.group_count) return SH_ERR_RANGE;
+    if (w->keyed != (cellkey != NULL)) return SH_ERR_RANGE;   /* a keyed shipment needs every key; a seed one none */
     if (index < w->hdr.index0 || index >= w->hdr.index0 + w->hdr.index_count) return SH_ERR_RANGE;
     const int failed = __atomic_load_n(&w->failed, __ATOMIC_ACQUIRE);
     if (failed != SH_OK) return failed;
@@ -323,18 +369,21 @@ int sh_pads_writer_cell_with(sh_pads_writer *w, uint64_t index, uint32_t group, 
     if (__atomic_fetch_or(&w->claimed[ordinal / 8], bit, __ATOMIC_ACQ_REL) & bit)
         return writer_fail(w, SH_ERR_RANGE);
     const uint64_t u_len = w->groups[group].u_len;
-    uint8_t *p = plain;
+    const size_t kb = cellkey ? SH_PADS_CELL_KEY : 0;
+    if (cellkey) memcpy(plain, cellkey, kb);
+    uint8_t *p = plain + kb;
     for (uint64_t j = 0; j < u_len; j++) {
         const int64_t v = (int64_t)u[j] + SH_HALF_M;
-        if (v < 0 || v >= SH_M_MOD) return writer_fail(w, SH_ERR_RANGE);
+        if (v < 0 || v >= SH_M_MOD) { pads_wipe(plain, kb); return writer_fail(w, SH_ERR_RANGE); }
         p[3 * j] = (uint8_t)v; p[3 * j + 1] = (uint8_t)(v >> 8); p[3 * j + 2] = (uint8_t)(v >> 16);
     }
     uint8_t nonce[12];
     cell_nonce(nonce, index, group);
-    int rc = aead_seal(w->key, nonce, p, (size_t)(3 * u_len), cell);
+    int rc = aead_seal(w->key, nonce, plain, kb + (size_t)(3 * u_len), cell);
+    pads_wipe(plain, kb);
     if (rc != SH_OK) return writer_fail(w, rc);
     const uint64_t off = w->hdr.data_off + (index - w->hdr.index0) * w->hdr.row_bytes + w->group_off[group];
-    const size_t n = (size_t)cell_bytes(u_len);
+    const size_t n = (size_t)cell_bytes_k(u_len, w->keyed);
     if (writer_pwrite_all(w->fd, cell, n, off) != SH_OK) return writer_fail(w, SH_ERR_IO);
     __atomic_add_fetch(&w->completed, 1, __ATOMIC_RELEASE);
     return SH_OK;
@@ -384,6 +433,7 @@ struct sh_pads_reader {
     bool have_digest; uint8_t model_digest[32];   /* when set, shipments for another model are not ours */
     sh_pads_file *files; size_t n_files, cap_files;
     sh_pads_group *bound; uint32_t n_bound;
+    bool keyed;                       /* accepts format 4 (keyed cells) only, else format 2 only */
 };
 
 static void file_close(sh_pads_file *f) {
@@ -404,7 +454,8 @@ static bool reader_has(const sh_pads_reader *r, const char *path) {
 static int file_judge(sh_pads_reader *r, sh_pads_file *f) {
     if (pread(f->fd, &f->hdr, sizeof f->hdr, 0) != (ssize_t)sizeof f->hdr) { file_close(f); return SH_ERR_IO; }
     sh_pads_hdr *h = &f->hdr;
-    if (memcmp(h->magic, SH_PADS_MAGIC, 8) || h->version != SH_PADS_VERSION || !h->group_count || h->group_count >= SH_PADS_GROUP_LIMIT ||
+    if (memcmp(h->magic, SH_PADS_MAGIC, 8) || h->version != (r->keyed ? SH_PADS_VERSION_KEYED : SH_PADS_VERSION) ||
+        !h->group_count || h->group_count >= SH_PADS_GROUP_LIMIT ||
         !h->index_count || h->index0 >= SH_PADS_INDEX_LIMIT || h->index_count > SH_PADS_INDEX_LIMIT - h->index0 ||
         memcmp(h->seed_id, r->seed_id, 16) || (r->have_digest && memcmp(h->model_digest, r->model_digest, 32))) { file_close(f); return SH_ERR_VERIFY; }
     f->groups = (sh_pads_group *)calloc(h->group_count, sizeof *f->groups);
@@ -415,7 +466,7 @@ static int file_judge(sh_pads_reader *r, sh_pads_file *f) {
 
     uint64_t layout_off, layout_row, layout_bytes;
     struct stat st;
-    if (!shipment_layout(f->groups, h->group_count, h->index_count, &layout_off, &layout_row, &layout_bytes) ||
+    if (!shipment_layout(f->groups, h->group_count, h->index_count, r->keyed, &layout_off, &layout_row, &layout_bytes) ||
         h->data_off != layout_off || h->row_bytes != layout_row) { file_close(f); return SH_ERR_VERIFY; }
     if (fstat(f->fd, &st) != 0) { file_close(f); return SH_ERR_IO; }
     if (!S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size != layout_bytes) { file_close(f); return SH_ERR_VERIFY; }
@@ -436,7 +487,7 @@ static int file_judge(sh_pads_reader *r, sh_pads_file *f) {
     uint64_t row = 0;
     for (uint32_t g = 0; g < h->group_count; g++) {
         f->group_off[g] = row;
-        row += cell_bytes(f->groups[g].u_len);
+        row += cell_bytes_k(f->groups[g].u_len, r->keyed);
     }
     if (row != h->row_bytes) { file_close(f); return SH_ERR_VERIFY; }
     return SH_OK;
@@ -523,10 +574,11 @@ int sh_pads_shipment_check_fd(int fd, const uint8_t seed_id[16], const uint8_t c
     return shipment_check(&f, seed_id, consumer_sk, model_digest, index0, index_count);
 }
 
-sh_pads_reader *sh_pads_reader_open(const char *dir, const uint8_t seed_id[16], const uint8_t consumer_sk[32], int *err) {
+static sh_pads_reader *reader_open(const char *dir, const uint8_t seed_id[16], const uint8_t consumer_sk[32], bool keyed, int *err) {
     *err = SH_OK;
     sh_pads_reader *r = (sh_pads_reader *)calloc(1, sizeof *r);
     if (!r) { *err = SH_ERR_NOMEM; return NULL; }
+    r->keyed = keyed;
     snprintf(r->dir, sizeof r->dir, "%s", dir);
     memcpy(r->seed_id, seed_id, 16);
     memcpy(r->sk, consumer_sk, 32);
@@ -535,6 +587,13 @@ sh_pads_reader *sh_pads_reader_open(const char *dir, const uint8_t seed_id[16], 
     if (rc < 0) { *err = rc; sh_pads_reader_close(r); return NULL; }
     return r;
 }
+sh_pads_reader *sh_pads_reader_open(const char *dir, const uint8_t seed_id[16], const uint8_t consumer_sk[32], int *err) {
+    return reader_open(dir, seed_id, consumer_sk, false, err);
+}
+sh_pads_reader *sh_pads_reader_open_keyed(const char *dir, const uint8_t delivery_id[16], const uint8_t consumer_sk[32], int *err) {
+    return reader_open(dir, delivery_id, consumer_sk, true, err);
+}
+bool sh_pads_reader_keyed(const sh_pads_reader *r) { return r && r->keyed; }
 
 int sh_pads_reader_bind(sh_pads_reader *r, const sh_pads_group *groups, uint32_t n_groups) {
     if (!r || !n_groups) return SH_ERR_RANGE;
@@ -577,10 +636,11 @@ static sh_pads_file *reader_find(sh_pads_reader *r, uint64_t index) {
     return NULL;
 }
 
-int sh_pads_reader_cell_ordinal(sh_pads_reader *r, uint32_t group, uint64_t index,
-                                 int32_t *u_out, uint32_t *shipment_group) {
+static int reader_cell(sh_pads_reader *r, uint32_t group, uint64_t index,
+                       int32_t *u_out, uint8_t *key_out, uint32_t *shipment_group) {
     if (shipment_group) *shipment_group = UINT32_MAX;
     if (!r || !r->n_bound || group >= r->n_bound || !u_out) return SH_ERR_RANGE;
+    if (r->keyed != (key_out != NULL)) return SH_ERR_RANGE;   /* keyed cells need somewhere to put the key, seed cells have none */
     /* Resolve under the lock, then retain a descriptor while decrypting outside
      * it. Pruning can close/reuse the table's fd as soon as the lock is released. */
     pthread_mutex_lock(&r->mu);
@@ -598,8 +658,9 @@ int sh_pads_reader_cell_ordinal(sh_pads_reader *r, uint32_t group, uint64_t inde
     pthread_mutex_unlock(&r->mu);
     if (!found) return SH_ERR_EXHAUST;
     if (fd < 0) { pads_wipe(key, sizeof key); return SH_ERR_IO; }
-    const size_t n = (size_t)cell_bytes(u_len);
-    uint8_t *cell = (uint8_t *)malloc(n), *plain = (uint8_t *)malloc((size_t)(3 * u_len));
+    const size_t kb = r->keyed ? SH_PADS_CELL_KEY : 0;
+    const size_t n = (size_t)cell_bytes_k(u_len, r->keyed);
+    uint8_t *cell = (uint8_t *)malloc(n), *plain = (uint8_t *)malloc(kb + (size_t)(3 * u_len));
     int rc = SH_OK;
     if (!cell || !plain) rc = SH_ERR_NOMEM;
     else if (pread(fd, cell, n, (off_t)off) != (ssize_t)n) rc = SH_ERR_IO;
@@ -607,19 +668,31 @@ int sh_pads_reader_cell_ordinal(sh_pads_reader *r, uint32_t group, uint64_t inde
         uint8_t nonce[12];
         cell_nonce(nonce, index, (uint32_t)g);
         (void)seed_id;
-        rc = aead_open(key, nonce, cell, (size_t)(3 * u_len), plain);
+        rc = aead_open(key, nonce, cell, kb + (size_t)(3 * u_len), plain);
+        const uint8_t *p = plain + kb;
         for (uint64_t j = 0; rc == SH_OK && j < u_len; j++) {
-            const int64_t v = (int64_t)plain[3 * j] | ((int64_t)plain[3 * j + 1] << 8) | ((int64_t)plain[3 * j + 2] << 16);
+            const int64_t v = (int64_t)p[3 * j] | ((int64_t)p[3 * j + 1] << 8) | ((int64_t)p[3 * j + 2] << 16);
             if (v >= SH_M_MOD) { rc = SH_ERR_VERIFY; break; }
             u_out[j] = (int32_t)(v - SH_HALF_M);
         }
+        if (rc == SH_OK && kb) memcpy(key_out, plain, kb);
     }
     pads_wipe(key, sizeof key);
+    if (plain) pads_wipe(plain, kb);
     free(cell); free(plain); close(fd);
     if (rc == SH_OK && shipment_group) *shipment_group = (uint32_t)g;
     return rc;
 }
 
+int sh_pads_reader_cell_ordinal(sh_pads_reader *r, uint32_t group, uint64_t index,
+                                 int32_t *u_out, uint32_t *shipment_group) {
+    return reader_cell(r, group, index, u_out, NULL, shipment_group);
+}
+int sh_pads_reader_cell_keyed(sh_pads_reader *r, uint32_t group, uint64_t index,
+                              int32_t *u_out, uint8_t key_out[32], uint32_t *shipment_group) {
+    if (!key_out) return SH_ERR_RANGE;
+    return reader_cell(r, group, index, u_out, key_out, shipment_group);
+}
 int sh_pads_reader_cell(sh_pads_reader *r, uint32_t group, uint64_t index, int32_t *u_out) {
     return sh_pads_reader_cell_ordinal(r, group, index, u_out, NULL);
 }
