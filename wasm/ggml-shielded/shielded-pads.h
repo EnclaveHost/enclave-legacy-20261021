@@ -136,6 +136,9 @@ bool sh_pads_reader_keyed(const sh_pads_reader *r);
 /* A keyed reader's cell: u and the cell's mask key (wiped by the caller after deriving r). */
 int  sh_pads_reader_cell_keyed(sh_pads_reader *r, uint32_t group, uint64_t index,
                                int32_t *u_out, uint8_t key_out[32], uint32_t *shipment_group);
+/* Host pad bank issuance: bank rows [src0, src0+count) re-sealed to a consumer's keyed writer at
+ * [dst0, dst0+count); same group table on both sides. */
+int  sh_pads_reissue(sh_pads_reader *bank, uint64_t src0, sh_pads_writer *dst, uint64_t dst0, uint64_t count);
 /* The group table of the first shipment the reader holds (for tools that
  * bind without a model): copies up to `cap` entries, returns the count. */
 uint32_t sh_pads_reader_groups(const sh_pads_reader *r, sh_pads_group *out, uint32_t cap);

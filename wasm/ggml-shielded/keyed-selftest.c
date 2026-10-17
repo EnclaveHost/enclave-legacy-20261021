@@ -141,6 +141,58 @@ int main(void) {
         }
     }
 
+    /* --- issuance: the pad service's own bank (boxed to its key) re-issued to a consumer --- */
+    {
+        uint8_t ps_pk[32], ps_sk[32], bank_id[16], c_pk[32], c_sk[32], c_id[16];
+        crypto_box_keypair(ps_pk, ps_sk); crypto_box_keypair(c_pk, c_sk);
+        for (int i = 0; i < 16; i++) { bank_id[i] = (uint8_t)(30 + i); c_id[i] = (uint8_t)(60 + i); }
+        char bd[] = "/tmp/keyed-bank-XXXXXX", cd[] = "/tmp/keyed-consumer-XXXXXX"; assert(mkdtemp(bd) && mkdtemp(cd));
+        char bp[600], cp[600]; snprintf(bp, sizeof bp, "%s/bank-0-12.pads", bd); snprintf(cp, sizeof cp, "%s/issue-0-5.pads", cd);
+        sh_link *ml = build(wa, wb, wc, KA, NA, NB, KC, NC);
+        assert(sh_link_mint_shipment_keyed(ml, bank, bank_id, digest, 0, 12, ps_pk, bp) == SH_OK);
+        sh_link_close(ml);
+        int e = 0;
+        int32_t *u = malloc((NA + NB) * sizeof *u);
+        sh_pads_reader *br = sh_pads_reader_open_keyed(bd, bank_id, ps_sk, &e);
+        assert(br && sh_pads_reader_bind(br, table, (uint32_t)ng) == SH_OK);
+        /* the consumer's key does not open the bank */
+        sh_pads_reader *peek = sh_pads_reader_open_keyed(bd, bank_id, c_sk, &e);
+        if (peek) { if (sh_pads_reader_bind(peek, table, (uint32_t)ng) == SH_OK) assert(sh_pads_reader_cell_keyed(peek, 0, 0, u, (uint8_t[32]){0}, NULL) != SH_OK); sh_pads_reader_close(peek); }
+        sh_pads_writer *cw = sh_pads_writer_open_keyed(cp, digest, c_id, table, (uint32_t)ng, 0, 5, c_pk, &e);
+        assert(cw && sh_pads_reissue(br, 5, cw, 0, 5) == SH_OK && sh_pads_writer_close(cw) == SH_OK);
+        /* a writer with another group table is refused */
+        sh_pads_group t2[4]; memcpy(t2, table, sizeof table); t2[1].u_len += 1;
+        char xp[600]; snprintf(xp, sizeof xp, "%s/x.pads", cd);
+        sh_pads_writer *xw = sh_pads_writer_open_keyed(xp, digest, c_id, t2, (uint32_t)ng, 0, 1, c_pk, &e);
+        assert(xw && sh_pads_reissue(br, 0, xw, 0, 1) == SH_ERR_RANGE); sh_pads_writer_close(xw);
+        /* the consumer reads its rows 0..4 = bank rows 5..9, keys and u */
+        sh_pads_reader *cr = sh_pads_reader_open_keyed(cd, c_id, c_sk, &e);
+        assert(cr && sh_pads_reader_bind(cr, table, (uint32_t)ng) == SH_OK && sh_pads_reader_extent(cr) == 5);
+        int32_t *ub = malloc((NA + NB) * sizeof *ub);
+        for (uint64_t i = 0; i < 5; i++)
+            for (int g = 0; g < ng; g++) {
+                uint8_t kc[32], kb[32];
+                assert(sh_pads_reader_cell_keyed(cr, (uint32_t)g, i, u, kc, NULL) == SH_OK);
+                assert(sh_pads_reader_cell_keyed(br, (uint32_t)g, 5 + i, ub, kb, NULL) == SH_OK);
+                assert(!memcmp(kc, kb, 32) && !memcmp(u, ub, table[g].u_len * sizeof *u));
+            }
+        free(ub); free(u); sh_pads_reader_close(cr); sh_pads_reader_close(br);
+        /* and the consumer's engine imports them through the pad check */
+        char cl[600]; snprintf(cl, sizeof cl, "%s/ledger", cd);
+        char hid[33], hsk[65]; sh_pads_bin2hex(c_id, 16, hid); sh_pads_bin2hex(c_sk, 32, hsk);
+        setenv("SHIELDED_PAD_SOURCE", cd, 1); setenv("SHIELDED_PAD_LEDGER", cl, 1);
+        setenv("SHIELDED_PAD_SEED_ID", hid, 1); setenv("SHIELDED_PAD_SK", hsk, 1);
+        setenv("SHIELDED_PAD_KEYED", "1", 1); setenv("SHIELDED_PAD_CHECK", "1", 1); unsetenv("SHIELDED_PAD_SEED");
+        setenv("SHIELDED_PAD_WINDOW", "4", 1);
+        sh_link *l = build(wa, wb, wc, KA, NA, NB, KC, NC);
+        int32_t *R = calloc((size_t)2 * 3 * KA, sizeof *R), *U = calloc((size_t)2 * 3 * (NA + NB), sizeof *U);
+        const int got = sh_link_dealt_selftest(l, 3, R, U);
+        if (got != 6) { fprintf(stderr, "reissued import: rc %d err '%s'\n", got, sh_link_last_error(l)); return 1; }
+        free(R); free(U); sh_link_close(l);
+        unsetenv("SHIELDED_PAD_WINDOW"); unsetenv("SHIELDED_PAD_SOURCE"); unsetenv("SHIELDED_PAD_KEYED");
+        char rm[1400]; snprintf(rm, sizeof rm, "rm -rf %s %s", bd, cd); (void)!system(rm);
+    }
+
     /* --- a seed writer refuses keyed cells --- */
     {
         char p2[600]; snprintf(p2, sizeof p2, "%s/seed.pads.x", dir);

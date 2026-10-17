@@ -697,6 +697,36 @@ int sh_pads_reader_cell(sh_pads_reader *r, uint32_t group, uint64_t index, int32
     return sh_pads_reader_cell_ordinal(r, group, index, u_out, NULL);
 }
 
+/* Host pad bank issuance (HOST-BANK.md): `count` rows of the bank - a keyed reader of the pad
+ * service's own shipments, bound to the model's group table - from bank index src0, re-sealed
+ * into `dst`, a keyed writer to one consumer with the SAME group table, at its indices dst0... .
+ * Keys and u move unchanged; only the labels change (a keyed cell's mask does not depend on its
+ * index). The caller issues each bank index once (the ledger) and closes dst to publish. */
+int sh_pads_reissue(sh_pads_reader *bank, uint64_t src0, sh_pads_writer *dst, uint64_t dst0, uint64_t count) {
+    if (!bank || !dst || !bank->keyed || !dst->keyed || !count || !bank->n_bound) return SH_ERR_RANGE;
+    if (dst->hdr.group_count != bank->n_bound) return SH_ERR_RANGE;
+    uint64_t umax = 0;
+    for (uint32_t g = 0; g < bank->n_bound; g++) {
+        if (dst->groups[g].K != bank->bound[g].K || dst->groups[g].u_len != bank->bound[g].u_len ||
+            strncmp(dst->groups[g].name, bank->bound[g].name, SH_PADS_NAME_MAX)) return SH_ERR_RANGE;
+        if (dst->groups[g].u_len > umax) umax = dst->groups[g].u_len;
+    }
+    const size_t cap = dst->cell_cap;
+    int32_t *u = (int32_t *)malloc((size_t)umax * sizeof *u);
+    uint8_t *plain = (uint8_t *)malloc(cap), *cell = (uint8_t *)malloc(cap), key[SH_PADS_CELL_KEY];
+    int rc = (u && plain && cell) ? SH_OK : SH_ERR_NOMEM;
+    for (uint64_t i = 0; rc == SH_OK && i < count; i++)
+        for (uint32_t g = 0; rc == SH_OK && g < bank->n_bound; g++) {
+            rc = sh_pads_reader_cell_keyed(bank, g, src0 + i, u, key, NULL);
+            if (rc == SH_OK) rc = sh_pads_writer_cell_keyed_with(dst, dst0 + i, g, key, u, plain, cell);
+        }
+    pads_wipe(key, sizeof key);
+    if (u) pads_wipe(u, (size_t)umax * sizeof *u);
+    if (plain) pads_wipe(plain, cap);
+    free(u); free(plain); free(cell);
+    return rc;
+}
+
 uint32_t sh_pads_reader_groups(const sh_pads_reader *r, sh_pads_group *out, uint32_t cap) {
     if (!r) return 0;
     pthread_mutex_lock((pthread_mutex_t *)&r->mu);
