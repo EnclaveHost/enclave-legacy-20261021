@@ -3486,19 +3486,23 @@ typedef struct {
     sh_pads_writer *w;
     size_t gi0, gstep; int rc;
     const sh_mint_assignment *assignment;
+    bool keyed;          /* format 4: `seed` is the bank secret; each cell's r comes from its own key */
 } sh_mint_task;
 
 static void *sh_mint_worker(void *arg) {
     sh_mint_task *t = (sh_mint_task *)arg;
     sh_link *l = t->l;
-    enum { B = 16 };
+    /* Rows per weight pass (SHIELDED_MINT_BATCH, default 16): a provider that re-encodes or
+     * decompresses its tiles does it once a pass, so a wider pass divides that cost. */
+    const int B = env_int("SHIELDED_MINT_BATCH", 16, 1, 256);
+    uint8_t *keys = t->keyed ? (uint8_t *)malloc((size_t)B * SH_PADS_CELL_KEY) : NULL;
     gen_scratch s;
     int32_t *r = (int32_t *)malloc((size_t)B * l->Kmax * sizeof(int32_t));
     int32_t *u = (int32_t *)malloc((size_t)B * l->ulen_max * sizeof(int32_t));
     const size_t wsz = sh_pads_writer_scratch_bytes(t->w);
     uint8_t *wplain = (uint8_t *)malloc(wsz), *wcell = (uint8_t *)malloc(wsz);
     s.planes = NULL; s.acc = NULL;
-    int rc = (gen_scratch_init(l, &s, B) == SH_OK && r && u && wplain && wcell) ? SH_OK : SH_ERR_NOMEM;
+    int rc = (gen_scratch_init(l, &s, B) == SH_OK && r && u && wplain && wcell && (!t->keyed || keys)) ? SH_OK : SH_ERR_NOMEM;
     const size_t begin = t->assignment ? t->assignment->offsets[t->gi0] : t->gi0;
     const size_t end = t->assignment ? t->assignment->offsets[t->gi0 + 1] : l->n_groups;
     const size_t step = t->assignment ? 1 : t->gstep;
@@ -3508,18 +3512,29 @@ static void *sh_mint_worker(void *arg) {
         const int64_t K = g->K;
         for (uint64_t i0 = 0; i0 < t->count && rc == SH_OK; i0 += B) {
             const int b = (int)((t->count - i0) < B ? (t->count - i0) : B);
-            for (int i = 0; i < b; i++) sh_pad_r(t->seed, (uint32_t)gi, t->index0 + i0 + (uint64_t)i, K, r + (size_t)i * K);
-            rc = generate_products(l, g, b, r, s.planes, u, s.acc);
-            for (int i = 0; i < b && rc == SH_OK; i++) rc = sh_pads_writer_cell_with(t->w, t->index0 + i0 + (uint64_t)i, (uint32_t)gi, u + (size_t)i * g->u_len, wplain, wcell);
+            for (int i = 0; i < b; i++) {
+                const uint64_t index = t->index0 + i0 + (uint64_t)i;
+                if (t->keyed) {
+                    sh_pad_cellkey(t->seed, (uint32_t)gi, index, keys + (size_t)i * SH_PADS_CELL_KEY);
+                    sh_pad_r(keys + (size_t)i * SH_PADS_CELL_KEY, 0, 0, K, r + (size_t)i * K);
+                } else sh_pad_r(t->seed, (uint32_t)gi, index, K, r + (size_t)i * K);
+            }
+            rc = mint_products(l, g, b, 64, r, s.planes, u, s.acc);
+            for (int i = 0; i < b && rc == SH_OK; i++) {
+                const uint64_t index = t->index0 + i0 + (uint64_t)i;
+                rc = t->keyed ? sh_pads_writer_cell_keyed_with(t->w, index, (uint32_t)gi, keys + (size_t)i * SH_PADS_CELL_KEY, u + (size_t)i * g->u_len, wplain, wcell)
+                              : sh_pads_writer_cell_with(t->w, index, (uint32_t)gi, u + (size_t)i * g->u_len, wplain, wcell);
+            }
         }
     }
+    if (keys) { volatile uint8_t *k = keys; for (size_t i = 0; i < (size_t)B * SH_PADS_CELL_KEY; i++) k[i] = 0; free(keys); }
     free(r); free(u); free(wplain); free(wcell); free(s.planes); free(s.acc);
     t->rc = rc;
     return NULL;
 }
 
-int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed_id[16], const uint8_t model_digest[32],
-                          uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path) {
+static int mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed_id[16], const uint8_t model_digest[32],
+                         uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path, bool keyed) {
     if (!l || !l->n_groups || !count) return SH_ERR_RANGE;
     if (sh_integrity_failed(l)) return SH_ERR_VERIFY;
     for (size_t i = 0; i < l->n_nodes; i++) if (!l->nodes[i].w && !l->nodes[i].w_refill) return SH_ERR_RANGE;
@@ -3544,13 +3559,14 @@ int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed
     int rc = sh_link_group_table(l, table, (uint32_t)l->n_groups);
     if (rc < 0) { free(table); return rc; }
     int err = SH_OK;
-    sh_pads_writer *w = sh_pads_writer_open(path, model_digest, seed_id, table, (uint32_t)l->n_groups, index0, count, consumer_pk, &err);
+    sh_pads_writer *w = keyed ? sh_pads_writer_open_keyed(path, model_digest, seed_id, table, (uint32_t)l->n_groups, index0, count, consumer_pk, &err)
+                              : sh_pads_writer_open(path, model_digest, seed_id, table, (uint32_t)l->n_groups, index0, count, consumer_pk, &err);
     free(table);
     if (!w) return err;
     /* SHIELDED_MINT_THREADS: the group loop across N threads (groups are independent; the
      * refill kernel is the cost and runs single-threaded per group). 1 = the serial path. */
     if (nth <= 1) {
-        sh_mint_task t = { l, seed, index0, count, w, 0, 1, SH_OK, NULL };
+        sh_mint_task t = { l, seed, index0, count, w, 0, 1, SH_OK, NULL, keyed };
         sh_mint_worker(&t);
         rc = t.rc;
     } else {
@@ -3558,7 +3574,7 @@ int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed
         pthread_t *th = (pthread_t *)calloc((size_t)nth, sizeof *th);
         char *started = (char *)calloc((size_t)nth, 1);
         if (!tasks || !th || !started) { free(tasks); free(th); free(started); sh_pads_writer_close(w); return SH_ERR_NOMEM; }
-        for (int i = 0; i < nth; i++) { sh_mint_task t = { l, seed, index0, count, w, (size_t)i, (size_t)nth, SH_OK, assignment }; tasks[i] = t; }
+        for (int i = 0; i < nth; i++) { sh_mint_task t = { l, seed, index0, count, w, (size_t)i, (size_t)nth, SH_OK, assignment, keyed }; tasks[i] = t; }
         for (int i = 0; i < nth; i++) started[i] = sh_thread_create(&th[i], sh_mint_worker, &tasks[i]) == 0;
         /* a share whose thread could not start is minted here, on the calling thread: every
          * group is covered exactly once either way, so the shipment is complete or the error is real */
@@ -3569,6 +3585,15 @@ int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed
     }
     const int crc = sh_pads_writer_close(w);
     return rc != SH_OK ? rc : crc;
+}
+int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed_id[16], const uint8_t model_digest[32],
+                          uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path) {
+    return mint_shipment(l, seed, seed_id, model_digest, index0, count, consumer_pk, path, false);
+}
+/* Format 4 (a host pad bank, HOST-BANK.md): cells keyed from `bank`, each sealed with its key. */
+int sh_link_mint_shipment_keyed(sh_link *l, const uint8_t bank[32], const uint8_t delivery_id[16], const uint8_t model_digest[32],
+                                uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path) {
+    return mint_shipment(l, bank, delivery_id, model_digest, index0, count, consumer_pk, path, true);
 }
 
 /* Mint through the link's worker: with SHIELDED_ZERO_PADS the exchange sends

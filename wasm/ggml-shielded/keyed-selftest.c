@@ -112,6 +112,35 @@ int main(void) {
     const uint64_t COUNT = 20;
     mint_keyed(ship, bank, delivery_id, digest, table, ng, 0, COUNT, pk, wa, wb, wc, KA, NA, NB, KC, NC, -1);
 
+    /* --- the link's own keyed mint (what the pad service runs) equals the oracle cell for cell,
+     *     serial and with three threads and a 7-row pass --- */
+    {
+        const char *cfg[][2] = { {"1", "16"}, {"3", "7"} };
+        for (int c = 0; c < 2; c++) {
+            char md[] = "/tmp/keyed-mint-XXXXXX"; assert(mkdtemp(md));
+            char mp[600]; snprintf(mp, sizeof mp, "%s/bank-3-20.pads", md);
+            setenv("SHIELDED_MINT_THREADS", cfg[c][0], 1); setenv("SHIELDED_MINT_BATCH", cfg[c][1], 1);
+            sh_link *ml = build(wa, wb, wc, KA, NA, NB, KC, NC);
+            assert(sh_link_mint_shipment_keyed(ml, bank, delivery_id, digest, 3, 20, pk, mp) == SH_OK);
+            sh_link_close(ml);
+            unsetenv("SHIELDED_MINT_THREADS"); unsetenv("SHIELDED_MINT_BATCH");
+            int e = 0; sh_pads_reader *mr = sh_pads_reader_open_keyed(md, delivery_id, sk, &e);
+            assert(mr && sh_pads_reader_bind(mr, table, (uint32_t)ng) == SH_OK);
+            int32_t *rr = malloc(KA * sizeof *rr), *uu = malloc((NA + NB) * sizeof *uu), *ww = malloc((NA + NB) * sizeof *ww);
+            for (uint64_t idx = 3; idx < 23; idx++)
+                for (int g = 0; g < ng; g++) {
+                    uint8_t key[32], expect[32];
+                    assert(sh_pads_reader_cell_keyed(mr, (uint32_t)g, idx, uu, key, NULL) == SH_OK);
+                    sh_pad_cellkey(bank, (uint32_t)g, idx, expect); assert(!memcmp(key, expect, 32));
+                    sh_pad_r(key, 0, 0, g == 0 ? KA : KC, rr);
+                    oracle_u(g, rr, wa, wb, wc, KA, NA, NB, KC, NC, ww);
+                    if (memcmp(uu, ww, table[g].u_len * sizeof *uu)) { fprintf(stderr, "link keyed mint differs g%d idx%llu cfg%d\n", g, (unsigned long long)idx, c); return 1; }
+                }
+            free(rr); free(uu); free(ww); sh_pads_reader_close(mr);
+            char rm[700]; snprintf(rm, sizeof rm, "rm -rf %s", md); (void)!system(rm);
+        }
+    }
+
     /* --- a seed writer refuses keyed cells --- */
     {
         char p2[600]; snprintf(p2, sizeof p2, "%s/seed.pads.x", dir);

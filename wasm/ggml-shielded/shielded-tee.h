@@ -298,6 +298,9 @@ int sh_link_mint_shipment_worker(sh_link *l, const uint8_t seed[32], const uint8
                                  uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path);
 int sh_link_mint_shipment(sh_link *l, const uint8_t seed[32], const uint8_t seed_id[16], const uint8_t model_digest[32],
                           uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path);
+/* Format 4 (host pad bank): every cell keyed from `bank` (sh_pad_cellkey) and sealed with its key. */
+int sh_link_mint_shipment_keyed(sh_link *l, const uint8_t bank[32], const uint8_t delivery_id[16], const uint8_t model_digest[32],
+                                uint64_t index0, uint64_t count, const uint8_t consumer_pk[32], const char *path);
 /* Pool health: pads consumed, and how many had to be generated on the
  * request path because the pool was dry (the number that should be ~0). */
 void sh_link_pool_stats(const sh_link *l, uint64_t *consumed, uint64_t *missed);
