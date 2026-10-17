@@ -1741,6 +1741,7 @@ export class Host {
    */
   #audits = null;
   #auditAdmitted = new Set();
+  #auditFee = new Set();
   #auditScanned = false;
   /**
    * An audit job an OWNER-ONLY box serves although its ledger owner is a keyless fee wallet (audit-jobs.mjs admitted: a job
@@ -1773,7 +1774,7 @@ export class Host {
     // PAID CAPACITY AUDITS (audit-jobs.mjs): jobs the fee contract created for THIS host are accepted here (the operator
     // key never leaves the box) and join the pool whatever the scope; off unless ENCLAVE_AUDIT_APPREFS lists workloads
     const audits = await this.#auditJobs().pass(rows).catch((e) => { this.log(`audit jobs: ${e.message}`); return null; });
-    if (audits) { this.#auditAdmitted = audits.admitted; this.#auditScanned = true; }
+    if (audits) { this.#auditAdmitted = audits.admitted; this.#auditFee = audits.fee || new Set(); this.#auditScanned = true; }
     const pool = rows.filter((d) => d.active && ((scope === "market" ? d.isPublic : isOwners(d)) || !!audits?.pool.has(String(d.id).toLowerCase())));
     if (pool.length && !this._sawLedger) {
       this._sawLedger = true;
@@ -1988,7 +1989,14 @@ export class Host {
         await this.#stopApp(id, "the lease expired; a new claim must pass the current funding and hosting policy");
         continue;
       }
-      if (rec.boundaryHeld !== true && rec.capHeld !== true && !notServing && untilMs - Date.now() < RENEW_LEAD_MS) {
+      // A FEE-CONTRACT AUDIT JOB is one quantum by design (audit-jobs.mjs fee): the coordinator stops it once its challenge
+      // returns and stopAfter bounds it, so a renew can only revert ("unfunded") or extend time nobody pays for. Said once.
+      const oneQuantum = this.#auditFee.has(id);
+      if (oneQuantum && untilMs - Date.now() < RENEW_LEAD_MS && rec.noRenewSaid !== untilMs) {
+        this.#record(id, { noRenewSaid: untilMs });
+        this.log(`${id.slice(0, 10)} NOT renewed: a capacity-audit job is one quantum; the lease ends ${new Date(untilMs).toISOString()}`);
+      }
+      if (rec.boundaryHeld !== true && rec.capHeld !== true && !notServing && !oneQuantum && untilMs - Date.now() < RENEW_LEAD_MS) {
         try { await chain.renewDeployment(id); this.log(`renewed ${id.slice(0, 10)}`); d = await chain.readDeployment(id); }
         catch (e) {
           // rateCap doctrine (the platform runner's, mirrored): a renew the LEDGER refuses is not

@@ -109,3 +109,12 @@ test("market scope: an unadmitted job is still accepted (scope admits it), and a
   assert.equal(admitted.size, 0);
   assert.equal(w.sent.length, 1);
 });
+
+test("a job owned by its own fee wallet is marked one-quantum (fee); a job owned by anyone else is not", async () => {
+  const rows = [row(1), row(2, { owner: "0x" + "ab".repeat(20) })];
+  const w = world({ rows, jobs: { [id(1)]: job(HOST), [id(2)]: job(HOST) } });
+  const a = createAuditJobs({ appRefs: [APP], enclaveId: HOST, ledger: LEDGER, fees: FEES, publicClient: w.publicClient, send: w.send, now: () => NOW });
+  const { pool, fee } = await a.pass(rows);
+  assert.equal(pool.size, 2);
+  assert.deepEqual([...fee], [id(1)]);
+});

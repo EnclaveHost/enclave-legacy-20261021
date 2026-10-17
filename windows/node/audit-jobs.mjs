@@ -28,7 +28,9 @@ export function auditAppRefsOf(raw) {
 }
 
 /**
- * -> { enabled, pass(rows) -> { pool, admitted } }, both Sets of deployment ids:
+ * -> { enabled, pass(rows) -> { pool, admitted, fee } }, Sets of deployment ids:
+ *   fee       the jobs whose ledger owner is the job's own fee wallet: one quantum by design (the coordinator stops each
+ *             after its challenge, stopAfter bounds it), so the node never renews them;
  *   pool      the active jobs created for this host (accepted now or before): the scan includes them whatever its scope;
  *   admitted  those an OWNER-ONLY box serves although their ledger owner is a fee wallet with no key (it can never sign a
  *             delegation): the owner is a fee-contract wallet (isWallet), the job names that wallet and THIS enclave, the
@@ -61,8 +63,8 @@ export function createAuditJobs({ appRefs = [], minRatePerShareMilli6 = 0n, encl
     return acceptor(o);
   }
   async function pass(rows) {
-    const pool = new Set(), admitted = new Set();
-    if (!enabled) return { pool, admitted };
+    const pool = new Set(), admitted = new Set(), fee = new Set();
+    if (!enabled) return { pool, admitted, fee };
     const served = new Set([...servedOwners()].map(lc)), onlyOwners = ownerOnly();
     for (const d of rows) {
       const id = lc(d.id);
@@ -75,6 +77,8 @@ export function createAuditJobs({ appRefs = [], minRatePerShareMilli6 = 0n, encl
       catch (e) { say(id, `audit job ${id.slice(0, 10)}: the fee contract could not be read (${e.shortMessage || e.message})`); continue; }
       if (/^0x0{40}$/i.test(String(j[1])) || lc(j[2]) !== lc(enclaveId)) { notOurs.add(id); continue; }
       pool.add(id);
+      // a fee-contract job proper (its ledger owner is the job's own fee wallet): one quantum by design, never renewed
+      if (lc(j[1]) === lc(d.owner)) fee.add(id);
       // the owner-only admission (see above): every input read from the chain
       let why = null;
       try {
@@ -98,7 +102,7 @@ export function createAuditJobs({ appRefs = [], minRatePerShareMilli6 = 0n, encl
         accepted.set(id, String(j[5])); said.delete(id);
       } catch (e) { say(id, `audit job ${id.slice(0, 10)} not accepted: ${e.shortMessage || e.message}`); }
     }
-    return { pool, admitted };
+    return { pool, admitted, fee };
   }
   return { enabled, pass };
 }
