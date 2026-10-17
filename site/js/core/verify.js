@@ -109,15 +109,16 @@ export async function appsOnBox(name, { apiOrigin = API_ORIGIN } = {}) {
   if (!r.ok) throw new Error(j.message || ("GET apps -> " + r.status));
   return Array.isArray(j.apps) ? j.apps : [];
 }
-// a box's tier as the relay verified it at attach (row.mode), read once a minute
-let _modes = { at: 0, map: null };
-export async function boxModeOf(name, { apiOrigin = API_ORIGIN } = {}) {
-  if (!_modes.map || Date.now() - _modes.at > 60_000) {
+// a box's /enclaves row as the relay holds it (its tier as verified at attach is row.mode), read once a minute
+let _rows = { at: 0, map: null };
+export async function boxRowOf(name, { apiOrigin = API_ORIGIN } = {}) {
+  if (!_rows.map || Date.now() - _rows.at > 60_000) {
     const rows = await liveBoxes({ apiOrigin });
-    _modes = { at: Date.now(), map: new Map(rows.map((e) => [e.name, e.mode])) };
+    _rows = { at: Date.now(), map: new Map(rows.map((e) => [e.name, e])) };
   }
-  return _modes.map.get(name) || null;
+  return _rows.map.get(name) || null;
 }
+export const boxModeOf = async (name, opts) => ((await boxRowOf(name, opts)) || {}).mode || null;
 
 // every named box the relay holds right now, the ones this page can challenge first
 export async function liveBoxes({ apiOrigin = API_ORIGIN } = {}) {

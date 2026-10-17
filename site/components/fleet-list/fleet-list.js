@@ -23,9 +23,10 @@ import { hrevConfigured, hrevTallies, hrevMine, encCall, HREV_SEL, waitReceipt, 
 import { HOST_REVIEWS_ADDRESS } from "../../js/core/config.js";
 import { Enclave } from "../../js/core/api.js";
 import { connectWallet, ensureBaseChain, sendTx } from "../../js/core/wallet.js";
-import { serverSpec, enclavePriceOf, enclaveClassOf, shieldedHostCapacity, teeCpuOf, computeEligibleOf, appHostVisible, ownerHostedDeploymentCount, ownerHostCpuCapacity, ownerHostVisibleTo, pvmHostVisible, pvmHostVm } from "../../js/core/pricing.js";
+import { serverSpec, enclavePriceOf, enclaveClassOf, shieldedHostCapacity, computeEligibleOf, appHostVisible, ownerHostedDeploymentCount, ownerHostCpuCapacity, ownerHostVisibleTo, pvmHostVisible, pvmHostVm } from "../../js/core/pricing.js";
 import { REGISTRY_ADDRESS } from "../../js/core/config.js";
 import { catExplorer } from "../../js/core/chain.js";
+import { cpuPoolBadge, gpuPoolBadge } from "../../js/core/pool-badges.js";
 import { boxVerifiable, unverifiableReason, verifyBoxInBrowser, verificationHtml, EVIDENCE_OF } from "../../js/core/verify.js";
 
 const PAGE = 5;   // hosts per page
@@ -163,90 +164,15 @@ class FleetList extends EnclaveElement {
           // "metal0"); the endpoint-derived fallback covers older relays — and
           // strips ANY scheme, so a tunnel:// row never renders as a pseudo-URL
           const name = nameOf(e, "enclave");
-          // THE CONSUMER PILL, needed by two row kinds below, so it is built once here.
-          // It reads "cpu" in iris, the same rule the card next door follows: the shielded GPU
-          // pool reads "gpu" in iris rather than jade "tee gpu", and this pool reads "cpu" rather
-          // than jade "tee cpu". The word names the pool; the ABSENCE of "tee" is the signal that
-          // this is not the platform's confidential-VM guarantee, and the evidence the tier DID
-          // present (a TPM quote, a measured-boot log and an enclave report, against a weaker
-          // threat model) is in the tooltip with the rest of this row's evidence.
-          const tc = teeCpuOf(e);
-          const consumerBadge = !tc.consumer ? '' :
-            '<span class="ap-badge info" title="' + esc(tc.label) + ': ' + esc(tc.note)
-              + '. The relay verified this PC’s TPM quote, measured-boot log and enclave report when it attached.'
-              + (tc.dev ? ' This build is ' + esc(tc.dev) + ': admitted by a development policy.' : '')
-              + '">cpu</span>';
-          // A card on the box's UNTRUSTED host, reached by masked offload — the
-          // enclave uses it without trusting it, so the row must not read as an
-          // in-enclave GPU. It gets its own badge and its own pool, and it is
-          // deliberately NOT folded into `gpu`: that flag means the card is
-          // inside the measured enclave, which is a different thing to buy.
-          const sh = a.shielded && a.shielded.vramGb > 0 ? a.shielded : null;
-          // A shielded box now reports `gpu: true` -- its card IS its card, and is
-          // sold as one. So `gpu` alone no longer means "inside the enclave", and
-          // reading it that way is how this row briefly badged a card on an
-          // untrusted host as TEE GPU. The distinction a buyer needs is where the
-          // silicon is, and that is exactly `sh`.
+          // A card on the box's UNTRUSTED host, reached by masked offload, is
+          // not an in-enclave GPU (`gpu` alone no longer means "inside the
+          // enclave"): `inTee` is where the silicon is.
           const cls = enclaveClassOf(e);
           const inTee = cls.inTee;
-          // THE POOL LABELS ARE THE BADGES. Each pool is named by what it is, in
-          // the colour that means it, right beside its own meter; the header
-          // carries only the box's name and rating. Pills in the header and a
-          // plain "CPU"/"GPU" beside the meters said the same thing twice in two
-          // registers, and the reader had to pair them up.
-          //
-          // The CPU pool: jade "TEE CPU" only when there is EVIDENCE the box's
-          // CPU is a confidential-computing TEE (the technology its own
-          // attestation document presented, or the relay's verified SEV-SNP
-          // attach, see teeCpuOf) -- never inferred from the box having no card.
-          // A separate root of trust is coming (hosts anchored on a phone), and
-          // those boxes must not inherit a green pill they did not prove: amber
-          // "NO TEE CPU" when the box reports a non-TEE document (a metal dev
-          // box), plain "CPU" when it has not said.
-          // THE PHONE TIER reads amber "pvm cpu": the relay verified the protected VM's chain, and the
-          // tier is under construction - CPU-only Wasm workloads inside the pVM (no model, no accelerator),
-          // admission by proven capability - so the badge is its identity and the tooltip is future tense. Never the jade
-          // "tee cpu" of the server contract, which this is not.
-          // Shield marketplace admission is a relay verdict, separate from a CPU TEE.
-          const shieldCpu = e.tunnel === true && e.mode === "hv-node" && e.tier === "enclave-shield"
-            && e.eligible === true && e.appEvidenceRequired === true;
-          const teeCpuBadge = shieldCpu
-            ? '<span class="ap-badge info" title="Enclave Shield: the relay verifies each app’s measured partition and guest-held TLS key. The physical operator and hypervisor remain trusted.">cpu</span>'
-            : tc.real && tc.phone && e.eligible === true && e.appEvidenceRequired === true
-            ? '<span class="ap-badge warn" title="' + esc(tc.note) + '. The relay verified this phone\u2019s protected-VM attestation chain when it attached and admitted its capability report (a CPU-only Wasm runtime: no model, no accelerator). It takes CPU-only deployments: before an app is served or given a certificate, the relay verifies a fresh attestation from the VM binding that app\u2019s code and its TLS key, so TLS ends inside the protected VM.">pvm cpu</span>'
-            : tc.real && tc.phone
-            ? '<span class="ap-badge warn" title="' + esc(tc.note) + '. The relay verified this phone\u2019s protected-VM attestation chain when it attached and admitted its capability report (a CPU-only Wasm runtime: no model, no accelerator). The tier runs CPU-only workloads; it is being built for Pixel 10 and Pixel 11 and is not available for deployments yet.">pvm cpu</span>'
-            : tc.real && tc.phoneUntiered
-            ? '<span class="ap-badge" title="' + esc(tc.note) + '.">pvm</span>'
-            : tc.real && tc.consumer
-            ? consumerBadge
-            : tc.unverified
-            ? '<span class="ap-badge warn" title="This tunnel box says its CPU is ' + esc(tc.label)
-              + ', but the relay verified no hardware quote when it attached (token or operator attach). A self-report is not evidence:'
-              + ' the box is not eligible for tenant work until it attaches with a verified quote.">unverified cpu</span>'
-            : tc.real
-            ? '<span class="ap-badge ok" title="' + esc(tc.label) + ' confidential VM: '
-              + (tc.source === "relay"
-                  ? 'the relay verified a fresh hardware quote from this box when it attached'
-                  : 'this box\u2019s attestation document presents a hardware quote')
-              + ', so every vCPU it sells runs inside the measured enclave and is covered by'
-              + ' its attestation.">tee cpu</span>'
-            : tc.known
-            ? '<span class="ap-badge warn" title="This box reports no CPU TEE (attestation format '
-              + esc(tc.technology) + '): nothing it sells is covered by a hardware attestation.">no tee cpu</span>'
-            : '<span class="ap-badge" title="This box has not reported whether its CPU is a TEE:'
-              + ' its build predates the field, or its attestation document has not been read yet.'
-              + ' Only a hardware quote earns the green pill.">cpu</span>';
-          // The GPU pool: jade "TEE GPU" for a card INSIDE the measured enclave,
-          // iris "GPU" for one on the untrusted host reached by masked offload --
-          // the ABSENCE of "tee" is the signal, and the tooltip says outright
-          // that this card is outside the enclave and outside its measurement.
-          const cardBadge = inTee
-            ? '<span class="ap-badge ok" title="This card is INSIDE the confidential'
-              + ' enclave and covered by its attestation.">tee gpu</span>'
-            : sh
-            ? '<span class="ap-badge info" title="Enclave Shield: masked GPU offload protects activations and verifies results. The GPU remains outside the confidential boundary.">gpu</span>'
-            : "";
+          // THE POOL LABELS ARE THE BADGES (core/pool-badges.js). Each pool is
+          // named by what it is, in the colour that means it, right beside its
+          // own meter; the header carries only the box's name and rating.
+          const teeCpuBadge = cpuPoolBadge(e), cardBadge = gpuPoolBadge(e);
           // What is SELLABLE is the worker's budget, not the physical card: the
           // untrusted host keeps the rest (on a desktop, an X server). Showing the
           // physical total here while the GPU pool showed the budget is what put

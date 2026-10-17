@@ -8,13 +8,18 @@ const shareOf = (value) => value != null && Number.isFinite(Number(value)) && Nu
 export const shareLabel = (share) => share == null ? "—" : number(share * 100) + "%";
 export const supportsCpuFallback = (spec) => !!(spec?.gpuOptional && (amount(spec.vramMb) > 0 || amount(spec.gpuGflops) > 0));
 
-export function appShareLabel(deployment){
-  if (deployment?.status !== "running") return "";
+// a running deployment's allocation, one entry per pool it holds: [{ pool: "cpu"|"gpu", pct: "21%" }]
+export function appShares(deployment){
+  if (deployment?.status !== "running") return [];
   const r = deployment.resources || {}, parts = [];
   const cpu = shareOf(r.cpuShare ?? r.share), gpu = shareOf(r.gpuShare);
-  if (cpu != null) parts.push(shareLabel(cpu) + " CPU");
-  if (gpu > 0) parts.push(shareLabel(gpu) + " GPU");
-  return parts.join(" · ") || "Resources";
+  if (cpu != null) parts.push({ pool: "cpu", pct: shareLabel(cpu) });
+  if (gpu > 0) parts.push({ pool: "gpu", pct: shareLabel(gpu) });
+  return parts;
+}
+export function appShareLabel(deployment){
+  if (deployment?.status !== "running") return "";
+  return appShares(deployment).map((s) => s.pct + " " + s.pool.toUpperCase()).join(" · ") || "Resources";
 }
 
 // RAM/CPU and VRAM/GPU each share one allocation pool. The chart uses those

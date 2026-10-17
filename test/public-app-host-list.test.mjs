@@ -205,7 +205,9 @@ test("the fleet list renders pVM hosts with the same availability pool as other 
   // a pVM host the relay put in the market (eligible + serving) is a marketplace row, priced like any other; only one it has
   // not is the price-less status row
   assert.match(src, /const pvmRows = \(this\.rows \|\| \[\]\)\.filter\(e => pvmHostVisible\(e\) && !appHostVisible\(e\)\);/);
-  assert.match(src, /tc\.real && tc\.phone && e\.eligible === true && e\.appEvidenceRequired === true/, "the market's pvm cpu badge says it takes deployments");
+  const badges = fs.readFileSync(path.join(ROOT, "site/js/core/pool-badges.js"), "utf8");
+  assert.match(src, /cpuPoolBadge\(e\)/, "the market's CPU pool pill comes from the shared pool badges");
+  assert.match(badges, /tc\.real && tc\.phone && e\.eligible === true && e\.appEvidenceRequired === true/, "the market's pvm cpu badge says it takes deployments");
   const block = src.slice(src.indexOf("const pvmItems = pvmRows.map"), src.indexOf("this._wireRate();"));
   assert.ok(block.length > 0);
   assert.match(block, /fleet-pvm-row/);

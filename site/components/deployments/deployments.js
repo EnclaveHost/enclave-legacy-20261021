@@ -29,11 +29,11 @@ const sendTx = (to, data, value, gas) => String(to).toLowerCase() === String(DEP
   ? import("../../js/core/sessions.js").then((S) => S.ledgerSend(data, () => walletSendTx(to, data, value, gas)))
   : walletSendTx(to, data, value, gas);
 import { slugOfRef, artOfRef, loadCatalog, parseCatalogRef, catalogRef, specOf, specOfRef, STORE, fetchConfigCid, stripMedia, putConfig } from "../../js/core/catalog.js";
-import { appShareLabel } from "../../js/core/app-resources.js";
+import { appShares } from "../../js/core/app-resources.js";
+import { cpuPoolBadge, gpuPoolBadge } from "../../js/core/pool-badges.js";
 import { shareEditor } from "../../js/core/share-editor.js";
 import { resourceOverview } from "../../js/core/resource-overview.js";
-import { vspecOf, boxOfEndpoint, verifyBoxInBrowser, verdictBadge, verificationHtml, boxModeOf, verifyAppInBrowser } from "../../js/core/verify.js";
-import { protectionOf } from "../../js/core/protection.js";
+import { vspecOf, boxOfEndpoint, verifyBoxInBrowser, verdictBadge, verificationHtml, boxModeOf, boxRowOf, verifyAppInBrowser } from "../../js/core/verify.js";
 import { runlog, paintLine, retryOfferOf } from "../../js/core/runlog.js";
 import { payForRuntime } from "../../js/core/fund.js";
 import { moveLeaseLive, prepareDeploymentMove } from "../../js/core/deployment-move.js";
@@ -385,8 +385,14 @@ function cfgPlan(ctx){
   };
   return { verdictOf, clearEnvelope, splitEnvelope };
 }
+// a running row's allocation, "21% [tee cpu]": each pool's share beside the pill Live enclaves names that pool
+// with (core/pool-badges.js). The pill starts plain and takes its colour once the serving box's /enclaves row is read.
 function encTier(d){
-  return appShareLabel(d);
+  if (d.status !== "running") return "";
+  const parts = appShares(d);
+  if (!parts.length) return "Resources";
+  return parts.map(s => esc(s.pct) + ' <span class="enc-pool" data-pool="' + s.pool + '"' + (d.enclave ? ' data-box="' + esc(d.enclave) + '"' : '')
+    + '><span class="ap-badge">' + s.pool + '</span></span>').join(" · ");
 }
 class Deployments extends EnclaveElement {
   static templateUrl = new URL("./deployments.html", import.meta.url);
@@ -849,11 +855,10 @@ class Deployments extends EnclaveElement {
           '<span class="ap-badge ep-cfg" data-cfgb="' + esc(d.id) + '" hidden>custom config</span>' +
           '<button class="enc-id" data-copy="' + esc(d.id) + '" title="' + esc(d.id) + '" aria-label="copy deployment id">' + esc(idShort) + ' ⧉</button>' +
           '<span class="enc-br" aria-hidden="true"></span>' +
-          (shareText || d.enclave ? '<span class="enc-meta">' + (shareText ? '<span class="enc-allocation">' + esc(shareText) + '</span>' : '')
+          (shareText || d.enclave ? '<span class="enc-meta">' + (shareText ? '<span class="enc-allocation">' + shareText + '</span>' : '')
             // which box serves it (relay stamps `enclave` on live-hosted and
             // lease-held rows alike; absent while queued/stopped - nothing runs it)
-            + (d.enclave ? (shareText ? ' · ' : '') + '<span class="dim enc-host" title="the enclave this app runs on">on ' + esc(d.enclave) + '</span>'
-              + ' <span class="ap-badge enc-prot" data-prot="' + esc(d.enclave) + '" hidden></span>' : '') + '</span>' : '') +
+            + (d.enclave ? (shareText ? ' · ' : '') + '<span class="dim enc-host" title="the enclave this app runs on">on ' + esc(d.enclave) + '</span>' : '') + '</span>' : '') +
           '<span class="enc-spend">' + bud + '</span>' +
           (runwayPct != null ? '<span class="enc-meter' + (runwaySec < RUNWAY_LOW ? ' low' : '') + '" title="' + esc(fmtDur(runwaySec)) + ' of paid runtime left · full bar = 48h" aria-hidden="true"><b style="width:' + runwayPct + '%"></b></span>' : '') +
           // the acts row holds only IMMEDIATE actions; everything that opens a
@@ -946,10 +951,10 @@ class Deployments extends EnclaveElement {
     $$(".enc-dom[data-id]", body).forEach(el => this._domainsWire(el));
     $$(".enc-mobbtn", body).forEach(b => b.addEventListener("click", () => this._mobile(b.dataset.id, b)));
     $$(".enc-verify", body).forEach(b => b.addEventListener("click", () => this._verify(b.dataset.id, b)));
-    // what the host running each deployment protects (core/protection.js), from the relay's verdict on how it attached
-    $$(".enc-prot[data-prot]", body).forEach(el => boxModeOf(el.dataset.prot).then((mode) => {
-      const p = protectionOf(mode); if (!p || !el.isConnected) return;
-      el.className = "ap-badge " + p.cls + " enc-prot"; el.textContent = p.label; el.title = p.line; el.hidden = false;
+    // each allocation's pool pill, coloured as Live enclaves colours the serving box's pool
+    $$(".enc-pool[data-box]", body).forEach(el => boxRowOf(el.dataset.box).then((row) => {
+      const html = row && (el.dataset.pool === "gpu" ? gpuPoolBadge(row) : cpuPoolBadge(row));
+      if (html && el.isConnected) el.innerHTML = html;
     }).catch(() => {}));
     $$(".enc-kill", body).forEach(b => b.addEventListener("click", () => this._kill(b.dataset.id, b)));
     $$(".enc-refund", body).forEach(b => b.addEventListener("click", () => this._refund(b.dataset.id, b)));
