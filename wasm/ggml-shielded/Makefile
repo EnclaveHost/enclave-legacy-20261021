@@ -99,6 +99,10 @@ dealt-selftest: dealt-selftest.c $(DEALER_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # Keyed pads (format 4, shielded/dealer/HOST-BANK.md): host-bank cells with their own mask keys.
+pads-bank: pads-bank.c $(DEALER_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+keyed-bank-fixture: keyed-bank-fixture.c $(DEALER_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 keyed-selftest: keyed-selftest.c $(DEALER_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 

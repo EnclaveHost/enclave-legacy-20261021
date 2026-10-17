@@ -95,7 +95,11 @@ static void *bank_main(void *arg) {
         const uint64_t floor = b->floor, need = b->need;
         pthread_mutex_unlock(&b->mu);
 
-        char url[1400]; snprintf(url, sizeof url, "%s?seed_id=%s", b->url, b->seed_id);
+        /* need and floor tell an issuing source (the host pad service) how far this consumer's
+         * horizon reaches; it issues against that, not against what we download. Sources that
+         * only store shipments ignore them. */
+        char url[1400]; snprintf(url, sizeof url, "%s?seed_id=%s&need=%llu&floor=%llu", b->url, b->seed_id,
+                                 (unsigned long long)need, (unsigned long long)floor);
         uint8_t *body = NULL; size_t blen = 0; int status = 0;
         int n = 0;
         if (sh_http_get(url, BANK_TIMEOUT_MS, &body, &blen, &status) == 0 && status == 200) n = parse_listing((const char *)body, list, BANK_MAX_ENTRIES);

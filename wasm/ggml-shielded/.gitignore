@@ -24,3 +24,6 @@ shielded-soak
 spill-selftest
 spill-link-selftest
 .spill-test-*
+keyed-selftest
+keyed-bank-fixture
+pads-bank

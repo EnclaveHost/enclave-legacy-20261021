@@ -111,6 +111,14 @@ exhaustion and never mints (shielded-tee.c, `l->dealt`). Changes: derive `r` fro
 key (format v4) instead of a seed; fetch from the PS endpoint; verify the PS certificate. The
 in-guest pad spill and refill minting go away for consumers of a host bank.
 
+The PS issues against the consumer's horizon, never against its downloads. The bank client
+prefetches whatever is listed inside its cache budget, so issuing more on each download drains
+the bank into one consumer's cache (the first H2 run spent 64 rows on a 3-row consumer). The
+client reports its horizon on each listing (`?seed_id=X&need=N&floor=F`; sources that only
+store shipments ignore it) and the PS keeps that consumer `ahead` rows past `need`, with `need`
+capped at `ahead` past what was already issued. Until H3's relay tickets and per-bank ledger, a
+consumer can still raise its horizon on every poll; that wastes bank rows, never reuses them.
+
 ### Failure of the pad service (enclave-88, 2026-10-17)
 
 One PS per host is a shared point of failure, so no consumer may depend on it being up:
@@ -161,6 +169,10 @@ per offloaded MAC). It moves that work into one scheduled place per host and kee
 - **H2 (pad service, host-testable):** a PS process on top of the persistent dealer
   (PERSISTENT-DEALER.md, `--jobs-stdin`): per-model banks, sealed store, issuance API,
   local ledger; consumer `shielded-run`/sd guest end to end on the host.
+  Done (2026-10-17): `pad-service.mjs` + `pads-bank issue`, test/pad-service.test.mjs (single
+  issuance across consumers and a restart, wrong key refused, engine import through the pad
+  check). Still open in H2: the kill-the-PS-mid-request test, the persistent-dealer minting
+  loop, and the consumer reserve + in-guest mint fallback.
 - **H3 (trust):** PS attestation, relay certificate for its delivery key, per-bank relay
   ledger, consumer tickets; consumer pins and verifies.
 - **H4 (metal0):** the PS as a measured SNP guest under guestd; Z-Image switches to it, then
