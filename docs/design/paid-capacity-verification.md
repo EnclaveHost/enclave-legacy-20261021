@@ -27,16 +27,12 @@ What this does and does not give:
   to its TLS key at boot. Liveness comes from the attested `/availability` read in the same round.
 - **Only metal0 is audited today, by our implementation's limits, not attestation's.** Enclave Shield and pVM hosts
   attest too.
-  - **Enclave Shield: implemented on branch `audit/shield`, not deployed.** A config's host may say `"kind": "shield"`.
-    The witness then runs a fresh `windows-hv-node/v1` TPM session over our nonce and our credential. Its allowlist is
-    the EK certificates' sha256, and that sha256 is the hardware id basis. Spare is `floor(nodeGflops ×
-    min(cpuShareFree, maxShare))`. Each audit derives the app from our own ledger read, the catalog and the
-    CID-verified component under our pinned Shield policy, and runs a fresh host session last
-    (`availability/shield.mjs`). The Shield branch of `verified-http.mjs` passes the image requirements (config
-    bundle, secrets, config socket) to the app policy. Host checks are serialized per box and spaced at least 20 s
-    apart. A busy, rate-limited or re-attaching relay is retried after a jittered backoff of at least 20 s. It runs as
-    a second `service.mjs` instance with its own config (below). Its payer policy is a separate source on
-    `hyperv-partition-per-app`. k11-4 accepts offers itself (PULL), so no acceptor runs here.
+  - **Enclave Shield: LIVE since 2026-10-16** (unit `enclave-capacity-audit-shield`, its own payer policy on
+    `hyperv-partition-per-app`). Source: canary `0x0f19412d` pinned to nucbox-k11-4. k11-4 accepts offers itself
+    (Windows .44+), and since .45 proves partitions through the fee router. The witness runs a fresh windows-hv-node/v1
+    TPM session hourly. First audits: `0xfe63875d` (2026-10-16 09:35Z, 8.1 s) and `0x791d078e` (2026-10-17 09:20Z,
+    8.2 s), both VERIFIED. A host session on Shield proves the host's boot state, and the host is not excluded:
+    a capacity claim, not a confidentiality claim.
   - **pVM: blocked on the fee contract.** `EnclaveVerificationFees.configure` (line 124) accepts only
     `snp-guest-per-app` and `hyperv-partition-per-app`. The ledger's `feeRouter` is set once, so a pVM backend needs
     a new fee contract and a new ledger. A pVM branch in `verified-http.mjs` and a witness adapter are also missing.
