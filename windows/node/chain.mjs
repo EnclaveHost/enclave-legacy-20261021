@@ -111,16 +111,17 @@ const CATALOG_ABI = [
  */
 let _catRev = { addr: null, rev: null };
 export async function catalogSchemaRev() {
-  if (!addresses.appCatalog) return null;
-  if (_catRev.addr === addresses.appCatalog && _catRev.rev != null) return _catRev.rev;
+  const catalogAddress=process.env.ENCLAVE_HOST_CATALOG_PIN || addresses.appCatalog;
+  if (!catalogAddress) return null;
+  if (_catRev.addr === catalogAddress && _catRev.rev != null) return _catRev.rev;
   try {
-    const rev = Number(await publicClient().readContract({ address: addresses.appCatalog, abi: CATALOG_ABI, functionName: "catalogSchema" }));
-    _catRev = { addr: addresses.appCatalog, rev };
+    const rev = Number(await publicClient().readContract({ address: catalogAddress, abi: CATALOG_ABI, functionName: "catalogSchema" }));
+    _catRev = { addr: catalogAddress, rev };
     return rev;
   } catch (e) {
     // A contract without the function reverts; anything else is the network having a bad moment.
     const definitive = /revert|not a function|returned no data|execution reverted/i.test(e.shortMessage || e.message || "");
-    if (definitive) { _catRev = { addr: addresses.appCatalog, rev: 0 }; return 0; }
+    if (definitive) { _catRev = { addr: catalogAddress, rev: 0 }; return 0; }
     return null;
   }
 }
@@ -280,17 +281,18 @@ export const claimCost = (id, enclaveId) => estimate(addresses.deployments, DEP_
 
 /** catalog://<appId>/<versionIndex> -> the version record (artifact CID, sizing, config, approval). */
 export async function resolveAppRef(appRef) {
+  const catalogAddress=process.env.ENCLAVE_HOST_CATALOG_PIN || addresses.appCatalog;
   const m = /^catalog:\/\/(0x[0-9a-fA-F]{64})\/(\d+)$/.exec(String(appRef || "").trim());
   if (!m) throw new Error(`appRef is not catalog://<appId>/<versionIndex>: ${appRef}`);
-  if (!addresses.appCatalog) throw new Error("the address book publishes no appCatalog");
-  const v = await publicClient().readContract({ address: addresses.appCatalog, abi: CATALOG_ABI, functionName: "getVersion", args: [m[1], BigInt(m[2])] });
+  if (!catalogAddress) throw new Error("the address book publishes no appCatalog");
+  const v = await publicClient().readContract({ address: catalogAddress, abi: CATALOG_ABI, functionName: "getVersion", args: [m[1], BigInt(m[2])] });
   // ...and, on a rev-7 catalog, where the real config lives. Absent or empty means the inline
   // field IS the config, exactly as on every earlier rev.
   let configCid = "";
   const rev = await catalogSchemaRev();
   if (rev != null && rev >= 7) {
     try {
-      configCid = String(await publicClient().readContract({ address: addresses.appCatalog, abi: CATALOG_ABI,
+      configCid = String(await publicClient().readContract({ address: catalogAddress, abi: CATALOG_ABI,
         functionName: "versionConfigCid", args: [m[1], BigInt(m[2])] }) || "");
     } catch { configCid = ""; }
   }
@@ -505,7 +507,7 @@ export function parseEnvelope(raw, gpuMilli) {
 export function claimPolicy(d, { ownerAllow, enclaveId, appsEnabled = true, scope = "market",
                                  version = null, capacity = null, listedAt = 0, invited = false,
                                  legacy = false, fetchesConfigCid = false, features = null,
-                                 privateOk = false, isolationBackend = null } = {}) {
+                                 privateOk = false, isolationBackend = null, hostWalletPolicy = false } = {}) {
   if (!appsEnabled) return "this node is not hosting apps (set APPS=1)";
   if (!d || !Number(d.createdAt)) return "no such deployment on the ledger";
   if (!d.active) return "the deployment is not active";
@@ -595,7 +597,7 @@ export function claimPolicy(d, { ownerAllow, enclaveId, appsEnabled = true, scop
   // deployment; this box refuses private deployments outright (it verifies no session token), so
   // the one place it can honestly relax is its OWN owner testing their own app on their own
   // machine, where the only person exposed is the person who published it.
-  if (version) {
+  if (version && !hostWalletPolicy) {
     if (version.yanked) return "the catalog version was yanked by its publisher";
     if (Number(version.approval) === 2) return "the catalog version was rejected by the catalog owner";
     if (Number(version.approval) !== 1 && !owners && !(privateOk && !d.isPublic))

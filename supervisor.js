@@ -20,6 +20,7 @@
 
 import express from "express";
 import { planCheckpoints } from "./windows/node/verification-checkpoints.mjs";
+import {hostAdmissionFromEnv,hostAdmissionConfigured} from './windows/node/host-admission.bundle.mjs';
 import cors from "cors";
 import http from "node:http";
 import https from "node:https";
@@ -543,6 +544,18 @@ async function registryRev() {
 let _registered = false;
 let _registeredOn = null;         // WHICH registry _registered refers to (see below)
 let _enclaveId = null;            // our EnclaveRegistry id (keccak256 of the advertised endpoint); claim gating needs it
+const HOST_WALLET_POLICY = hostAdmissionConfigured();
+let _hostWalletAdmission = null;
+async function hostWalletRefusal(deploymentId,appRef) {
+  if(!HOST_WALLET_POLICY)return null;
+  try {
+    if(!_enclaveId)throw new Error('registered host identity unavailable');
+    if(!_hostWalletAdmission || _hostWalletAdmission.hostId!==_enclaveId)
+      _hostWalletAdmission=hostAdmissionFromEnv({hostId:_enclaveId,rpc:RPC_POOL,addressBook:process.env.ADDRESS_BOOK_ADDRESS});
+    return await _hostWalletAdmission.refusal({deploymentId,appRef});
+  }catch(e){return 'host wallet policy unavailable: '+String(e.message).slice(0,240);}
+}
+const hostCatalogAddress=()=>process.env.ENCLAVE_HOST_CATALOG_PIN || APP_CATALOG_ADDRESS;
 let _advertisedEndpoint = null;   // the endpoint we registered under; adopted deployments build their URL from it
 /// Has the address book moved the registry out from under our registration?
 /// Every guard that would otherwise short-circuit on `_registered` has to ask
@@ -6236,17 +6249,18 @@ const CATALOG_ABI = [
 // round; callers that need the answer fail closed and retry next pass.
 let _catRev = { addr: null, rev: null };
 async function catSchemaRev() {
-  if (!APP_CATALOG_ADDRESS) return null;
-  if (_catRev.addr === APP_CATALOG_ADDRESS && _catRev.rev != null) return _catRev.rev;
+  const catalogAddress=hostCatalogAddress();
+  if (!catalogAddress) return null;
+  if (_catRev.addr === catalogAddress && _catRev.rev != null) return _catRev.rev;
   try {
-    const rev = Number(await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    const rev = Number(await chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "catalogSchema" }));
-    _catRev = { addr: APP_CATALOG_ADDRESS, rev };
-    console.log(`[approval] catalog ${APP_CATALOG_ADDRESS} schema rev ${rev}`);
+    _catRev = { addr: catalogAddress, rev };
+    console.log(`[approval] catalog ${catalogAddress} schema rev ${rev}`);
   } catch (e) {
     if (sniffCachePolicy(e.shortMessage || e.message || "") === "cache-rev1") {
-      _catRev = { addr: APP_CATALOG_ADDRESS, rev: 2 };   // pre-catalogSchema catalog
-      console.log(`[approval] catalog ${APP_CATALOG_ADDRESS} schema rev 2 (pre-catalogSchema contract)`);
+      _catRev = { addr: catalogAddress, rev: 2 };   // pre-catalogSchema catalog
+      console.log(`[approval] catalog ${catalogAddress} schema rev 2 (pre-catalogSchema contract)`);
     } else {
       return null;
     }
@@ -6266,6 +6280,7 @@ const ZERO32 = "0x" + "0".repeat(64);
 // ipfs-<cid>.wasm) from dodging the approval check.
 const NO_MIN = { vramMb: 0, gpuGflops: 0, memMb: 0, cpuGflops: 0 };
 async function gateAppReference(reference, opts = {}) {
+  const catalogAddress=hostCatalogAddress();
   const deny = (status, code, msg) => ({ error: { status, code, msg } });
   const ref = String(reference || "").trim();
   const m = CATALOG_REF_RE.exec(ref);
@@ -6274,13 +6289,13 @@ async function gateAppReference(reference, opts = {}) {
     // versions with different approved configs, so it cannot name what to run.
     return deny(422, "invalid_spec", "image.reference must be catalog://<appId>/<versionIndex> — the on-chain record of a catalog version. CID references are retired (a CID names bytes, not a version); redeploy from the console or CLI.");
   }
-  if (!APP_CATALOG_ADDRESS)
-    return deny(503, "approval_unavailable", "Catalog apps are disabled on this enclave: APP_CATALOG_ADDRESS is not configured, so approval cannot be verified.");
+  if (!catalogAddress)
+    return deny(503, "approval_unavailable", "Catalog apps are disabled on this enclave: catalogAddress is not configured, so approval cannot be verified.");
   const [appId, index] = [m[1], Number(m[2])];
   const [ar, vr] = await Promise.allSettled([
-    chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "getApp", args: [appId] }),
-    chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "getVersion", args: [appId, BigInt(index)] }),
   ]);
   if (ar.status === "rejected") {
@@ -6295,7 +6310,8 @@ async function gateAppReference(reference, opts = {}) {
     return deny(503, "catalog_unreachable", "Could not verify this app's approval against the on-chain catalog; try again shortly.");
   }
   const v = vr.value;
-  const verdict = approvalVerdict({ active: a.active, yanked: v.yanked, approval: v.approval,
+  const verdict = HOST_WALLET_POLICY ? await hostWalletRefusal(opts.deploymentId,ref)
+    : approvalVerdict({ active: a.active, yanked: v.yanked, approval: v.approval,
                                     slug: a.slug, version: v.version }, opts.forPrivate);
   if (verdict) return deny(403, "not_approved", verdict);
   // The version's publisher fee is part of what approval covered (like config
@@ -6309,7 +6325,7 @@ async function gateAppReference(reference, opts = {}) {
     return deny(503, "catalog_unreachable", "Could not determine the catalog's schema revision; try again shortly.");
   if (catRev >= 5) {
     try {
-      feePerSec6 = await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+      feePerSec6 = await chainClient.readContract({ address: getAddress(catalogAddress),
         abi: CATALOG_ABI, functionName: "versionFee", args: [appId, BigInt(index)] });
     } catch (e) {
       console.warn(`[approval] versionFee(${appId}, ${index}) failed: ${e.shortMessage || e.message}`);
@@ -6324,7 +6340,7 @@ async function gateAppReference(reference, opts = {}) {
   let configCid = "";
   if (catRev >= 7) {
     try {
-      configCid = await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+      configCid = await chainClient.readContract({ address: getAddress(catalogAddress),
         abi: CATALOG_ABI, functionName: "versionConfigCid", args: [appId, BigInt(index)] }) || "";
     } catch (e) {
       console.warn(`[approval] versionConfigCid(${appId}, ${index}) failed: ${e.shortMessage || e.message}`);
@@ -9319,6 +9335,8 @@ async function renewLeases() {
       const fresh = await readLedgerContract("get", [rec.id]);
       const pinRefusal = placementRefusal(fresh.configCid, _enclaveId);
       if (pinRefusal) { await retireForPlacement(rec, pinRefusal); continue; }
+      const walletRefusal = await hostWalletRefusal(rec.id,fresh.appRef);
+      if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
       const sent = lapsed ? sendClaimTx("claim", [rec.id, _enclaveId]) : sendClaimTx("renew", [rec.id]);
       await sent;
       const rcpt = await sent.receipt;
@@ -9415,7 +9433,7 @@ async function switchTenantVersion(rec, d) {
     if (!optional) return evict("GPU work on a CPU-only enclave");
   }
   let g;
-  try { g = await gateAppReference(to, { forPrivate: !d.isPublic }); }
+  try { g = await gateAppReference(to, { forPrivate: !d.isPublic, deploymentId:d.id }); }
   catch (e) { g = { error: { status: 503, msg: e.shortMessage || e.message } }; }
   if (g.error) return refuse(g.error.msg, g.error.status === 503);
   // the version must fit the shares the row NOW carries (bought at create, or
@@ -9547,7 +9565,7 @@ async function applyEnvelopeEdit(rec, d, verdict) {
   if (!("config" in o) && !("configCid" in o)) {
     // override removed: back to the version's own config — which on a rev-7
     // version means restoring its CID, not just its (manifest-only) inline field
-    try { g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic }); }
+    try { g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic, deploymentId:d.id }); }
     catch (e) { g = { error: { msg: e.shortMessage || e.message } }; }
     if (g.error) return refuse("couldn't resolve the version's config to fall back to: " + g.error.msg);
   }
@@ -9616,6 +9634,8 @@ async function ledgerMoveSweep() {
 const YANK_SWEEP_SEC = parseInt(process.env.YANK_SWEEP_SEC || "300", 10);
 let _yankBusy = false;
 async function yankSweep() {
+  // Wallet policy is enforced per host by auditClaims and renewal checks.
+  if(HOST_WALLET_POLICY)return;
   if (_yankBusy || !APP_CATALOG_ADDRESS) return;
   _yankBusy = true;
   try {
@@ -9668,6 +9688,8 @@ async function auditClaims(ledgerById) {
     // AND the sweep (per-record re-reads were what blew the RPC rate budget)
     const d = ledgerById.get(rec.id.toLowerCase());
     if (!d) continue;                         // not in the page (RPC anomaly): keep serving, the lease is prepaid
+    const walletRefusal = await hostWalletRefusal(rec.id,d.appRef);
+    if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
     const pinRefusal = placementRefusal(d.configCid, _enclaveId);
     if (pinRefusal) {
       await retireForPlacement(rec, pinRefusal);
@@ -10315,7 +10337,7 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
   // The VERSION now comes before the routing decision, because what the app
   // needs is what decides whether this box can serve the card ask at all. It
   // also removes the second gateAppReference the CPU-only branch used to make.
-  const g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic });
+  const g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic, deploymentId:d.id });
   if (g.error) return "app not deployable: " + g.error.msg;   // unapproved/unknown record (or catalog unreachable: fail closed)
   // One /health serves the sizing, the GPU readiness check and volumeGate
   // below. Fetched only when one of them will actually want it, so a plain CPU

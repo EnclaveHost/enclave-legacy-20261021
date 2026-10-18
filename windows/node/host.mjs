@@ -22,6 +22,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import http from "node:http";
 import * as chain from "./chain.mjs";
+import {hostAdmissionFromEnv} from './host-admission.bundle.mjs';
 import { App, EnclaveApp, fetchArtifact, wasmLayer, appEnv, missingHostInterfaces, precompile } from "./apprun.mjs";
 import { worldOf } from "./appframe.mjs";
 import { fetchSecrets, secretsExist } from "./secrets.mjs";
@@ -106,6 +107,9 @@ export class Host {
     this.apps = new Map();                           // id -> App
     this.records = new Map();                        // id -> { id, status, reason, appRef, cid, version, leaseUntil, claimedAt, provenAt }
     this.enclaveId = chain.enclaveIdOf(cfg.endpoint);
+    this.hostAdmission = cfg.hostAdmission ?? hostAdmissionFromEnv({hostId:this.enclaveId, rpc:chain.rpcUrls(), addressBook:chain.addressBook()});
+    if(this.hostAdmission && (this.hostAdmission.hostId!==this.enclaveId || typeof this.hostAdmission.refusal!=='function'))
+      throw new Error('wallet admission must bind this host');
     this.registered = null;                          // the registry entry as last read
     this.chainReady = false; this.lastError = "";
     this.statePath = path.join(cfg.dir, "host-state.json");
@@ -549,7 +553,7 @@ export class Host {
     // hosting cap: a hint for a deployment this box runs is not a new claim, and lowering a cap never takes a running
     // app away (hosting.mjs). Measured against itself, or against a cap below what runs, it would be marked refused.
     const here = Host.occupies(this.records.get(id) || {});
-    const refuse = this.claimRefusal(d, { version: v, capacity: this.capacity({ exclude: id, capped: !here }),
+    const refuse = await this.walletPolicyRefusal({...d,id}) || this.claimRefusal(d, { version: v, capacity: this.capacity({ exclude: id, capped: !here }),
                                           appsEnabled: this.cfg.appsEnabled, invited: invited || force });
     if (refuse) { this.#record(id, { status: "refused", reason: refuse, appRef: d?.appRef || "" }); return { accepted: false, reason: refuse, standing: "refused" }; }
     // A deployment for the ISOLATED backend that this box would still have to CLAIM is judged by the partition verdict
@@ -1226,6 +1230,8 @@ export class Host {
 
   /** Fetch + verify + run the deployment's app, and keep the record honest about which stage failed. */
   async ensureApp(id, d, { force = false, version = null } = {}) {
+    const walletRefusal = await this.walletPolicyRefusal({...d,id});
+    if(walletRefusal) return await this.#giveUp(id,walletRefusal,{retry:true});
     if (force) this.#respawnAfter.delete(id);
     // A FORCED ensure is what a reboot-recovery hold waits for (#rebootHold): it is tried again from here. That is the
     // operator's forced relaunch AND an owner's own action that re-ensures with force - a resize (#applyShareResize) or a
@@ -1267,7 +1273,7 @@ export class Host {
     });
     let v = version;
     if (!v) try { v = await chain.resolveAppRef(d.appRef); } catch (e) { return this.#record(id, { status: "failed", reason: `catalog: ${e.message}` }); }
-    if (v.yanked) return await this.#giveUp(id, "the catalog version is yanked");
+    if (!this.hostAdmission && v.yanked) return await this.#giveUp(id, "the catalog version is yanked");
     // The CORELESS floor, which is the only kind this box does: the version's own memMb, raised by
     // the publisher's cpuFallback when they declared one. Sizing a fallback off the card-case
     // figure is how a big model lands on a small slice and dies at weight-load with nothing having
@@ -1819,7 +1825,7 @@ export class Host {
       const held = this.scanHold.get(id);
       if (held && held.key === holdKey && Date.now() - held.at < held.ms) continue;   // declined, and nothing it was judged on changed
       let v = null; try { v = await chain.resolveAppRef(d.appRef); } catch {}
-      const refuse = this.claimRefusal(d, { version: v, capacity: this.capacity(), appsEnabled: true, ownerAllow: owners });
+      const refuse = await this.walletPolicyRefusal({...d,id}) || this.claimRefusal(d, { version: v, capacity: this.capacity(), appsEnabled: true, ownerAllow: owners });
       if (refuse) {
         // Recorded, not logged every 30 seconds: a refusal is a standing fact about a row, and
         // the console reads it off /v1/deployments. Only a CHANGE is worth a line.
@@ -1917,6 +1923,8 @@ export class Host {
       }
       const pinRefusal = chain.placementRefusal(d.configCid, this.enclaveId);
       if (pinRefusal) { await this.#giveUp(id, pinRefusal, { retry: true }); continue; }
+      const walletRefusal = await this.walletPolicyRefusal({...d,id});
+      if(walletRefusal) { await this.#giveUp(id,walletRefusal,{retry:true}); continue; }
       // HELD (a retired-engine node, a deployment it cannot run): before the renewal, the envelope edit and
       // the resize, each of which can spend or give back the lease on chain. Recorded, and left alone.
       const held = this.heldReason(d);
@@ -2663,12 +2671,18 @@ export class Host {
    * one claim, was refused by consider() on the retired-engine rule, and again every 30 s, so the owner's newer
    * hyperv row was never reached).
    */
+  async walletPolicyRefusal(d) {
+    if(!this.hostAdmission)return null;
+    try{return await this.hostAdmission.refusal({deploymentId:d.id,appRef:d.appRef});}
+    catch(e){return 'host wallet policy unavailable: '+String(e.message).slice(0,240);}
+  }
   claimRefusal(d, { version = null, capacity, appsEnabled, invited = false, ownerAllow = this.ownerSet() }) {
     // an admitted audit job (servesAuditJob) is claimed as its fee wallet's own: owner-only scope still holds, because only
     // a payer this box serves can have created it here
     if (this.#auditAdmitted.has(String(d?.id || "").toLowerCase())) ownerAllow = new Set([...ownerAllow, String(d.owner || "").toLowerCase()]);
     return chain.claimPolicy(d, { isolationBackend: this.isolationBackend, ownerAllow, enclaveId: this.enclaveId,
                                   appsEnabled, scope: this.scope(), version, capacity, listedAt: this.listedAt(), invited,
+                                  hostWalletPolicy: !!this.hostAdmission,
                                   legacy: this.cfg.claimLegacy === true, fetchesConfigCid: this.features().configCidOverride,
                                   privateOk: !!this.cfg.sessionKid && (!this.partitionsOnly() || this.features().devDeploy),
                                   features: this.features() })
