@@ -1,6 +1,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import https from 'node:https';
+import http from 'node:http';
 import {once} from 'node:events';
 
 export async function connectSOCKS(proxy,host,port,{signal=AbortSignal.timeout(10000)}={}) {
@@ -48,6 +49,13 @@ export class SocksHttpsAgent extends https.Agent {
       connection.once('secureConnect',()=>{try{this.verifyPeer?.(connection);done();}catch(e){done(e);}});connection.once('error',done);
     },callback);
   }
+}
+
+// Only used for independently signed PUBLIC directory records, through the same
+// explicit guard as HTTPS. It must never carry account or app control traffic.
+export class SocksPublicHttpAgent extends http.Agent {
+  constructor(proxy){super({keepAlive:false,maxSockets:16});this.proxy=proxy;}
+  createConnection(options,callback){connectSOCKS(this.proxy,options.host,Number(options.port||80)).then(s=>callback(null,s),callback);}
 }
 
 // Explicit direct mode retains the same pre-request peer verification used by

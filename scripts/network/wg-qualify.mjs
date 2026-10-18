@@ -19,11 +19,13 @@ import {signOnchainQualification,connectivityAddress} from '../../network/onchai
 import {createPublicClient,http,parseAbi,stringToHex} from 'viem';
 import {hostABI} from '../../network/registry-abi.mjs';
 import {base} from 'viem/chains';
+import {DirectoryClient} from '../../network/directory-client.mjs';
 
 const arg=(n,d)=>{const i=process.argv.indexOf('--'+n);return i>0?process.argv[i+1]:d;};
 const account=privateKeyToAccount((await fs.readFile(arg('key-file'),'utf8')).trim());
 if(process.argv.includes('--print-address')){console.log(account.address.toLowerCase());process.exit(0);}
 const wgBinary=arg('wg'),relay=arg('relay'),log=m=>console.log(new Date().toISOString(),m);
+const directories=arg('directories')||relay?new DirectoryClient({origins:arg('directories')?JSON.parse(arg('directories')):[relay],timeoutMs:15000}):null;
 const zero='0x'+'0'.repeat(64);
 const chain=arg('rpc')?createPublicClient({chain:base,transport:http(arg('rpc'),{timeout:15000})}):null;
 const book=arg('book','0xab214342d5A490150A4A977063A2f88E21F80907');
@@ -68,7 +70,7 @@ async function qualify(rec,all){
   result=await runCheck({
    exit:{peer:{privateKey:exit.keys.privateKey,publicKey:exit.grant.providerPublicKey,endpoint:exit.grant.endpoint,addresses:[exit.grant.clientAddress],dns:(arg('dns')||'1.1.1.1,9.9.9.9').split(','),mtu:1340,keepalive:5},probeName:exit.grant.names[0]},
    ...(guard?{guard:{peer:{privateKey:guard.keys.privateKey,publicKey:guard.grant.providerPublicKey,endpoint:guard.grant.endpoint,addresses:[guard.grant.clientAddress],mtu:1420,keepalive:5},allowed:other?`${other.address}:${other.ports.control}`:''}}:{}),
-   publicAddress:rec.address,exitPort:rec.ports.exit,outboundURL:arg('outbound','https://enclave.host/'),payloadBytes:Number(arg('payload',4<<20)),smtpTarget:await smtpTarget()});
+   publicAddress:rec.address,exitPort:rec.ports.exit,outboundURL:arg('outbound','https://example.com/'),payloadBytes:Number(arg('payload',4<<20)),smtpTarget:await smtpTarget()});
  }catch(e){result=failed(e.message);}
  const now=Date.now();
  const q={version:1,providerId:rec.providerId,operator:rec.operator,address:rec.address,wgExitKey:rec.wgExitKey,wgGuardKey:rec.wgGuardKey,roles:rec.roles,
@@ -78,7 +80,7 @@ async function qualify(rec,all){
 async function round(){
  let recs;
  if(arg('records'))recs=JSON.parse(await fs.readFile(arg('records'),'utf8'));
- else{const d=await (await fetch(relay+'/v1/network/providers',{signal:AbortSignal.timeout(15000)})).json();
+ else{const d=await directories.providers({hostOperator});
   recs=[];for(const e of d.providers||[]){try{recs.push(await verifyProviderRecord(e.record,{hostOperator}));}catch(err){log(`skip ${e.record?.record?.providerId?.slice(0,8)}: ${err.message}`);}}}
  const out=[];
  // paid (community) providers also need this checker's attestation on chain; none while no connectivity contract is published
@@ -90,8 +92,7 @@ async function round(){
   else passed_.delete(rec.providerId);
   out.push({...env,details});
   log(`${rec.address} ${rec.region||''}: ${passed?'QUALIFIED':'NOT qualified'} ${passed?'':JSON.stringify(details).slice(0,600)}`);
-  if(relay){const r=await fetch(relay+'/v1/network/qualifications',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(env),signal:AbortSignal.timeout(15000)});
-   if(!r.ok)log(`publish ${rec.address}: HTTP ${r.status} ${(await r.text()).slice(0,200)}`);}
+  if(directories)await directories.publish('/v1/network/qualifications',env).catch(e=>log(`publish ${rec.address}: ${e.message}`));
  }
  if(arg('out'))await fs.writeFile(arg('out'),JSON.stringify(out,null,1));
 }
@@ -99,13 +100,12 @@ async function round(){
 // re-sign the attestation every minute for each community provider this checker passed and whose verdict is current.
 const passed_=new Map(),passed=passed_;
 async function refreshOnchain(){
- if(!chain||!relay||!passed.size)return;
+ if(!chain||!directories||!passed.size)return;
  const connectivity=await connectivityAddress(chain,book);if(!connectivity)return;
  for(const [pid,{rec,env}] of passed){
   if(env.qualification.expiresAt<=Date.now()+60000){passed.delete(pid);continue;}
   const onchain=await signOnchainQualification({account,client:chain,connectivity,record:rec});
-  const r=await fetch(relay+'/v1/network/qualifications',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({qualification:env.qualification,signature:env.signature,onchain}),signal:AbortSignal.timeout(15000)});
-  if(!r.ok)log(`on-chain refresh ${rec.address}: HTTP ${r.status} ${(await r.text()).slice(0,160)}`);
+  await directories.publish('/v1/network/qualifications',{qualification:env.qualification,signature:env.signature,onchain});
  }
 }
 const loop=Number(arg('loop',0));

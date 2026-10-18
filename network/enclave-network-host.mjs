@@ -22,6 +22,7 @@ import {DirectRuntime} from './direct-runtime.mjs';
 import {verifyQualification} from './provider-qualification.mjs';
 import {HostEgress} from './host-egress.mjs';
 import fs from 'node:fs/promises';
+import {DirectoryClient} from './directory-client.mjs';
 
 
 // cfg.enclaveNetwork.hostEgress -> {apps, own} or null (absent); a malformed block throws
@@ -38,6 +39,7 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  if(c.apps!=='all'&&!Array.isArray(c.apps))throw new Error('Enclave network: apps must be "all" or a list');
  const onNetwork=id=>c.apps==='all'||c.apps.includes(id);
  const relay=async(p,init)=>{const r=await fetch(c.relay+p,{...init,signal:AbortSignal.timeout(10000)});if(r.status===404)return null;const b=await r.json().catch(()=>null);if(!r.ok)throw new Error(`relay ${p.split('/').slice(0,4).join('/')}: ${b?.error||r.status}`);return b;};
+ const directories=new DirectoryClient({origins:c.directories||[c.relay],fetch});
  const clients=(rpc||[]).map(url=>createPublicClient({chain:base,transport:http(url,{timeout:10000})}));
  // wallet, passkey vault (ERC-1271) or SessionVault owners; every configured RPC must agree
  const verify=async(owner,message,signature)=>verifyOwnerSignature({clients,owner,message,signature,addressBook});
@@ -52,7 +54,7 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
   if(!env||now()-env.at>15000){
    // an unreachable relay is not an answer: the last policy it gave stays in force for up to 10 minutes (a refresh that
    // throws must not revoke the app; 2026-10-13 15:21Z), while a definite answer (an envelope, or none) replaces it
-   try{env={at:now(),value:(await relay('/v1/network/policy/'+app.deploymentId))?.envelope||null};policyCache.set(app.deploymentId,env);}
+   try{env={at:now(),value:await directories.policy(app.deploymentId,{owner:lease.owner,verify})};policyCache.set(app.deploymentId,env);}
    catch(e){if(!env||now()-env.at>10*60_000)throw e;}
   }
   if(env.value)return admitNetworkPolicy(env.value,{owner:lease.owner,deploymentId:app.deploymentId,verify,memory});
@@ -63,10 +65,10 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  let directory_={at:0,list:[]},registryAddress=null;
  async function providers(){
   if(now()-directory_.at<30000)return directory_.list;
-  const d=await relay('/v1/network/providers');
   // a community provider must be the operator of its registry host (the registry the address book publishes, unless configured)
   const hostOperator=async hostId=>{const registry=c.registry||(registryAddress||=await leaseReader.bookAddress?.('registry'));if(!registry)return null;
    const [h]=await leaseReader.registryEntries(registry,[hostId]);return h?.active?h.operator:null;};
+  const d=await directories.providers({hostOperator,now:now()});
   directory_={at:now(),list:await eligibleProviders(d?.providers||[],{checkers:c.checkers,now:now(),hostOperator,log})};
   return directory_.list;
  }

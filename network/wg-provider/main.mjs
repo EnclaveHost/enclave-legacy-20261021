@@ -10,6 +10,7 @@ import path from 'node:path';
 import {privateKeyToAccount} from 'viem/accounts';
 import {createPublicClient,http} from 'viem';
 import {base} from 'viem/chains';
+import {DirectoryClient} from '../directory-client.mjs';
 import {LeaseReader} from '../lease-reader.mjs';
 import {WgProvider} from './provider.mjs';
 import {Kernel} from './kernel.mjs';
@@ -24,6 +25,7 @@ import {createWalletClient} from 'viem';
 const log=m=>console.log(new Date().toISOString(),m);
 const cfg=JSON.parse(await fs.readFile(process.argv[2]||'/etc/enclave-network/provider.json','utf8'));
 const account=privateKeyToAccount((await fs.readFile(cfg.operatorKeyFile,'utf8')).trim());
+const directories=new DirectoryClient({origins:cfg.directories||[cfg.relay]});
 const ports={exit:51820,guard:51821,control:51822,...cfg.ports};
 const providerId=providerIdFor(account.address,cfg.publicAddress);
 const stateDir=cfg.stateDir||'/var/lib/enclave-network';await fs.mkdir(stateDir,{recursive:true,mode:0o700});
@@ -48,7 +50,7 @@ const domains=async id=>{if(Date.now()-domainMap.at>60000){try{const m=await rel
 let targetCache={at:0,list:[]};
 const targets=async()=>{
  if(Date.now()-targetCache.at<60000)return targetCache.list;
- try{const d=await relayJSON('/v1/network/providers');
+ try{const d=await directories.providers({hostOperator:async id=>{const h=await hosts(id);return h?.active?h.operator:null;}});
   // A guard may forward to any provider with a current, operator-signed record that offers an exit role - qualified
   // or not, so qualification itself can test guard paths. Which exits a host USES is decided by qualification, on the host.
   const ok=[];for(const e of d?.providers||[]){try{ok.push(await verifyProviderRecord(e.record,{hostOperator:async id=>{const h=await hosts(id);return h?.active?h.operator:null;}}));}catch{}}
@@ -78,7 +80,11 @@ const provider=new WgProvider({config,signer:account,kernel,log,policyMemory,ver
    if(renewal&&c&&Date.now()-c.at<10*60000&&Number(c.l.leaseUntil)>Date.now()){log(`lease ${id.slice(0,10)}: ${e.message}; using the agreeing read from ${Math.round((Date.now()-c.at)/1000)} s ago`);return {...c.l,validUntil:Date.now()+30000};}
    throw e;
   }},
- currentPolicy:async id=>(await relayJSON('/v1/network/policy/'+id))?.envelope||null});
+ currentPolicy:async id=>{
+   const lease=(await leases.refresh([id]))[0];
+   if(!lease)throw Error('current policy owner unavailable');
+   return directories.policy(id,{owner:lease.owner,verify:verifyOwner});
+ }});
 log(`restored ${await provider.restore()} peer(s) from the last run`);
 let receipt=null;
 if(paid){
@@ -93,7 +99,7 @@ if(paid){
  const onchain=async()=>{
   const connectivity=await connectivityAddress(client,cfg.addressBook);if(!connectivity)return;
   if(await ensureHost({wallet,client,connectivity,hostId:cfg.hostId,pricePerGiB6:cfg.pricePerGiB6}))log(`on chain: offering network service at ${cfg.pricePerGiB6} per GiB`);
-  const d=await relayJSON('/v1/network/providers');const mine=d?.providers?.find(e=>e.record?.record?.providerId===providerId);
+  const d=await directories.providers({hostOperator:async id=>{const h=await hosts(id);return h?.active?h.operator:null;}});const mine=d?.providers?.find(e=>e.record?.record?.providerId===providerId);
   const sent=await submitAttestations({wallet,client,connectivity,hostId:cfg.hostId,address:cfg.publicAddress,attestations:(mine?.qualifications||[]).map(x=>x.onchain).filter(Boolean)});
   if(sent)log(`on chain: ${sent} checker attestation(s) submitted`);
  };
@@ -129,8 +135,7 @@ async function publish(){
  const record={version:1,providerId,operator:account.address.toLowerCase(),address:cfg.publicAddress,wgExitKey:keys['wg-exit'],wgGuardKey:keys['wg-guard'],ports,
   roles:provider.accepting?cfg.roles:[],pricePerGiB6:config.pricePerGiB6,region:cfg.region||'unknown',kind:cfg.kind||'enclave',hostId:cfg.hostId||null,issuedAt:now,expiresAt:now+30*60000};
  const env=await signProviderRecord(account,record);
- const r=await fetch(cfg.relay+'/v1/network/providers',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(env),signal:AbortSignal.timeout(10000)});
- if(!r.ok)throw new Error('publish provider record: HTTP '+r.status+' '+(await r.text()).slice(0,200));
+ await directories.publish('/v1/network/providers',env);
 }
 const every=(ms,f,name)=>{const go=()=>f().catch(e=>log(`${name}: ${e.message}`));setInterval(go,ms).unref?.();return go();};
 await every(60000,checkBudget,'budget');

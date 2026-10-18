@@ -38,6 +38,7 @@ import {ShieldIngress} from './shield-ingress.mjs';
 import {guardedFetch} from './guarded-fetch.mjs';
 import {delegatedIPNS} from './discovery-http.mjs';
 import {validateAppNames} from './app-ingress.mjs';
+import {DirectoryClient} from './directory-client.mjs';
 
 // Settings of the retired TUNA transport (and of the TUNA-era direct hosting it carried) that an older configuration may
 // still hold. They are ignored, never acted on: no NKN wallet, provider inventory, control guard or currency conversion runs.
@@ -231,14 +232,15 @@ export async function runPrivacy(configFile){
   const directFetch=globalThis.fetch;
   // through the control circuits when they are up; otherwise (or if they fail) directly, with a fresh deadline (the
   // caller's signal may already have expired on the failed attempt)
-  const networkFetch=async(url,init={})=>{if(wgControl){try{await wgControl.proxies();return await guardedFetch(wgControl.proxies,{timeoutMs:15000,maxBytes:4194304})(url,init);}catch(e){if(cfg.enclaveNetwork?.controlRequired)throw e;}}
+  const networkFetch=async(url,init={})=>{if(wgControl){try{await wgControl.proxies();return await guardedFetch(wgControl.proxies,{timeoutMs:15000,maxBytes:4194304,publicRecords:true})(url,init);}catch(e){if(cfg.enclaveNetwork?.controlRequired)throw e;}}
     return directFetch(url,{...init,signal:AbortSignal.timeout(15000)});};
   const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,
     leaseReader:{registryEntries:(...a)=>leaseReaderLate?leaseReaderLate.registryEntries(...a):Promise.reject(new Error('lease reader not ready yet')),
       bookAddress:(...a)=>leaseReaderLate?leaseReaderLate.bookAddress(...a):Promise.reject(new Error('lease reader not ready yet'))},directory:cfg.directory,log,fetch:networkFetch,
     authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
   networkHost=network;
-  if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,log});await wgControl.start();}
+  if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,
+    probeUrls:cfg.enclaveNetwork.directories?.map(origin=>new URL('/v1/network/providers',origin).href),log});await wgControl.start();}
   // paid providers (enclaveNetwork.paid): the lease must carry the on-chain connectivity authorization
   const leaseReader=new LeaseReader({...cfg.chain,...(cfg.enclaveNetwork.paid?{includeConnectivity:'auto',includeHostPayout:true}:{}),...(wgControl?{proxy:wgControl.proxies}:{})});leaseReaderLate=leaseReader;
   paid=cfg.enclaveNetwork.paid?await createPaidNetwork({config:cfg.enclaveNetwork.paid,directory:path.join(cfg.directory,'paid'),leaseReader,providers:network.providers,fetchFn:networkFetch,log}):null;
@@ -250,9 +252,15 @@ export async function runPrivacy(configFile){
       const circuits=agent.manager.apps.get(id)?.circuits.filter(c=>c.healthy&&!c.closed&&c.egress)||[];
       // the paths a publication may leave by: the app's own circuits, else (an app with website-only circuits) the
       // host's Enclave-network control circuits; never the host's own address
-      const paths=circuits.length?circuits.map(c=>c.transport==='direct'?fetch:guardedFetch(c.egress,{timeoutMs:5000})):wgControl?[guardedFetch(wgControl.proxies,{timeoutMs:8000})]:[];
+      const paths=circuits.length?circuits.map(c=>c.transport==='direct'?fetch:guardedFetch(c.egress,{timeoutMs:5000,publicRecords:true})):wgControl?[guardedFetch(wgControl.proxies,{timeoutMs:8000,publicRecords:true})]:[];
       if(!paths.length)return;
       const tasks=[];
+      if(cfg.enclaveNetwork?.directories?.length)tasks.push((async()=>{
+        let error;for(const publishFetch of paths){try{
+          const client=new DirectoryClient({origins:cfg.enclaveNetwork.directories,fetch:publishFetch,timeoutMs:5000});
+          await client.publish('/v1/network/routes',{publication:{version:2,endpoint:cfg.endpoint,policy:value.policy,bundle:value.bundle}});return;
+        }catch(e){error=e;}}throw error;
+      })());
       // Publishing to Nan's DNS mirror moves an app off the shared route for good
       // (the mirror remembers it), so it is opted into per app, never all at once.
       if(cfg.mirror&&apps.find(a=>a.deploymentId===id)?.publishToMirror===true)tasks.push((async()=>{

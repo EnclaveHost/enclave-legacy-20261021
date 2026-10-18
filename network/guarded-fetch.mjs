@@ -1,5 +1,7 @@
 import https from 'node:https';
-import {SocksHttpsAgent} from './socks-connect.mjs';
+import http from 'node:http';
+import net from 'node:net';
+import {SocksHttpsAgent,SocksPublicHttpAgent} from './socks-connect.mjs';
 
 export function withGuardedFailover(proxy,fetchForProxy){
     const failedUntil=new Map();let preferred;
@@ -22,17 +24,20 @@ export function withGuardedFailover(proxy,fetchForProxy){
 
 // Fetch-compatible bounded HTTPS for chain RPC and discovery. Names are resolved
 // by the guard; redirects and implicit direct/host-DNS fallbacks are forbidden.
-export function guardedFetch(proxy,{maxBytes=2097152,timeoutMs=15000}={}){
+export function guardedFetch(proxy,{maxBytes=2097152,timeoutMs=15000,publicRecords=false}={}){
   if(typeof proxy!=='function'&&(typeof proxy!=='string'||!proxy))throw new Error('explicit SOCKS proxy required');
-  if(typeof proxy==='function')return withGuardedFailover(proxy,entry=>guardedFetch(entry,{maxBytes,timeoutMs}));
+  if(typeof proxy==='function')return withGuardedFailover(proxy,entry=>guardedFetch(entry,{maxBytes,timeoutMs,publicRecords}));
   return async(input,init={})=>{
     const url=new URL(typeof input==='string'||input instanceof URL?input:input.url);
-    if(url.protocol!=='https:'||url.username||url.password||url.hash)throw new Error('guarded HTTPS URL required');
-    const agent=new SocksHttpsAgent(proxy);
+    const publicHTTP=publicRecords&&url.protocol==='http:'&&net.isIP(url.hostname.replace(/^\[|\]$/g,''))&&
+      !url.search&&/^\/v1\/network\/(?:providers|qualifications|routes|records|policy\/0x[0-9a-f]{64})$/.test(url.pathname);
+    if((url.protocol!=='https:'&&!publicHTTP)||url.username||url.password||url.hash)throw new Error('guarded HTTPS URL required');
+    const agent=publicHTTP?new SocksPublicHttpAgent(proxy):new SocksHttpsAgent(proxy);
     try{
       return await new Promise((resolve,reject)=>{
         const headers=Object.fromEntries(new Headers(init.headers||input.headers||{}));
-        const req=https.request(url,{method:init.method||input.method||'GET',headers,agent,signal:init.signal,timeout:timeoutMs},res=>{
+        if(publicHTTP&&Object.keys(headers).some(k=>!['content-type','accept'].includes(k)))throw Error('public records cannot carry credential headers');
+        const req=(publicHTTP?http:https).request(url,{method:init.method||input.method||'GET',headers,agent,signal:init.signal,timeout:timeoutMs},res=>{
           const chunks=[];let length=0;
           res.on('data',b=>{length+=b.length;if(length>maxBytes)res.destroy(new Error('guarded response too large'));else chunks.push(b);});
           res.once('error',reject);res.once('end',()=>{
