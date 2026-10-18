@@ -12,7 +12,7 @@ Legacy mirrors, BYO credentials, custom domains and the temporary public-policy 
 
 The s3-ipfs-adapter release adds direct deployment-bound EIP-191 upload authorization, preserving HMAC compatibility. CLI and console support the direct protocol but it is not the production default until the adapter has been upgraded. Contract wallets and delegated sessions require further work. The new WASM has been uploaded to the actual adapter and fetched back with its hash checked. Publishing and changing the production deployment require its owner's hardware-wallet signatures.
 
-The active app bootstrap inventory is being copied and CID-verified separately. The Sia S3 guest still calls indexd on nan, backed by PostgreSQL. Both that dependency and the metadata/key recovery path must migrate before storage is independent.
+The 17 active/release bootstrap CIDs are copied and CID-verified on four public replicas; all missing active WASM and config objects were seeded into the actual adapter. The complete retained adapter inventory is being copied and verified separately. The Sia S3 guest still calls indexd on nan, backed by PostgreSQL. Both that dependency and the metadata/key recovery path must migrate before storage is independent.
 
 ## Host ownership and veto: source only, not deployed
 
@@ -22,7 +22,9 @@ A host owner commits a local admission document with `setPolicy`. The document b
 
 The custody combiner now accepts a sufficient independent quorum when Enclave answers challenges but refuses or supplies invalid shares. Thresholds, share checks and duplicate-seat exclusion remain intact. The live committee still consists of a single Enclave seat, so source changes alone cannot create independent recovery.
 
-Do not deploy this custody change as a completed veto migration. Remaining work includes host admission integration, publishing and binding host ownership, signed/measured runtime releases, replacing payout-based custody classification, and redistribution into an independently operated committee. Existing catalog-wide approval gates still need replacement with the verified host-local policy in all serving paths.
+The proposed vault now pins `EnclaveHostOwnership` and its registry at construction. Custodian admission computes the Enclave seat from accepted ownership, never payout declarations. Its membership reader checks fresh agreeing chain state and refuses legacy vaults without that authority interface. This is a new contract/runtime deployment, not an in-place update: leave existing committees on their compatible runtime until a controlled bundle/committee migration is ready. Existing committee flags remain epoch snapshots; ownership changes affect new admissions/handovers.
+
+Do not deploy this custody change as a completed veto migration. Remaining work includes host admission integration, publishing and binding host ownership, signed/measured runtime releases, activating the new wallet-based custody classification, and redistribution into an independently operated committee. Existing catalog-wide approval gates still need replacement with the verified host-local policy in all serving paths.
 
 ## Required retirement evidence
 
@@ -34,3 +36,5 @@ Do not deploy this custody change as a completed veto migration. Remaining work 
 - Wallet veto stops only its own host; independent hosting continues. Ownership transfer revokes the former wallet.
 - Native ENS recovery works without enclave.host, and guest TLS renewal succeeds independently.
 - A timed nan outage demonstrates these properties before services or data on nan are removed.
+
+The legacy release reader still resolves deployment state and app-host bindings through the address book. Removing mutable global routing/ledger authority from the independent path remains necessary; pinned custody membership alone does not establish censorship resistance.

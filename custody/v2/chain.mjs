@@ -9,7 +9,12 @@ export const MACHINE = [
   { name: "chipId", type: "bytes32" }, { name: "registryId", type: "bytes32" }, { name: "measurement", type: "bytes32" },
 ];
 const M_ARR = { type: "tuple[]", components: MACHINE };
+const HOST_OWNERSHIP_ABI = [
+  { type: "function", name: "authority", stateMutability: "view", inputs: [{type:"bytes32"}], outputs: [{type:"address"},{type:"address"},{type:"uint64"},{type:"bytes32"}] },
+];
 export const VAULT_V2_ABI = [
+  { type: "function", name: "hostOwnership", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
+  { type: "function", name: "hostRegistry", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
   { type: "function", name: "book", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "enclaveOwner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "policyOf", stateMutability: "view", inputs: [{ name: "id", type: "bytes32" }],
@@ -141,14 +146,15 @@ export function createChainReaderV2({ rpcs, vault, minAgree, confirmations = 0, 
       return { dealCommitments: b(dc), sealed: sealed.map(b) };
     })),
     readCodeActiveAt: ({ committeeId, measurement }) => agreed(withBlock(async (c, n) => ({ activeAt: Number(await rdOf(c, n)(vault, VAULT_V2_ABI, "codeActiveAt", [committeeId, measurement])) }))),
-    // the host entry a machine names: { active, operator, payoutWallet }
+    // Membership is only supported on the wallet-authority vault release.
+    // No fallback to payoutWallet or a mutable book registry. Old vaults must
+    // keep their old measured membership runtime until a controlled handover.
     readRegistryEntry: ({ registryId }) => agreed(withBlock(async (c, n) => {
       const rd = rdOf(c, n);
-      const book = await rd(vault, VAULT_V2_ABI, "book");
-      const reg = await rd(book, BOOK_ABI, "addr", [BOOK_KEYS.registry]);
-      if (reg === ZERO) return { entry: null };
-      const e = await rd(reg, REGISTRY_V4_ABI, "get", [registryId]);
-      return { entry: { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet) } };
-    })),
+      const [reg, ownership] = await Promise.all([rd(vault, VAULT_V2_ABI, "hostRegistry"), rd(vault, VAULT_V2_ABI, "hostOwnership")]);
+      if (reg === ZERO || ownership === ZERO) throw err("host_authority_missing", "wallet host authority required");
+      const [e, authority] = await Promise.all([rd(reg, REGISTRY_V4_ABI, "get", [registryId]), rd(ownership, HOST_OWNERSHIP_ABI, "authority", [registryId])]);
+      return { entry: { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet), owner: lc(authority[0]) } };
+    })).then(fresh),
   };
 }

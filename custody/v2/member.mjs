@@ -60,8 +60,9 @@ export function createMember({ chainId, vault, identity, encPrivateKey, machine,
     if (!r.entry || !r.entry.active) throw new Error("the host's registry entry is not active");
     const who = await D.recoverDigest(D.hostDigest({ chainId, vault: vaultL, machine: me }), sig);
     if (!who || who !== r.entry.operator) throw new Error("the host binding is not signed by the host's registry operator");
+    if (!r.entry.owner || /^0x0{40}$/.test(r.entry.owner)) throw new Error("host wallet ownership has not been accepted");
     st.hostSig = sig; save();
-    return { enclave: r.entry.payoutWallet === lc(enclaveOwner) };
+    return { enclave: r.entry.owner === lc(enclaveOwner) };
   }
 
   // ---- genesis (§10: the Enclave seat creates the committee) ----
@@ -94,7 +95,8 @@ export function createMember({ chainId, vault, identity, encPrivateKey, machine,
     if (!reg.entry || !reg.entry.active) return { ok: false, reason: "host registry entry not active" };
     const who = await D.recoverDigest(D.hostDigest({ chainId, vault: vaultL, machine: m }), hostSig || ev.hostSig);
     if (!who || who !== reg.entry.operator) return { ok: false, reason: "host binding not signed by the host's registry operator" };
-    const enclave = reg.entry.payoutWallet === lc(enclaveOwner);
+    if (!reg.entry.owner || /^0x0{40}$/.test(reg.entry.owner)) return { ok: false, reason: "host wallet ownership has not been accepted" };
+    const enclave = reg.entry.owner === lc(enclaveOwner);
     if (!enclave) {
       const c = await capacityCheck({ machine: m, chipIdRaw: v.chipId, registry: reg.entry, receipts: Array.isArray(ev.receipts) ? ev.receipts : [] });
       if (!c || !c.ok) return { ok: false, reason: `proof of capacity: ${(c && c.reason) || "refused"}` };

@@ -6,8 +6,11 @@ contract, the custodian HTTP API, guestd/supervisor authorization and the guest'
 
 ## 1. `EnclaveSecretVaultV2` (Base)
 
-No owner, no admin, no proxy. Constructor: `(address book, address enclaveOwner)`.
-- `book` is the EnclaveAddressBook (`addr(bytes32)`), as in v1.
+Source migration proposal (not the live deployed vault): wallet-based admission requires a new vault and compatible measured custodian runtime. Existing committees and encrypted bundles must be migrated explicitly before changing discovery.
+
+No owner, no admin, no proxy. Constructor: `(address book, address enclaveOwner, address hostOwnership)`.
+- `book` is the EnclaveAddressBook (`addr(bytes32)`), as in v1, for deployment/session state.
+- `hostOwnership` is a deployed `EnclaveHostOwnership`. It and its registry are pinned immutably. Registry operators nominate initial wallet owners; those wallets must accept.
 - `enclaveOwner` is `0x0b2d009c0c9Af05b12100D77F3c815fea822eE61` on Base.
 
 ### 1.1 Machines and seats
@@ -25,14 +28,14 @@ machineHash(m) = keccak256(abi.encode(m.identity, m.encKey, keccak256(bytes(m.en
 ```
 
 **Enclave-owned** is computed on chain, never supplied:
-1. `registry = book.addr("registry")`.
-2. Read `registry.get(registryId)`, decoding only the schema-4 prefix
-   `(string endpoint, string repo, bytes32 measurement, address operator, uint64 registeredAt, uint64 lastSeen, bool active,
-   uint64 cpu, uint64 gpu, address proofKey, address payoutWallet)`. Later schemas append fields, so this prefix holds.
+1. `registry = hostRegistry`, pinned from `hostOwnership.registry()` at construction.
+2. Read `registry.get(registryId)`, decoding the stable operator/active prefix
+   `(string endpoint, string repo, bytes32 measurement, address operator, uint64 registeredAt, uint64 lastSeen, bool active)`. Later schemas append fields, so this prefix holds.
 3. The entry must be `active`.
 4. The host binding signature `hostSig` must recover to `operator`, over
    `hostDigest(m) = keccak256(abi.encode("enclave-custody-v2 host", block.chainid, address(this), machineHash(m)))`.
-5. The machine is Enclave-owned iff `payoutWallet == enclaveOwner`.
+5. Read `hostOwnership.authority(registryId)`. Ownership must have been accepted (nonzero). The machine is Enclave-owned iff that owner equals `enclaveOwner`. Payout declarations confer no authority.
+6. Admission and handover snapshot that classification for the epoch; a wallet transfer does not retroactively redistribute stored shares.
 
 **Seats** are `custody/v2/protocol.mjs seatLayout`, over the machine list in order:
 - all Enclave machines form one seat;

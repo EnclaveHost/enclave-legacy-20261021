@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import { Test } from "forge-std/Test.sol";
 import { EnclaveSecretVaultV2, IVaultV2Ledger } from "../../EnclaveSecretVaultV2.sol";
+import { EnclaveHostOwnership } from "../../EnclaveHostOwnership.sol";
 import { EnclaveRegistry } from "../../EnclaveRegistry.sol";
 
 contract V2Book {
@@ -38,6 +39,7 @@ contract EnclaveSecretVaultV2Test is Test {
     EnclaveSecretVaultV2 vault;
     V2Book book;
     EnclaveRegistry registry;
+    EnclaveHostOwnership ownership;
     V2Ledger ledger;
     V2Factory factory;
     address enclaveOwner = makeAddr("enclaveOwner");
@@ -63,7 +65,8 @@ contract EnclaveSecretVaultV2Test is Test {
         book.set("registry", address(registry));
         book.set("deployments", address(ledger));
         book.set("sessionVaultFactory", address(factory));
-        vault = new EnclaveSecretVaultV2(address(book), enclaveOwner);
+        ownership = new EnclaveHostOwnership(address(registry));
+        vault = new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
         Y = abi.encodePacked(bytes1(0x02), keccak256("committee-key"));
         owner = vm.addr(ownerKey);
         ledger.setOwner(D, owner);
@@ -90,7 +93,14 @@ contract EnclaveSecretVaultV2Test is Test {
         vm.prank(vm.addr(k));
         rid = registry.register(string.concat("https://host", vm.toString(seed), ".example"), "EnclaveHost/enclave", bytes32(0), 1, 0, address(0));
         opKey[rid] = k;
-        if (payout != address(0)) { vm.prank(payout); registry.setPayoutWallet(rid); }
+        if (payout != address(0)) {
+            vm.prank(payout); registry.setPayoutWallet(rid);
+            (address accepted,,,) = ownership.authority(rid);
+            if (accepted == address(0)) {
+                vm.prank(vm.addr(k)); ownership.proposeOwner(rid,payout);
+                vm.prank(payout); ownership.acceptOwner(rid);
+            }
+        }
     }
     /// a custodian machine on its own host; Enclave-owned iff `enclave`
     function _machine(uint256 seed, bool enclave) internal returns (EnclaveSecretVaultV2.Machine memory m) {
@@ -229,15 +239,16 @@ contract EnclaveSecretVaultV2Test is Test {
         bytes memory hSig = _hostSig(a);
         vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
         vault.createCommittee("salt", a, Y, cs, idSig, hSig);
-        // no payout wallet declared at all
+        // no accepted ownership at all
         EnclaveSecretVaultV2.Machine memory b = _machineOn(3, _host(3, address(0)));
         idSig = _psign(idKey[b.identity], _genesisDigest(_cid("salt"), b, cs));
         hSig = _hostSig(b);
-        vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
+        vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", b, Y, cs, idSig, hSig);
-        // the Enclave wallet clears its declaration: no longer Enclave-owned
+        // ownership transfers: the former owner no longer classifies this host
         EnclaveSecretVaultV2.Machine memory e = _machine(4, true);
-        vm.prank(enclaveOwner); registry.clearPayoutWallet(e.registryId);
+        vm.prank(enclaveOwner); ownership.proposeOwner(e.registryId,otherWallet);
+        vm.prank(otherWallet); ownership.acceptOwner(e.registryId);
         idSig = _psign(idKey[e.identity], _genesisDigest(_cid("salt"), e, cs));
         hSig = _hostSig(e);
         vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
@@ -272,9 +283,9 @@ contract EnclaveSecretVaultV2Test is Test {
         bytes memory hs = _hostSig(u);
         vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", u, Y, cs, idSig, hs);
-        // no registry in the book
+        // an address-book edit cannot change the pinned host registry
         book.set("registry", address(0));
-        vm.expectRevert(EnclaveSecretVaultV2.NoRegistry.selector);
+        vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", u, Y, cs, idSig, hs);
     }
     function _highS(bytes memory sig) internal pure returns (bytes memory) {
@@ -1041,12 +1052,31 @@ contract EnclaveSecretVaultV2Test is Test {
         assertEq(pr, 3); assertEq(sr, 3); assertFalse(paused);
     }
 
+    function testPayoutSpoofDoesNotGrantEnclaveSeat() public {
+        EnclaveSecretVaultV2.Machine memory m = _machine(51,false);
+        vm.prank(enclaveOwner); registry.setPayoutWallet(m.registryId);
+        bytes32[] memory cs = _codeSet();
+        bytes memory sig = _psign(idKey[m.identity],_genesisDigest(_cid("salt"),m,cs));
+        bytes memory hs = _hostSig(m);
+        vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
+        vault.createCommittee("salt",m,Y,cs,sig,hs);
+    }
+    function testPayoutChangeAndBookEditCannotRemoveAcceptedOwnership() public {
+        EnclaveSecretVaultV2.Machine memory m = _machine(52,true);
+        vm.prank(stranger); registry.setPayoutWallet(m.registryId);
+        book.set("registry",address(0));
+        bytes32 cid = _genesis(m);
+        (,bool[] memory enc) = vault.machinesOf(cid,1);
+        assertTrue(enc[0]);
+    }
     function test_constructorAndImmutables() public {
+        assertEq(address(vault.hostOwnership()), address(ownership));
+        assertEq(vault.hostRegistry(), address(registry));
         assertEq(address(vault.book()), address(book));
         assertEq(vault.enclaveOwner(), enclaveOwner);
         vm.expectRevert();
-        new EnclaveSecretVaultV2(address(0), enclaveOwner);
+        new EnclaveSecretVaultV2(address(0), enclaveOwner, address(ownership));
         vm.expectRevert();
-        new EnclaveSecretVaultV2(address(book), address(0));
+        new EnclaveSecretVaultV2(address(book), address(0), address(ownership));
     }
 }

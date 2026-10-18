@@ -52,16 +52,17 @@ contract RigRegistry {
 `;
 function compile() {
   const src = fs.readFileSync(path.join(ROOT, "contracts/EnclaveSecretVaultV2.sol"), "utf8");
-  const key = createHash("sha256").update(src).update(MOCKS).digest("hex").slice(0, 16);
+  const ownershipSrc = fs.readFileSync(path.join(ROOT, "contracts/EnclaveHostOwnership.sol"), "utf8");
+  const key = createHash("sha256").update(src).update(ownershipSrc).update(MOCKS).digest("hex").slice(0, 16);
   const cache = path.join(process.env.TMPDIR || "/tmp", `enclave-custody-v2-rig-${key}.json`);
   if (fs.existsSync(cache)) return JSON.parse(fs.readFileSync(cache, "utf8"));
   const solc = require("solc");
-  const out = JSON.parse(solc.compile(JSON.stringify({ language: "Solidity", sources: { "V.sol": { content: src }, "Rig.sol": { content: MOCKS } },
+  const out = JSON.parse(solc.compile(JSON.stringify({ language: "Solidity", sources: { "V.sol": { content: src }, "Rig.sol": { content: MOCKS }, "Ownership.sol": {content: ownershipSrc} },
     settings: { viaIR: true, optimizer: { enabled: true, runs: 200 }, outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } } } })));
   const errs = (out.errors || []).filter((e) => e.severity === "error");
   if (errs.length) throw new Error(errs.map((e) => e.formattedMessage).join("\n"));
   const pick = (f, n) => ({ abi: out.contracts[f][n].abi, bytecode: "0x" + out.contracts[f][n].evm.bytecode.object });
-  const r = { vault: pick("V.sol", "EnclaveSecretVaultV2"), book: pick("Rig.sol", "RigBook"), ledger: pick("Rig.sol", "RigLedger"), registry: pick("Rig.sol", "RigRegistry") };
+  const r = { ownership: pick("Ownership.sol", "EnclaveHostOwnership"), vault: pick("V.sol", "EnclaveSecretVaultV2"), book: pick("Rig.sol", "RigBook"), ledger: pick("Rig.sol", "RigLedger"), registry: pick("Rig.sol", "RigRegistry") };
   fs.writeFileSync(cache, JSON.stringify(r));
   return r;
 }
@@ -86,22 +87,26 @@ test("custody v2 end to end: genesis, release at t=1, join + handover through th
       return hash;
     };
     const deploy = async (a, c, args = []) => (await pub.waitForTransactionReceipt({ hash: await wallet(a).deployContract({ abi: c.abi, bytecode: c.bytecode, args }) })).contractAddress;
-    const deployer = await acct(), enclaveOwner = (await acct()).address;
+    const deployer = await acct(), enclaveWallet = await acct(), enclaveOwner = enclaveWallet.address;
     const book = await deploy(deployer, C.book), ledger = await deploy(deployer, C.ledger), registry = await deploy(deployer, C.registry);
     await send(deployer, book, C.book.abi, "set", [stringToHex("deployments", { size: 32 }), ledger]);
     await send(deployer, book, C.book.abi, "set", [stringToHex("registry", { size: 32 }), registry]);
-    const vault = (await deploy(deployer, C.vault, [book, enclaveOwner])).toLowerCase();
+    const ownership = await deploy(deployer, C.ownership, [registry]);
+    const vault = (await deploy(deployer, C.vault, [book, enclaveOwner, ownership])).toLowerCase();
     const chainId = 31337;
     const nowBlock = async () => Number((await pub.getBlock()).timestamp);
     // simulated clock for the engine's batching/liveness windows
     let skew = 0; const now = () => Date.now() + skew;
 
-    // ---- hosts: two Enclave-owned (payout = enclaveOwner), two others, one app host ----
+    // ---- hosts: two accepted by Enclave wallet, two others, one app host ----
     const hosts = {};
     for (const [name, enclave] of [["ea", true], ["eb", true], ["nb", false], ["nc", false], ["app", false]]) {
       const op = await acct(); const endpoint = `https://${name}.host.test`;
       await send(deployer, registry, C.registry.abi, "set", [endpoint, op.address, true, enclave ? enclaveOwner : "0x" + "00".repeat(20)]);
-      hosts[name] = { op, endpoint, registryId: keccak256(toBytes(endpoint)) };
+      const registryId = keccak256(toBytes(endpoint)), owner = enclave ? enclaveWallet : op;
+      await send(op, ownership, C.ownership.abi, "proposeOwner", [registryId, owner.address]);
+      await send(owner, ownership, C.ownership.abi, "acceptOwner", [registryId]);
+      hosts[name] = { op, endpoint, registryId };
     }
 
     // ---- custodian machines (in-process), routed by endpoint ----
@@ -197,6 +202,13 @@ test("custody v2 end to end: genesis, release at t=1, join + handover through th
       return v2.decryptBundle({ S: S2, label: v2.labelOf({ chainId, vault, id, secretRev: st.policy.secretRev, committeeId: cid }), bundle: st.bundle.data }).env;
     };
     assert.deepEqual(await unlock([E1]), env, "t = 1: the Enclave seat alone unlocks");
+
+    // A payout declaration naming Enclave must not waive an independent host's
+    // proof of capacity or merge it into Enclave's seat.
+    await send(deployer, registry, C.registry.abi, "set", [hosts.nb.endpoint, hosts.nb.op.address, true, enclaveOwner]);
+    const nbRegistry = await reader.readRegistryEntry({registryId:hosts.nb.registryId});
+    assert.equal(nbRegistry.entry.owner, hosts.nb.op.address.toLowerCase());
+    assert.equal(nbRegistry.entry.payoutWallet,enclaveOwner.toLowerCase());
 
     // ---- 3. candidates join; E1 coordinates a handover through the contract ----
     const E2 = await makeMachine("e2", hosts.eb), NB = await makeMachine("nb", hosts.nb), NC = await makeMachine("nc", hosts.nc);

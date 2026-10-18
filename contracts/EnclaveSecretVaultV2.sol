@@ -35,6 +35,10 @@ interface IVaultV2Ledger {
     function get(bytes32 id) external view returns (Deployment memory);
 }
 interface IVaultV2Registry { function get(bytes32 id) external view; }   // decoded by hand: only the schema-4 prefix
+interface IVaultV2HostOwnership {
+    function registry() external view returns (address);
+    function authority(bytes32 hostId) external view returns (address owner, address pendingOwner, uint64 revision, bytes32 policyHash);
+}
 interface IVaultV2Factory { function isVault(address v) external view returns (bool); }
 interface IVaultV2Session { function owner() external view returns (address); }
 interface IVaultV21271 { function isValidSignature(bytes32 hash, bytes calldata sig) external view returns (bytes4); }
@@ -42,7 +46,6 @@ interface IVaultV21271 { function isValidSignature(bytes32 hash, bytes calldata 
 contract EnclaveSecretVaultV2 {
     bytes32 private constant BOOK_DEPLOYMENTS = "deployments";
     bytes32 private constant BOOK_SESSION_FACTORY = "sessionVaultFactory";
-    bytes32 private constant BOOK_REGISTRY = "registry";
     uint256 public constant MAX_SEATS = 64;
     uint256 public constant MAX_MACHINES = 96;
     uint256 public constant MAX_ENDPOINT = 190;
@@ -57,6 +60,8 @@ contract EnclaveSecretVaultV2 {
 
     IVaultV2Book public immutable book;
     address public immutable enclaveOwner;
+    IVaultV2HostOwnership public immutable hostOwnership;
+    address public immutable hostRegistry;
 
     // ---------------------------------------------------------------- committees
     struct Machine {
@@ -150,8 +155,13 @@ contract EnclaveSecretVaultV2 {
     error BadDeal();
     error BadAck();
 
-    constructor(address book_, address enclaveOwner_) {
+    constructor(address book_, address enclaveOwner_, address hostOwnership_) {
         if (book_ == address(0) || enclaveOwner_ == address(0)) revert();
+        if (hostOwnership_.code.length == 0) revert BadHost();
+        hostOwnership = IVaultV2HostOwnership(hostOwnership_);
+        address registry_ = IVaultV2HostOwnership(hostOwnership_).registry();
+        if (registry_.code.length == 0) revert NoRegistry();
+        hostRegistry = registry_;
         book = IVaultV2Book(book_);
         enclaveOwner = enclaveOwner_;
     }
@@ -184,36 +194,36 @@ contract EnclaveSecretVaultV2 {
     }
 
     // ================================================================= machines and seats
-    /// the host's registry entry, schema-4 prefix: (endpoint, repo, measurement, operator, registeredAt, lastSeen, active,
-    /// cpu, gpu, proofKey, payoutWallet). Later schemas append fields, so only the head words 3, 6 and 10 are read.
-    function _hostOf(bytes32 registryId) private view returns (address operator, bool active, address payout) {
-        address reg = book.addr(BOOK_REGISTRY);
-        if (reg == address(0)) revert NoRegistry();
-        (bool ok, bytes memory ret) = reg.staticcall(abi.encodeCall(IVaultV2Registry.get, (registryId)));
+    /// The ownership contract pins the registry. A mutable address-book entry
+    /// cannot reclassify a host. Only operator and active from its stable prefix
+    /// are read here; payout declarations never confer custody authority.
+    function _hostOf(bytes32 registryId) private view returns (address operator, bool active) {
+        (bool ok, bytes memory ret) = hostRegistry.staticcall(abi.encodeCall(IVaultV2Registry.get, (registryId)));
         if (!ok || ret.length < 32) revert BadHost();
         uint256 base;
         assembly ("memory-safe") { base := mload(add(ret, 32)) }
-        if (base > ret.length || ret.length - base < 11 * 32) revert BadHost();
-        uint256 wOp; uint256 wActive; uint256 wPayout;
+        if (base > ret.length || ret.length - base < 7 * 32) revert BadHost();
+        uint256 wOp; uint256 wActive;
         assembly ("memory-safe") {
             let p := add(add(ret, 32), base)
             wOp := mload(add(p, 96))
             wActive := mload(add(p, 192))
-            wPayout := mload(add(p, 320))
         }
-        if (wOp >> 160 != 0 || wActive > 1 || wPayout >> 160 != 0) revert BadHost();
-        return (address(uint160(wOp)), wActive == 1, address(uint160(wPayout)));
+        if (wOp >> 160 != 0 || wActive > 1) revert BadHost();
+        return (address(uint160(wOp)), wActive == 1);
     }
 
     /// shape checks, the host binding, and the computed Enclave flag (spec §1.1)
     function _admit(Machine calldata m, bytes calldata hostSig) private view returns (bool enclave) {
         uint256 len = bytes(m.endpoint).length;
         if (m.identity == address(0) || m.encKey == bytes32(0) || m.chipId == bytes32(0) || len == 0 || len > MAX_ENDPOINT) revert BadMachine();
-        (address operator, bool active, address payout) = _hostOf(m.registryId);
+        (address operator, bool active) = _hostOf(m.registryId);
         if (!active || operator == address(0)) revert BadHost();
         address got = _recover(_hostDigest(machineHash(m)), hostSig);
         if (got == address(0) || got != operator) revert BadHost();
-        return payout == enclaveOwner;
+        (address owner,,,) = hostOwnership.authority(m.registryId);
+        if (owner == address(0)) revert BadHost();
+        return owner == enclaveOwner;
     }
 
     /// protocol.mjs seatLayout: -> (seats n, threshold t, share count W, Enclave seat weight wE (0 = no Enclave seat))
