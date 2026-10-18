@@ -8,11 +8,13 @@ Four public signed-record directories run on the existing provider machines. The
 
 Legacy mirrors, BYO credentials, custom domains and the temporary public-policy bridge remain during migration. This is not an outage acceptance result and nan must remain running.
 
+Providers and the checker publish only to the four direct directory origins. The legacy DNS/API lost routes when its old provider records expired; `scripts/network/mirror-public-providers.mjs` now pulls signed provider and qualification records into that legacy consumer. It preserves negative verdicts, uses the destination's existing verification, and holds no signing keys. This bridge keeps current DNS working until DNS/ENS migration; it does not make nan authoritative for the independent directories.
+
 ## Storage release prepared
 
 The s3-ipfs-adapter release adds direct deployment-bound EIP-191 upload authorization, preserving HMAC compatibility. CLI and console support the direct protocol but it is not the production default until the adapter has been upgraded. Contract wallets and delegated sessions require further work. The new WASM has been uploaded to the actual adapter and fetched back with its hash checked. Publishing and changing the production deployment require its owner's hardware-wallet signatures.
 
-The 17 active/release bootstrap CIDs are copied and CID-verified on four public replicas; all missing active WASM and config objects were seeded into the actual adapter. The complete retained adapter inventory is being copied and verified separately. The Sia S3 guest still calls indexd on nan, backed by PostgreSQL. Both that dependency and the metadata/key recovery path must migrate before storage is independent.
+The 17 active/release bootstrap CIDs are copied and CID-verified on four public replicas; all missing active WASM and config objects were seeded into the actual adapter. All 936 unique retained CIDs (4,690,923,948 bytes, from 1,239 inventory entries) are now locally CAR-verified and served on every replica. All 7,488 raw/CAR HTTP HEAD checks and full content samples passed. This is a recovery snapshot, not live backing-state replication. One 101 MB adapter CAR transfer failed after two attempts, with the final response truncated; ranged raw retrieval rebuilt its exact CID, and the resulting static CAR passed complete public readback. Streaming reliability still needs investigation. The Sia S3 guest still calls indexd on nan, backed by PostgreSQL. Both that dependency and the metadata/key recovery path must migrate before storage is independent.
 
 ## Host ownership and veto: source only, not deployed
 
