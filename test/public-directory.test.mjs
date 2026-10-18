@@ -7,6 +7,7 @@ import {privateKeyToAccount} from 'viem/accounts';
 import {PublicDirectory} from '../network/public-directory.mjs';
 import {DirectoryClient} from '../network/directory-client.mjs';
 import {createDirectoryServer} from '../network/directory-server.mjs';
+import {publicPolicies} from '../scripts/network/mirror-legacy-policies.mjs';
 import {signProviderRecord,signQualification,providerIdFor,CHECKS} from '../network/provider-directory.mjs';
 import {defaultNetworkPolicy,signNetworkPolicy} from '../network/network-policy.mjs';
 import {signDelegation,signRoute,recordHash} from '../network/route-record.mjs';
@@ -106,4 +107,11 @@ test('one unreachable mirror is backed off across apps; total outage still tries
   assert.deepEqual(calls,['1','2','2']);allDown=true;
   await assert.rejects(client.read('/v1/network/providers'),/unavailable/);
   calls.length=0;await assert.rejects(client.read('/v1/network/providers'),/unavailable/);assert.deepEqual(calls,['1','2']);
+});
+test('legacy migration bridge exports only the signed public policy',async t=>{
+  const r=await rig(t),envelope=await signNetworkPolicy(owner,r.policy);
+  const state={policies:{[id]:{...envelope,secret:'never-export'}},byo:{[id]:{blob:'sealed-secret'}},accounts:{password:'private'}};
+  assert.deepEqual(publicPolicies(state),[envelope]);
+  state.policies[id].policy={...r.policy,privateKey:'must-fail'};
+  assert.throws(()=>publicPolicies(state),/policy/);
 });
