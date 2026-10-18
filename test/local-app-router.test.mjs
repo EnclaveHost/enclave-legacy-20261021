@@ -39,7 +39,7 @@ test('a front: local websites stay on the host, everything else goes out unchang
  // "the internet" behind the real egress: answers what it was sent
  const internet=net.createServer(c=>c.once('data',d=>c.end('internet got '+(d[0]===0x16?'tls':String(d)))));await new Promise(r=>internet.listen(0,'127.0.0.1',r));
  const dialed=[];
- const egress=new HostEgress({authorize:()=>true,lookup:async()=>['93.184.216.34'],connect:({host,port,timeout})=>{dialed.push(`${host}:${port}`);return net.connect({host:'127.0.0.1',port:internet.address().port,timeout});}});
+ const egress=new HostEgress({authorize:()=>true,lookup:async name=>name==='inside.example'?['10.1.2.3']:['93.184.216.34'],connect:({host,port,timeout})=>{dialed.push(`${host}:${port}`);return net.connect({host:'127.0.0.1',port:internet.address().port,timeout});}});
  const circuit=await egress.start({deploymentId:'0x'+'aa'.repeat(32)});
  const forwarded=[];
  const router=new LocalAppRouter({target:n=>n==='eeee.app.enclave.host'&&websiteOn?id:null,
@@ -57,10 +57,36 @@ test('a front: local websites stay on the host, everything else goes out unchang
  r=await via(front,{host:'example.com',dport:80},Buffer.from('GET'));
  assert.equal(r.reply,'internet got GET','other ports pass straight through');
  r=await via(front,{ip:'10.0.0.1',dport:443},other);
+ assert.equal(r.reply,'internet got tls','a refused address after the peek is retried once by the ClientHello\'s name');
+ assert.equal(dialed.at(-1),'93.184.216.34:443','the retry went where the name resolves, never to the refused address');
+ const inside=await clientHello('inside.example');
+ r=await via(front,{ip:'10.0.0.1',dport:443},inside);
  assert.notEqual(r.reply,'internet got tls','the egress still refuses what it refuses (after the peek: closed, never sent)');
  websiteOn=false;
  r=await via(front,{ip:'134.199.235.187',dport:443},hello);
  assert.equal(r.reply,'internet got tls','a target without a public website is not reached locally');
  assert.deepEqual(forwarded,[id,id]);
+ router.prune(new Set());await circuit.close('t');await egress.close();internet.close();
+});
+
+// eyesoff's MCP calls to a69dcbba and 38f368d6 (2026-10-18): the guest resolves the name itself and connects to one of its
+// addresses; the one that is this circuit's own exit is refused by the egress, so the front retries by the server name
+// and the egress dials the name's other address
+test('a front: a refused exit address is retried by the server name, which reaches the other address',async()=>{
+ const internet=net.createServer(c=>c.once('data',d=>c.end('internet got '+(d[0]===0x16?'tls':String(d)))));await new Promise(r=>internet.listen(0,'127.0.0.1',r));
+ const dialed=[];
+ const egress=new HostEgress({authorize:()=>true,own:['146.190.246.39'],lookup:async()=>['146.190.246.39','134.199.235.187'],
+  connect:({host,port,timeout})=>{dialed.push(`${host}:${port}`);return net.connect({host:'127.0.0.1',port:internet.address().port,timeout});}});
+ const circuit=await egress.start({deploymentId:'0x'+'aa'.repeat(32)});
+ const router=new LocalAppRouter({target:()=>null,forward:async()=>assert.fail('nothing is local')});
+ const front=+(await router.front('0x'+'aa'.repeat(32),circuit.egress)).split(':')[1];
+ const hello=await clientHello('a69dcbba.app.enclave.host');
+ let r=await via(front,{ip:'146.190.246.39',dport:443},hello);
+ assert.equal(r.reply,'internet got tls');
+ assert.deepEqual(dialed,['134.199.235.187:443'],'the own address was never dialed');
+ r=await via(front,{ip:'146.190.246.39',dport:443},Buffer.from('GET / HTTP/1.1\r\n\r\n'));
+ assert.notEqual(r.reply?.startsWith('internet got'),true,'no ClientHello, no name: the refusal stands');
+ r=await via(front,{ip:'146.190.246.39',dport:80},Buffer.from('GET'));
+ assert.equal(r.code,2,'an unanswered CONNECT gets the refusal itself (the caller tries its next address)');
  router.prune(new Set());await circuit.close('t');await egress.close();internet.close();
 });

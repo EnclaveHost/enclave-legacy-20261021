@@ -10,7 +10,7 @@
 import net from 'node:net';
 import {reader} from './host-egress.mjs';
 
-const PEEK_MS=5000,HELLO_MAX=16384+5,MAX_SOCKETS=1024;
+const PEEK_MS=5000,HELLO_MAX=16384+5,MAX_SOCKETS=1024,HOST=/^(?=.{1,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 // The server name of a TLS ClientHello, or null when the bytes are not one (or carry no SNI); undefined = need more bytes.
 export function clientHelloSNI(b){
@@ -84,7 +84,7 @@ export class LocalAppRouter {
     if(!more)break;hello=Buffer.concat([hello,more]);
    }
    local=sni?this.target(sni):null;
-   if(!local)return this.replay(c,rd,upstream,request,hello);
+   if(!local)return this.replay(c,rd,upstream,request,hello,sni);
   }else c.write(Buffer.from([5,0,0,1,0,0,0,0,0,0]));
   const rest=Buffer.concat([hello,rd.rest()]);
   if(!this.seen.has(source+local)){this.seen.add(source+local);this.log(`local route: app ${source.slice(0,10)} -> app ${local.slice(0,10)} on this host`);}
@@ -93,16 +93,20 @@ export class LocalAppRouter {
   await this.forward(c,local);
  }
  // the connection goes to the real egress as it came: the same SOCKS request; an already answered one (after a peek)
- // swallows the upstream's reply and fails closed if the upstream refuses
- async replay(c,rd,upstream,request,sent){
-  const [host,port]=[upstream.slice(0,upstream.lastIndexOf(':')),+upstream.slice(upstream.lastIndexOf(':')+1)];
-  const up=this.connect({host,port});
+ // swallows the upstream's reply and fails closed if the upstream refuses - except that a refused address is first
+ // retried once by the server name its ClientHello carries. TLS verifies that name end to end, and the egress, given the
+ // name, picks an address it may reach: a circuit refuses its own providers' addresses, and an exit is often also the
+ // ingress of the app the caller wants (eyesoff -> a69dcbba and 38f368d6, both served through eyesoff's exit
+ // 146.190.246.39: every MCP call that resolved to it ended in a TlsProtocolError, 2026-10-18)
+ async replay(c,rd,upstream,request,sent,sni=null){
+  let u=await this.open(upstream,request);
+  if(u&&u.rh[1]!==0&&sent!==null&&request[3]!==3&&sni&&HOST.test(sni)){
+   u.up.destroy();
+   u=await this.open(upstream,Buffer.concat([Buffer.from([5,1,0,3,sni.length]),Buffer.from(sni,'latin1'),request.subarray(-2)]));
+  }
+  if(!u)return c.destroy();
+  const {up,ur,rh,skip,tail}=u;
   const close=()=>{c.destroy();up.destroy();};up.on('error',close);c.on('error',close);
-  await new Promise((r,j)=>{up.once('connect',r);up.once('error',j);});
-  const ur=reader(up);
-  up.write(Buffer.from([5,1,0]));const g=await ur(2);if(g[0]!==5||g[1]!==0)return close();
-  up.write(request);
-  const rh=await ur(4);let skip=rh[3]===1?4:rh[3]===4?16:(await ur(1))[0];const tail=await ur(skip+2);
   if(sent===null)c.write(Buffer.concat([rh,rh[3]===3?Buffer.from([skip]):Buffer.alloc(0),tail]));
   else if(rh[1]!==0)return close();
   if(rh[1]!==0){c.end();up.destroy();return;}
@@ -110,5 +114,18 @@ export class LocalAppRouter {
   c.setTimeout(0);
   if(fromClient.length)up.write(fromClient);if(fromUp.length)c.write(fromUp);
   c.once('close',close);up.once('close',close);c.pipe(up);up.pipe(c);c.resume();up.resume();
+ }
+ // one SOCKS CONNECT to the real egress: the open upstream and its reply (refusals included), or null when it never answered
+ async open(upstream,request){
+  const i=upstream.lastIndexOf(':');
+  const up=this.connect({host:upstream.slice(0,i),port:+upstream.slice(i+1)});up.on('error',()=>{});
+  try{
+   await new Promise((r,j)=>{up.once('connect',r);up.once('error',j);});
+   const ur=reader(up);
+   up.write(Buffer.from([5,1,0]));const g=await ur(2);if(g[0]!==5||g[1]!==0){up.destroy();return null;}
+   up.write(request);
+   const rh=await ur(4);const skip=rh[3]===1?4:rh[3]===4?16:(await ur(1))[0];const tail=await ur(skip+2);
+   return {up,ur,rh,skip,tail};
+  }catch{up.destroy();return null;}
  }
 }
