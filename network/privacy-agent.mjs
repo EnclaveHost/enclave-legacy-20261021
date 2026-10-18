@@ -23,7 +23,11 @@ import {networkUse} from './network-policy.mjs';
 const LEASE_GRACE_MS=10*60_000;
 // how long one round waits for the chain before it goes on with the held leases (a slow read through a failing control
 // circuit must not hold up the round past the 60-s proofs: 2026-10-16 01:41:42Z every k11-4 app lapsed at once)
-export const CHAIN_DEADLINE_MS=20_000;
+// 45 s, not 20: reads through the control circuits (two WireGuard hops, several calls) often took longer, so every other
+// round logged a failure while the read finished in the background and refreshed the leases anyway (k11-4, 2026-10-18:
+// 554 "no chain answer within 20 s" from 11:04Z, no lapse). A lease is good for 90 s from its block (lease-reader.mjs),
+// and the guest proofs renew on their own (refreshProofs), so a longer wait holds nothing else up.
+export const CHAIN_DEADLINE_MS=45_000;
 import {DurableState} from './durable-state.mjs';
 import {localAppForwarder} from './local-app-transport.mjs';
 import {pvmAppPort,openPvmApp,pvmForwarder} from './pvm-app-transport.mjs';
@@ -74,7 +78,10 @@ export class PrivacyAgent {
       try{
         // one read at a time: a read still running from an earlier round is not doubled, and that round's leases are held
         if(this.chainRead)throw new Error('the previous chain read has not finished');
-        const read=this.chainRead=this.leaseReader.refresh(this.apps.map(a=>a.deploymentId)).finally(()=>{if(this.chainRead===read)this.chainRead=null;});
+        const began=this.now();
+        const read=this.chainRead=this.leaseReader.refresh(this.apps.map(a=>a.deploymentId)).finally(()=>{if(this.chainRead===read)this.chainRead=null;
+          // a read that answered after the deadline still refreshed the leases: say how long it took (once a minute at most)
+          const took=this.now()-began;if(took>this.chainDeadlineMs&&this.now()-(this.lateChainSaid||0)>60_000){this.lateChainSaid=this.now();this.log(`chain read answered after ${Math.round(took/1000)} s (past the ${this.chainDeadlineMs/1000}-s deadline; its leases count)`);}});
         let timer;
         leases=await Promise.race([read,new Promise((_,j)=>{timer=setTimeout(()=>j(new Error(`no chain answer within ${this.chainDeadlineMs/1000} s`)),this.chainDeadlineMs);})]).finally(()=>clearTimeout(timer));
       }
