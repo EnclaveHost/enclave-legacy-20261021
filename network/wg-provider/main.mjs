@@ -80,11 +80,7 @@ const provider=new WgProvider({config,signer:account,kernel,log,policyMemory,ver
    if(renewal&&c&&Date.now()-c.at<10*60000&&Number(c.l.leaseUntil)>Date.now()){log(`lease ${id.slice(0,10)}: ${e.message}; using the agreeing read from ${Math.round((Date.now()-c.at)/1000)} s ago`);return {...c.l,validUntil:Date.now()+30000};}
    throw e;
   }},
- currentPolicy:async id=>{
-   const lease=(await leases.refresh([id]))[0];
-   if(!lease)throw Error('current policy owner unavailable');
-   return directories.policy(id,{owner:lease.owner,verify:verifyOwner});
- }});
+ currentPolicy:(id,owner)=>directories.policy(id,{owner,verify:verifyOwner})});
 log(`restored ${await provider.restore()} peer(s) from the last run`);
 let receipt=null;
 if(paid){
