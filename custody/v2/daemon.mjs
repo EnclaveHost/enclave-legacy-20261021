@@ -101,7 +101,8 @@ async function main() {
   const machine = { identity: identity.address.toLowerCase(), encKey, endpoint: hc.endpoint, chipId: sha(probe.chipId), registryId: hc.registryId, measurement: sha(probe.measurement) };
   log(`machine ${machine.identity} measurement ${probe.measurement.toString("hex").slice(0, 16)}... chip ${machine.chipId.slice(0, 12)}...`);
 
-  const chain = createChainReaderV2({ rpcs: MEASURED.rpcs, vault: MEASURED.vault, minAgree: MEASURED.minAgree, maxAgeSec: MEASURED.maxAgeSec });
+  if (!/^0x[0-9a-f]{40}$/.test(MEASURED.hostOwnership || "") || /^0x0{40}$/.test(MEASURED.hostOwnership)) throw new Error("measured host wallet authority is required");
+  const chain = createChainReaderV2({ hostOwnership: MEASURED.hostOwnership, rpcs: MEASURED.rpcs, vault: MEASURED.vault, minAgree: MEASURED.minAgree, maxAgeSec: MEASURED.maxAgeSec });
   const store = { load: () => state.member, save: (m) => { state.member = m; hostPut(hc.hostUrl, "/state", seal(key, state)).catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
   const saveNow = async () => hostPut(hc.hostUrl, "/state", seal(key, state));
   const submit = async (fn, args) => {

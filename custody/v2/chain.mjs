@@ -102,7 +102,7 @@ async function readReleaseAt(client, vault, { id, endpoint }, blockNumber) {
 }
 const digest = (o) => JSON.stringify(o, (k, v) => (typeof v === "bigint" ? `n${v}` : v instanceof Uint8Array ? `x${bytesToHex(v)}` : v));
 
-export function createChainReaderV2({ rpcs, vault, minAgree, confirmations = 0, clients: given = null, timeoutMs = 10_000, maxAgeSec = null, now = () => Date.now() }) {
+export function createChainReaderV2({ rpcs, vault, hostOwnership = null, minAgree, confirmations = 0, clients: given = null, timeoutMs = 10_000, maxAgeSec = null, now = () => Date.now() }) {
   const clients = given || (rpcs || []).map((url) => createPublicClient({ transport: http(url, { timeout: timeoutMs, retryCount: 1 }) }));
   if (!clients.length) throw new Error("chain: no RPC configured");
   if (!Number.isInteger(minAgree) || minAgree < 1 || minAgree > clients.length) throw new Error(`chain: minAgree must be 1..${clients.length} (state it explicitly)`);
@@ -152,6 +152,7 @@ export function createChainReaderV2({ rpcs, vault, minAgree, confirmations = 0, 
     readRegistryEntry: ({ registryId }) => agreed(withBlock(async (c, n) => {
       const rd = rdOf(c, n);
       const [reg, ownership] = await Promise.all([rd(vault, VAULT_V2_ABI, "hostRegistry"), rd(vault, VAULT_V2_ABI, "hostOwnership")]);
+      if (hostOwnership && lc(ownership) !== lc(hostOwnership)) throw err("host_authority_mismatch", "vault host authority differs from the measured pin");
       if (reg === ZERO || ownership === ZERO) throw err("host_authority_missing", "wallet host authority required");
       const [e, authority] = await Promise.all([rd(reg, REGISTRY_V4_ABI, "get", [registryId]), rd(ownership, HOST_OWNERSHIP_ABI, "authority", [registryId])]);
       return { entry: { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet), owner: lc(authority[0]) } };

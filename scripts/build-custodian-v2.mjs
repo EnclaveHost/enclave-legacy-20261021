@@ -6,7 +6,7 @@
 //   - /opt/custodian/snpkey: the derived-key helper (isolation/m2/cmd/snpkey), static.
 // Every other cpio entry is copied byte for byte. The launch measurement is printed (sev-snp-measure, 2 vCPUs).
 //
-//   node scripts/build-custodian-v2.mjs --base <metal dist dir> --out <new dir> --vault 0x… [--vcpus 2]
+//   node scripts/build-custodian-v2.mjs --base <metal dist dir> --out <new dir> --vault 0x… --host-ownership 0x… [--vcpus 2]
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
@@ -18,11 +18,13 @@ import { build } from "esbuild";
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const arg = (n, d) => { const i = process.argv.indexOf("--" + n); return i > 0 ? process.argv[i + 1] : d; };
 const BASE = path.resolve(arg("base", "")), OUT = path.resolve(arg("out", "")), VAULT = String(arg("vault", "")).toLowerCase();
+const HOST_OWNERSHIP = String(arg("host-ownership", "")).toLowerCase();
 const VCPUS = String(arg("vcpus", "2"));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 if (!fs.existsSync(path.join(BASE, "manifest.json"))) throw new Error("--base must be a metal dist dir");
 if (fs.existsSync(OUT)) throw new Error(`${OUT} exists: an image is built once`);
 if (!/^0x[0-9a-f]{40}$/.test(VAULT) || /^0x0{40}$/.test(VAULT)) throw new Error("--vault must be the deployed EnclaveSecretVaultV2");
+if (!/^0x[0-9a-f]{40}$/.test(HOST_OWNERSHIP) || /^0x0{40}$/.test(HOST_OWNERSHIP)) throw new Error("--host-ownership must pin the accepted wallet authority for the new vault; legacy vaults require their compatible runtime");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
 const dirty = execFileSync("git", ["status", "--porcelain", "--", "custody", "isolation/m2/cmd/snpkey", "relay/snp-verify.mjs", "verifier", "scripts/build-custodian-v2.mjs"], { cwd: ROOT, encoding: "utf8" }).trim();
 if (dirty && !process.argv.includes("--allow-dirty")) throw new Error(`uncommitted changes in the image's sources:\n${dirty}`);
@@ -35,7 +37,7 @@ if (sha(fs.readFileSync(path.join(BASE, "vmlinuz"))) !== m.kernel.sha256) throw 
 
 // 2. the custodian bundle with the measured config
 const measured = `export const MEASURED = Object.freeze(${JSON.stringify({
-  chainId: 8453, vault: VAULT,
+  chainId: 8453, vault: VAULT, hostOwnership: HOST_OWNERSHIP,
   rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://1rpc.io/base"],
   minAgree: 2, maxAgeSec: 120, enclaveOwner: "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
   capacityContract: "0x87c7266543ff5839b2c20226bd9b3cd511a23641", witnesses: { "0xd80bf435467df887f1031743c2a2125a130fe225": "enclave-bootstrap" } })});\n`;
@@ -88,7 +90,7 @@ fs.writeFileSync(path.join(OUT, "initramfs.cpio.gz"), out);
 fs.copyFileSync(path.join(BASE, "vmlinuz"), path.join(OUT, "vmlinuz"));
 const cmdline = fs.readFileSync(path.join(BASE, "cmdline"), "utf8").trim().replace("${MODE}", "snp");
 fs.writeFileSync(path.join(OUT, "cmdline"), cmdline + "\n");
-const manifest = { role: "enclave-custodian-v2", commit, vault: VAULT, base: { dir: path.basename(BASE), initramfsSha256: sha(gz), kernelSha256: m.kernel.sha256 },
+const manifest = { role: "enclave-custodian-v2", commit, vault: VAULT, hostOwnership: HOST_OWNERSHIP, base: { dir: path.basename(BASE), initramfsSha256: sha(gz), kernelSha256: m.kernel.sha256 },
   files: { "/opt/metal/gsup.mjs": sha(gsup), "/opt/custodian/custodian.mjs": sha(custodianJs), "/opt/custodian/snpkey": sha(snpkey) },
   kernel: { sha256: m.kernel.sha256 }, initramfs: { sha256: sha(out), bytes: out.length }, cmdline, vcpus: Number(VCPUS) };
 // 4. the launch measurement this image produces on this host's firmware (the verifying OVMF), Turin

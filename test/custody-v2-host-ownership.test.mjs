@@ -22,3 +22,8 @@ test('stale, disagreeing, or legacy ownership reads never fall back to payout',a
  await assert.rejects(reader([client(),client({accepted:payout})]).readRegistryEntry({registryId:host}),/disagree/);
  await assert.rejects(reader([client({missing:true}),client({missing:true})]).readRegistryEntry({registryId:host}),/only 0 RPCs/);
 });
+
+test('a measured authority pin cannot be replaced by a different vault authority',async()=>{
+ const r=createChainReaderV2({vault,hostOwnership:owner,clients:[client(),client()],minAgree:2,maxAgeSec:120,now:()=>1000_000});
+ await assert.rejects(r.readRegistryEntry({registryId:host}),/measured pin/);
+});
