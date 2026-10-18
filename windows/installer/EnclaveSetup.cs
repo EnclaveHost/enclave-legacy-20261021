@@ -163,7 +163,7 @@ namespace Enclave.Setup
             enclaveDnsNote.ForeColor = Theme.Dim; enclaveDnsNote.Margin = new Padding(Theme.Px(22), Theme.Px(4), 3, 0);
             enclaveDnsNote.Text = "Enclave's own DNS resolver, running in an attested enclave. With it, this PC opens .eth names in the browser, "
                 + "so you can still reach Enclave at EnclaveHost.eth if the enclave.host website ever goes down. It becomes this PC's DNS "
-                + "(answers checked with DNSSEC, with a fallback if it cannot be reached). Remove it any time from Installed apps.";
+                + "(answers checked with DNSSEC; if it cannot be reached, this PC uses its usual DNS). Remove it any time from Installed apps.";
             nameRow.Controls.Add(enclaveDns); nameRow.Controls.Add(enclaveDnsNote);
             nameRow.Visible = false;
             flow.Controls.Add(nameRow);

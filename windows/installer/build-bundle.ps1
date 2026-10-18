@@ -54,7 +54,7 @@ $NodeZip   = @{ url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zi
 $PythonZip = @{ url = "https://www.python.org/ftp/python/3.14.5/python-3.14.5-embed-amd64.zip"; sha = "ba6bd811c4eedb19195cf275770ef127e893d63701e24152606e2cb76f6d876a" }
 # EnclaveDNS (github.com/EnclaveHost/enclavedns-client): offered by setup, ticked by default; install-host.ps1 -EnclaveDNS
 # runs it silently. The sha256 is the release's SHA256SUMS line for this file.
-$EnclaveDNS = @{ url = "https://github.com/EnclaveHost/enclavedns-client/releases/download/v0.1.0/EnclaveDNS-Setup-0.1.0-x64.exe"; sha = "f1fb4300cc54a854bc16852ebbe393c9283cb8565d2fc46a6a2bcc25d52d737e" }
+$EnclaveDNS = @{ url = "https://github.com/EnclaveHost/enclavedns-client/releases/download/v0.1.1/EnclaveDNS-Setup-0.1.1-x64.exe"; sha = "0ac1365dc00aad31cd9d93ca4e55368c026af33ff56eb58cec9ec8087d7fe70c" }
 
 $work = Join-Path $Out "work"; $B = Join-Path $work "enclave-host"
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
