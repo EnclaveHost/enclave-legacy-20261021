@@ -26,6 +26,8 @@
 import { createPublicClient, createWalletClient, http, fallback, keccak256, toBytes, getAddress, formatEther, stringToHex, pad } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
+import {loadContractPins} from './host-admission.bundle.mjs';
+const CONTRACT_PINS=loadContractPins();
 import fs from "node:fs";
 import path from "node:path";
 import { parseWaf } from "./waf.mjs";
@@ -162,6 +164,10 @@ export async function operatorBalance() { return acct ? publicClient().getBalanc
 
 /** Resolve the live contract addresses from the on-chain address book (never hardcoded). */
 export async function resolveAddresses() {
+  if(CONTRACT_PINS){
+    for(const name of ['registry','deployments','appCatalog','proofOfTime','verificationFees'])addresses[name]=CONTRACT_PINS[name];
+    return {...addresses};
+  }
   const [keys, vals] = await publicClient().readContract({ address: getAddress(BOOK), abi: BOOK_ABI, functionName: "all" });
   const want = { registry: keyOf("registry"), deployments: keyOf("deployments"), appCatalog: keyOf("appCatalog"), proofOfTime: keyOf("proofOfTime"), verificationFees: keyOf("verificationFees") };
   for (const [name, k] of Object.entries(want)) {

@@ -3,6 +3,8 @@ import path from 'node:path';
 import {parseAbi} from 'viem';
 import {LeaseReader} from './lease-reader.mjs';
 import {readHostAdmissionPolicy,hostAdmissionRefusal} from './host-admission-policy.mjs';
+import {loadContractPins} from './contract-pins.mjs';
+export {loadContractPins,validateContractPins} from './contract-pins.mjs';
 
 const address=/^0x[0-9a-f]{40}$/,id=/^0x[0-9a-f]{64}$/;
 const ownershipABI=parseAbi([
@@ -85,6 +87,9 @@ export const hostAdmissionConfigured=(env=process.env)=>names.some(k=>env[k]);
 export function hostAdmissionFromEnv({hostId,rpc,addressBook,env=process.env}) {
   if(!hostAdmissionConfigured(env))return null;
   if(names.some(k=>!env[k]))throw Error('incomplete wallet host admission configuration');
+  const pins=loadContractPins(env);
+  if(!pins||pins.registry!==env.ENCLAVE_HOST_REGISTRY_PIN.toLowerCase()||pins.appCatalog!==env.ENCLAVE_HOST_CATALOG_PIN.toLowerCase())
+    throw Error('wallet host admission requires matching immutable contract pins');
   return createHostAdmission({hostId,ownershipContract:env.ENCLAVE_HOST_OWNERSHIP.toLowerCase(),
     registry:env.ENCLAVE_HOST_REGISTRY_PIN.toLowerCase(),catalog:env.ENCLAVE_HOST_CATALOG_PIN.toLowerCase(),
     policyDirectory:env.ENCLAVE_HOST_POLICY_DIR,rpc,addressBook});
