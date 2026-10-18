@@ -71,6 +71,16 @@ test("a partition outside the admitted policy is never enrolled", async () => {
   assert.ok(w.logs.some((l) => /outside the admitted Shield policy/.test(l)));
 });
 
+test("enrollment preserves the operator's independent directory origins across app updates", async () => {
+  const w=world();await w.enroll.pass();const cfg=w.read();
+  cfg.enclaveNetwork.directories=['http://8.8.4.4:8188','https://directory.example'];
+  fs.writeFileSync(path.join(w.agentDir,'privacy-config.json'),JSON.stringify(cfg));
+  await w.enroll.pass();
+  assert.deepEqual(w.read().enclaveNetwork.directories,cfg.enclaveNetwork.directories);
+  w.vm.appId='cd'.repeat(32);await w.enroll.pass();
+  assert.deepEqual(w.read().enclaveNetwork.directories,cfg.enclaveNetwork.directories);
+});
+
 test("a box still configured for TUNA is cleaned and switched once, and its agent restarted once", async () => {
   const w = world();
   const tuna = { version: 2, directory: path.join(w.agentDir, "state"), operatorKeyFile: "op.key", runner: RUNNER, endpoint: "https://api.enclave.host/t/box",
