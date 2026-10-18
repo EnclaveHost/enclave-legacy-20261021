@@ -522,7 +522,7 @@ var v2Env = map[string]string{"MCP_ADAPTER_API_KEY": "custody-v2-k", "IMAGE_ENDP
 
 const v2Config = `{"api_key":"custody-v2-k","http":[{"url":"https://images.example/v1/images"}]}`
 
-func TestProvisionCustodyV2EnclaveRule(t *testing.T) {
+func TestProvisionCustodyV2IndependentQuorum(t *testing.T) {
 	// two Enclave replicas (one seat, index 1) + three other hosts (2, 3, 4): n = 4, t = 3
 	flags := []bool{true, true, false, false, false}
 	enclaveUsed := func(t *testing.T, w *custodyWorldV2) int {
@@ -566,21 +566,23 @@ func TestProvisionCustodyV2EnclaveRule(t *testing.T) {
 			t.Fatalf("combined from machines %v", got)
 		}
 	})
-	t.Run("Enclave online but every Enclave machine refuses: REFUSED although the others reach t", func(t *testing.T) {
+	t.Run("Enclave online but refusing cannot veto an independent quorum", func(t *testing.T) {
 		w := newCustodyWorldV2(t, flags, v2Env)
 		w.behave[0], w.behave[1] = v2Refuse, v2Refuse
-		if _, err := w.run(t); err == nil || !strings.Contains(err.Error(), "Enclave") {
-			t.Fatalf("the Enclave rule did not hold: %v", err)
+		ok(t, w)
+		if got := w.combined(t); fmt.Sprint(got) != "[2 3 4]" {
+			t.Fatalf("independent quorum combined from machines %v", got)
 		}
 		if w.released[2].Load() != 1 || w.released[3].Load() != 1 || w.released[4].Load() != 1 {
 			t.Fatal("the other seats should have answered")
 		}
 	})
-	t.Run("Enclave online, its only answering machine lies: REFUSED", func(t *testing.T) {
+	t.Run("Enclave online but lying cannot veto an independent quorum", func(t *testing.T) {
 		w := newCustodyWorldV2(t, flags, v2Env)
 		w.behave[0], w.behave[1] = v2Lie, v2Down
-		if _, err := w.run(t); err == nil || !strings.Contains(err.Error(), "Enclave") {
-			t.Fatalf("the Enclave rule did not hold: %v", err)
+		ok(t, w)
+		if got := w.combined(t); fmt.Sprint(got) != "[2 3 4]" {
+			t.Fatalf("independent quorum combined from machines %v", got)
 		}
 	})
 	t.Run("no Enclave machine online: the other seats suffice", func(t *testing.T) {

@@ -8,9 +8,9 @@ package custody
 //  3. the release to every machine that issued a challenge; each answer opens only under the recipient key and this
 //     binding, and EVERY partial record in it must verify (DLEQ against Y_k from the commitments) and be for exactly the
 //     indices that machine holds: a machine with one bad record is dropped whole;
-//  4. THE ENCLAVE RULE (§6.2 rule 3): if E is non-empty, the combination uses exactly ONE Enclave machine's partials (all
-//     of the Enclave seat's indices, from that single machine) and the rest from other seats; if no Enclave machine in E
-//     released valid partials, the release is REFUSED. If E is empty, t indices from the other seats;
+//  4. combine at most one Enclave machine's valid partials (its replicas share one seat), then independent seats.
+//     An Enclave machine answering a challenge does not gain a veto over an independently sufficient quorum.
+//     Host-owner refusal belongs in that host's admission policy, not in the network-wide custody combiner;
 //  5. combine exactly t partials, open the bundle under its label. Fewer than t: refuse; the app does not start.
 //
 // Because every partial is verified before it is used, a lying custodian is identified and dropped; it cannot make the
@@ -253,7 +253,7 @@ func (c *Client) ObtainV2(ctx context.Context, st StateV2) (*Bundle, error) {
 	}
 	wg.Wait()
 
-	// 4. choose exactly t indices under the Enclave rule
+	// 4. choose exactly t valid indices, counting Enclave replicas as one seat
 	var use []Partial
 	var used []int // machine positions combined
 	if enclaveOnline {
@@ -264,11 +264,10 @@ func (c *Client) ObtainV2(ctx context.Context, st StateV2) (*Bundle, error) {
 				break
 			}
 		}
-		if chosen < 0 {
-			return nil, errors.New("an Enclave custodian answered the challenge round but none released valid partials: refused (one Enclave partial is required while Enclave is online)")
+		if chosen >= 0 {
+			use = append(use, valid[chosen]...)
+			used = append(used, chosen)
 		}
-		use = append(use, valid[chosen]...)
-		used = append(used, chosen)
 	}
 	for _, g := range chs {
 		if len(use) >= st.Threshold {
