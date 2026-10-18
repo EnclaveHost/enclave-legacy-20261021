@@ -97,3 +97,13 @@ test('client verifies copies independently and refuses hidden or equivocal owner
   values=[{providers:[{record:{...r.pr,signature:bad.signature}}]},{providers:[{record:r.pr,qualifications:[r.qualification]}]},{providers:[]}];
   assert.equal((await client.providers({hostOperator:r.opts.hostOperator})).providers.length,1);
 });
+test('one unreachable mirror is backed off across apps; total outage still tries every origin',async()=>{
+  const calls=[];let allDown=false;
+  const client=new DirectoryClient({origins:['http://127.0.0.1:1','http://127.0.0.1:2'],fetch:async url=>{
+    const port=new URL(url).port;calls.push(port);if(port==='1'||allDown)throw Error('unreachable');return Response.json({envelope:null});
+  }});
+  await client.policy(id,{owner:owner.address});await client.policy(id,{owner:owner.address});
+  assert.deepEqual(calls,['1','2','2']);allDown=true;
+  await assert.rejects(client.read('/v1/network/providers'),/unavailable/);
+  calls.length=0;await assert.rejects(client.read('/v1/network/providers'),/unavailable/);assert.deepEqual(calls,['1','2']);
+});

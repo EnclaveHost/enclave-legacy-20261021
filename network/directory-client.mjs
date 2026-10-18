@@ -21,14 +21,19 @@ export async function boundedJSON(response,maxBytes=4*1024*1024){
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 export class DirectoryClient {
-  constructor({origins,fetch=globalThis.fetch,timeoutMs=8000}){this.origins=directoryOrigins(origins);Object.assign(this,{fetch,timeoutMs});}
+  constructor({origins,fetch=globalThis.fetch,timeoutMs=8000,retryCooldownMs=30000}){this.origins=directoryOrigins(origins);Object.assign(this,{fetch,timeoutMs,retryCooldownMs});this.failedUntil=new Map();}
   async read(path){
     this.checkPath(path);
-    const results=await Promise.allSettled(this.origins.map(async origin=>{
+    // A circuit cannot reach its own providers' public IPs. Do not repeat those
+    // timeouts for every app and exhaust the lease lifetime during cold startup.
+    const ready=this.origins.filter(origin=>(this.failedUntil.get(origin)||0)<=Date.now());
+    const origins=ready.length?ready:this.origins;
+    const results=await Promise.allSettled(origins.map(async origin=>{try{
       const response=await this.fetch(origin+path,{redirect:'error',credentials:'omit',signal:AbortSignal.timeout(this.timeoutMs)});
       // Legacy relays report an unset policy as 404; new replicas use a null envelope.
-      if(response.status===404&&path.startsWith('/v1/network/policy/')){await response.body?.cancel();return {origin,value:{envelope:null}};}
-      return {origin,value:await boundedJSON(response)};
+      if(response.status===404&&path.startsWith('/v1/network/policy/')){await response.body?.cancel();this.failedUntil.delete(origin);return {origin,value:{envelope:null}};}
+      const value=await boundedJSON(response);this.failedUntil.delete(origin);return {origin,value};
+    }catch(e){this.failedUntil.set(origin,Date.now()+this.retryCooldownMs);throw e;}
     }));
     const answers=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
     if(!answers.length)throw Error('all public directories unavailable: '+results.map(r=>String(r.reason?.message||'unavailable').slice(0,200)).join('; '));
