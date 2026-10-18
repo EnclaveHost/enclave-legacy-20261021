@@ -14,7 +14,7 @@ export function validateHostAdmissionPolicy(p){
     typeof p.requireCatalogApproval!=='boolean'||Object.keys(p).some(k=>!['version','chainId','ownershipContract','hostId','requireCatalogApproval','denyDeployments','denyAppRefs'].includes(k)))throw Error('invalid host policy');
  for(const k of ['denyDeployments','denyAppRefs']){
   if(!Array.isArray(p[k])||p[k].length>4096||new Set(p[k]).size!==p[k].length)throw Error('invalid host deny list');
-  for(const v of p[k])if(typeof v!=='string'||(k==='denyDeployments'?!id.test(v):!/^catalog:\/\/0x[0-9a-f]{64}\/[0-9]{1,9}$/.test(v)))throw Error('invalid host deny entry');
+  for(const v of p[k])if(typeof v!=='string'||(k==='denyDeployments'?!id.test(v):!/^catalog:\/\/0x[0-9a-f]{64}\/(?:0|[1-9][0-9]{0,8})$/.test(v)))throw Error('invalid host deny entry');
  }
  return structuredClone(p);
 }
@@ -32,7 +32,11 @@ export async function readHostAdmissionPolicy({hostId,ownershipContract,readAuth
 export function hostAdmissionRefusal(p,{hostId,deploymentId,appRef,version}){
  p=validateHostAdmissionPolicy(p);
  if(p.hostId!==hostId)throw Error('host policy cannot apply to another host');
- if(p.denyDeployments.includes(deploymentId)||p.denyAppRefs.includes(appRef))return 'this host owner declines this deployment';
- if(p.requireCatalogApproval&&(!version||version.active===false||version.yanked||Number(version.approval)!==1))return 'this host owner requires current catalog approval';
+ if(typeof deploymentId!=='string'||!/^0x[0-9a-f]{64}$/i.test(deploymentId))throw Error('deployment id required');
+ const ref=typeof appRef==='string'&&appRef.match(/^catalog:\/\/(0x[0-9a-fA-F]{64})\/([0-9]{1,9})$/);
+ if(!ref)throw Error('catalog app reference required');
+ const canonicalRef=`catalog://${ref[1].toLowerCase()}/${Number(ref[2])}`;
+ if(p.denyDeployments.includes(deploymentId.toLowerCase())||p.denyAppRefs.includes(canonicalRef))return 'this host owner declines this deployment';
+ if(p.requireCatalogApproval&&(!version||version.active!==true||version.yanked!==false||Number(version.approval)!==1))return 'this host owner requires current catalog approval';
  return null;
 }
