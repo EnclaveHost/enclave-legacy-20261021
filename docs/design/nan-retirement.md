@@ -38,6 +38,8 @@ This mode requires an exact on-chain deployment ID: the supervisor's legacy dire
 
 Capture current bindings and bytecode hashes with `node scripts/network/capture-contract-pins.mjs --book <address> --out <directory>` using agreeing fresh RPCs. Review every binding before activation; absent book entries do not prove that a legacy deployment does not exist.
 
+After the ownership contract is deployed, prepare enrollment without a signing key using `node scripts/network/prepare-host-policy.mjs --policy <document.json> --owner <wallet> --registry <pin> --book <address> --out <new-directory>`. The supplied policy must explicitly choose its approval requirement and deny lists and bind the deployed ownership contract and exact host ID. The tool reads the active operator and accepted/pending owner through a fresh RPC quorum, refuses a different accepted owner or conflicting nomination, and writes the hash-named public policy plus ordered unsigned transactions. It resumes partial enrollment without repeating completed steps. Publish the document locally first, then re-read and simulate each transaction after its prerequisite confirms. Do not infer ownership from payout addresses or enroll an independent host into Enclave's wallet by default.
+
 Build the shared runtime with `node scripts/build-host-admission.mjs`; `--check` verifies the committed bundle. Windows' import-closure deployment and the supervisor Dockerfile include that bundle so neither depends on a missing sibling npm installation.
 
 ## Required retirement evidence
