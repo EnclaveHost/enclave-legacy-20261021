@@ -19,7 +19,7 @@ import { FEATURED, loadCampaigns, featuredList, beaconView } from "../core/featu
 import { loadTallies, loadReviews, confirmReceipt } from "../core/reviews.js";
 import { payForRuntime } from "../core/fund.js";
 import { connectWallet, authenticate, ensureBaseChain, sendTx, usdcBalanceOf, personalSign } from "../core/wallet.js";
-import { STORE, loadCatalog, noteCatalogWrite, selIdx, defaultIdx, appVerified, appPrivileged, visibleVerIdxs, validPortsCsv, specOf, fetchConfigCid, catalogRef, mediaOf, appMedia, mediaUrl, stripMedia, withMedia, signedUploadToken, putConfig, cpuFallbackOfConfig } from "../core/catalog.js";
+import { STORE, loadCatalog, noteCatalogWrite, selIdx, defaultIdx, appVerified, appPrivileged, visibleVerIdxs, validPortsCsv, specOf, fetchConfigCid, catalogRef, mediaOf, appMedia, mediaUrl, stripMedia, withMedia, signedUploadHeaders, putConfig, cpuFallbackOfConfig } from "../core/catalog.js";
 import { minPctsOf, startSharesFor, shareRates, pickEnclaveFor, rankEnclavesFor, liftSharesForLedger } from "../core/pricing.js";
 import { appResources } from "../core/app-resources.js";
 import { protectionOf, PROTECTION_DOC } from "../core/protection.js";
@@ -910,16 +910,14 @@ async function putWasm(file, onProgress){
   let buf;
   try { buf = await file.arrayBuffer(); }
   catch(_){ throw new EnclaveError("Couldn’t read this file to sign it" + (file.size > 500*1048576 ? " (very large files: publish with the CLI instead)." : "."), 0); }
-  const { token, address: upAddr, expiry } = await signedUploadToken(buf);
+  const headers = await signedUploadHeaders(buf, IPFS_UPLOAD_URL);
   return await new Promise((resolve, reject) => {
     // raw bytes to the validating gateway; it re-checks the wasm preamble, verifies
     // the upload token authorizes exactly these bytes, pins, and returns { cid }.
     const xhr = new XMLHttpRequest();
     xhr.open("POST", IPFS_UPLOAD_URL);
     xhr.setRequestHeader("content-type", "application/wasm");
-    xhr.setRequestHeader("x-upload-address", upAddr);
-    xhr.setRequestHeader("x-upload-expiry", String(expiry));
-    xhr.setRequestHeader("x-upload-token", token);
+    for (const [name,value] of Object.entries(headers)) xhr.setRequestHeader(name,value);
     xhr.responseType = "json";
     xhr.upload.onprogress = (ev) => { if (ev.lengthComputable && onProgress) onProgress(ev.loaded, ev.total); };
     xhr.onerror = () => reject(new EnclaveError("upload failed: network error", 0));
@@ -951,10 +949,10 @@ async function putImage(file){
     throw new EnclaveError("Pick a PNG, JPEG, WebP, GIF, or SVG image.", 0);
   if (file.size > MAX_IMAGE_BYTES) throw new EnclaveError("Image too large: max " + MAX_IMAGE_MB + " MB (this is " + (file.size / 1048576).toFixed(1) + " MB).", 0);
   let buf; try { buf = await file.arrayBuffer(); } catch(_){ throw new EnclaveError("Couldn’t read this image to sign it.", 0); }
-  const { token, address, expiry } = await signedUploadToken(buf);
+  const headers = await signedUploadHeaders(buf, IPFS_IMAGE_UPLOAD_URL);
   const r = await fetch(IPFS_IMAGE_UPLOAD_URL, { method: "POST", headers: {
     "content-type": file.type || "application/octet-stream",
-    "x-upload-address": address, "x-upload-expiry": String(expiry), "x-upload-token": token,
+    ...headers,
   }, body: buf });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.cid) throw new EnclaveError("image upload rejected: " + (j.error || ("HTTP " + r.status)), 0);

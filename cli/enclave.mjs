@@ -44,6 +44,8 @@ import { createPublicClient, createWalletClient, http as viemHttp, fallback,
 import { base } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
+import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
+
 const VERSION = "1.6.0";
 
 // ---- platform constants -----------------------------------------------------
@@ -2441,12 +2443,18 @@ function componentContract(bytes) {
 async function pinBytes(account, bytes, url, contentType, label) {
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
   const expiry = Math.floor(Date.now() / 1000) + 300;
-  const tok = account?.kind === "session" ? await sessionUploadToken(account, hash, expiry)
-                                          : await walletUploadToken(account, hash, expiry);
-  if (!tok || !tok.token) throw new Error("upload authorization failed");
-  trace(`curl -sX POST ${url} -H 'content-type: ${contentType}' -H 'x-upload-token: …' --data-binary @${label}`);
-  const up = await fetch(url, { method: "POST", body: bytes, headers: { "content-type": contentType,
-    "x-upload-address": tok.address, "x-upload-expiry": String(expiry), "x-upload-token": tok.token } });
+  let headers;
+  if (env.ENCLAVE_IPFS_WALLET_AUDIENCE) {
+    if (account?.kind === "session") throw new Error("Direct uploads currently require an EOA wallet; platform sessions still need the legacy issuer");
+    headers = await directUploadHeaders({audience:env.ENCLAVE_IPFS_WALLET_AUDIENCE,url,address:account.address,bytes,signMessage:args=>account.signMessage(args)});
+  } else {
+    const tok = account?.kind === "session" ? await sessionUploadToken(account, hash, expiry)
+                                            : await walletUploadToken(account, hash, expiry);
+    if (!tok || !tok.token) throw new Error("upload authorization failed");
+    headers = {"x-upload-address":tok.address,"x-upload-expiry":String(expiry),"x-upload-token":tok.token};
+  }
+  trace(`POST ${url} (${label}, wallet authorization)`);
+  const up = await fetch(url, { method: "POST", body: bytes, headers: { "content-type": contentType, ...headers } });
   const body = await up.text();
   if (!up.ok) throw new Error(`IPFS upload failed (${up.status}): ${body.slice(0, 200)}`);
   const cid = JSON.parse(body).cid;

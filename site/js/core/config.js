@@ -164,6 +164,8 @@ const _rpc = devOverride("enclave_rpc");
 export const APP_CATALOG_RPCS    = _rpc ? [_rpc] : [APP_CATALOG_RPC, "https://base.drpc.org", "https://1rpc.io/base", "https://mainnet.base.org"];
 
 /* ---- IPFS ---- */
+// Enable after the configured adapter release supports direct signatures.
+export const IPFS_WALLET_AUDIENCE = "";
 export const IPFS_UPLOAD_URL = "https://ipfs.enclave.host/add-wasm"; // validating upload gateway (server validates + pins); empty => paste-a-CID only
 export const IPFS_IMAGE_UPLOAD_URL = "https://ipfs.enclave.host/add-image"; // validating image pin (app thumbnail/banner); empty => image upload off
 export const IPFS_JSON_UPLOAD_URL = "https://ipfs.enclave.host/add-json";   // validating config pin (catalog rev-7 large app configs); empty => configs capped at the on-chain inline limit

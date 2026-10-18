@@ -1,3 +1,4 @@
+import {directUploadHeaders} from "../../../sdk/storage/upload-auth.mjs";
 /* ============================================================
    App store · on-chain catalog (EnclaveAppCatalog on Base) + IPFS CIDs
    Apps are versioned: keyed by keccak256(publisher, slug), each with an
@@ -10,7 +11,7 @@
    Load progress is announced with `enclave:catalog` events (detail.type:
    loading | loaded | error) - pages render, this module doesn't.
    ============================================================ */
-import { APP_CATALOG_ADDRESS, IPFS_IMG_GATEWAY, IPFS_JSON_UPLOAD_URL } from "./config.js";
+import { APP_CATALOG_ADDRESS, IPFS_IMG_GATEWAY, IPFS_JSON_UPLOAD_URL, IPFS_WALLET_AUDIENCE } from "./config.js";
 import { catConfigured, appCount, catGetAppsPage, catGetVersions, catOwner, APPROVAL, CAT_MAX } from "./chain.js";
 import { lsGet, lsSet, emit, on, esc } from "./util.js";
 import { minPctsOf } from "./pricing.js";
@@ -407,6 +408,16 @@ export async function signedUploadToken(bytes){
   }
 }
 
+export async function signedUploadHeaders(bytes,url){
+  if (!IPFS_WALLET_AUDIENCE) {
+    const {token,address,expiry}=await signedUploadToken(bytes);
+    return {"x-upload-address":address,"x-upload-expiry":String(expiry),"x-upload-token":token};
+  }
+  if (!Enclave.address) await connectWallet();
+  if (!Enclave.address || !Enclave.provider) throw new EnclaveError("Connect your wallet to authorize the upload.",0);
+  return directUploadHeaders({audience:IPFS_WALLET_AUDIENCE,url,address:Enclave.address,bytes,signMessage:({message})=>personalSign(message)});
+}
+
 /* Pin a config too large to sit on-chain. Wallet-signed like the wasm and the
    images — the gateway re-parses the JSON, caps the size and pins; the CID then
    goes into a VERSION RECORD (catalog rev 7, immutable and approval-covered) or
@@ -419,10 +430,10 @@ export async function putConfig(text){
   const buf = new TextEncoder().encode(text);
   if (buf.byteLength > CAT_MAX.configMax)
     throw new EnclaveError("config too long (≤ " + CAT_MAX.configMax + " bytes)", 0);
-  const { token, address, expiry } = await signedUploadToken(buf);
+  const headers = await signedUploadHeaders(buf, IPFS_JSON_UPLOAD_URL);
   const r = await fetch(IPFS_JSON_UPLOAD_URL, { method: "POST", headers: {
     "content-type": "application/json",
-    "x-upload-address": address, "x-upload-expiry": String(expiry), "x-upload-token": token,
+    ...headers,
   }, body: buf });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.cid) throw new EnclaveError("config pin rejected: " + (j.error || ("HTTP " + r.status)), 0);
