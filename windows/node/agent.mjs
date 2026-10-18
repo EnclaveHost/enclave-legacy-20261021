@@ -965,7 +965,23 @@ async function startHostingControls() {
       // every 5 minutes, but every 30 s while an app's new version waits for its partition: its expectation (and with it
       // the app's route) follows the partition within seconds instead of up to a whole cycle (2026-10-13: ipns-publisher's
       // /5 partition was ready just after a pass and waited ~5 min with no route)
-      const loopEnroll = async () => { try { await tickEnroll(); } finally { setTimeout(loopEnroll, enrollWaiting > 0 ? 30_000 : 300_000).unref?.(); } };
+      // ...and every 15 s while a partition this box runs is not in the agent's config yet: a newly claimed app waited for
+      // the 5-minute cycle before it had any route (2026-10-18, audit job 0x5b0c79e8: spawned 09:09:01, cert 09:10:45,
+      // enrolled 09:12:21 - half of its 450-s lease gone before its name resolved)
+      const enrolledIds = () => { try { return new Set((JSON.parse(fs.readFileSync(path.join(NET.agentDir, 'privacy-config.json'), 'utf8')).apps || [])
+        .map((a) => String(a.deploymentId || '').toLowerCase())); } catch { return new Set(); } };
+      // only for its first 10 minutes: an app enrollment skips on purpose must not keep every pass (a full ledger read) at 15 s
+      const firstSeenUnenrolled = new Map();
+      const unenrolled = () => { const have = enrolledIds(), now = Date.now(); let fast = false;
+        for (const [id, r] of host.records.entries()) {
+          const key = String(id).toLowerCase();
+          if (r?.status !== 'running' || !r.isolation?.instance || have.has(key)) { firstSeenUnenrolled.delete(key); continue; }
+          if (!firstSeenUnenrolled.has(key)) firstSeenUnenrolled.set(key, now);
+          if (now - firstSeenUnenrolled.get(key) < 600_000) fast = true;
+        }
+        return fast; };
+      const loopEnroll = async () => { try { await tickEnroll(); } finally {
+        setTimeout(loopEnroll, unenrolled() ? 15_000 : enrollWaiting > 0 ? 30_000 : 300_000).unref?.(); } };
       setTimeout(loopEnroll, 60_000).unref?.();
     }
     // resolve(id): the app's loopback port and its certificate, or null. Both come from the host,
