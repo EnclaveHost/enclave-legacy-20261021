@@ -52,6 +52,9 @@ $Folders = [ordered]@{
 }
 $NodeZip   = @{ url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"; sha = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"; dir = "node-v24.16.0-win-x64" }
 $PythonZip = @{ url = "https://www.python.org/ftp/python/3.14.5/python-3.14.5-embed-amd64.zip"; sha = "ba6bd811c4eedb19195cf275770ef127e893d63701e24152606e2cb76f6d876a" }
+# EnclaveDNS (github.com/EnclaveHost/enclavedns-client): offered by setup, ticked by default; install-host.ps1 -EnclaveDNS
+# runs it silently. The sha256 is the release's SHA256SUMS line for this file.
+$EnclaveDNS = @{ url = "https://github.com/EnclaveHost/enclavedns-client/releases/download/v0.1.0/EnclaveDNS-Setup-0.1.0-x64.exe"; sha = "f1fb4300cc54a854bc16852ebbe393c9283cb8565d2fc46a6a2bcc25d52d737e" }
 
 $work = Join-Path $Out "work"; $B = Join-Path $work "enclave-host"
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
@@ -116,6 +119,10 @@ Expand-Archive -LiteralPath $nz -DestinationPath (Join-Path $work "node-x") -For
 New-Item -ItemType Directory -Force (Join-Path $B "runtime") | Out-Null
 Move-Item (Join-Path (Join-Path $work "node-x") $NodeZip.dir) (Join-Path $B "runtime\node")
 "runtime: Node.js $($NodeZip.dir)"
+$ez = Fetch $EnclaveDNS "EnclaveDNS"
+New-Item -ItemType Directory -Force (Join-Path $B "enclavedns") | Out-Null
+Copy-Item -LiteralPath $ez (Join-Path $B "enclavedns\EnclaveDNS-Setup.exe")
+"optional: EnclaveDNS $(Split-Path $EnclaveDNS.url -Leaf)"
 $pz = Fetch $PythonZip "Python"
 Expand-Archive -LiteralPath $pz -DestinationPath (Join-Path $B "runtime\python") -Force
 # the embeddable Python takes its import path from python3xx._pth only: add the node folder (fetch-cid.py imports

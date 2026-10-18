@@ -41,12 +41,13 @@ namespace Enclave.Setup
             try { SetProcessDPIAware(); } catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            string resumeName = null, referral = null; bool uninstall = false;
+            string resumeName = null, referral = null; bool uninstall = false, enclaveDns = true;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--resume" && i + 1 < args.Length) resumeName = args[i + 1];
                 if (args[i] == "--referral" && i + 1 < args.Length) referral = args[i + 1].Trim();
                 if (args[i] == "--uninstall") uninstall = true;
+                if (args[i] == "--no-enclavedns") enclaveDns = false;   // the owner unticked it before a restart
             }
             if (referral != null && !SetupForm.ReferralOk(referral)) referral = null;   // never passed on unchecked
             // Never run from inside Program Files\Enclave: the uninstall deletes that folder, and an install replaces it (and
@@ -65,7 +66,7 @@ namespace Enclave.Setup
                 Process.Start(new ProcessStartInfo(copy, string.Join(" ", args)) { UseShellExecute = true, WorkingDirectory = tmp });
                 return 0;
             }
-            Application.Run(new SetupForm(resumeName, uninstall, referral));
+            Application.Run(new SetupForm(resumeName, uninstall, referral, enclaveDns));
             return 0;
         }
     }
@@ -91,11 +92,14 @@ namespace Enclave.Setup
         readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer { Interval = 100 };
         static readonly string[] Spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
         // the install script's steps, in order, each weighted by roughly how long it takes (the join waits on the network)
-        static readonly string[] InstallSteps = { "checks", "hyperv", "name", "prereq", "files", "shield", "keys", "config", "services", "join", "tray", "done" };
-        static readonly int[] InstallWeights = { 1, 1, 1, 1, 4, 2, 1, 1, 3, 5, 1, 1 };
+        static readonly string[] InstallSteps = { "checks", "hyperv", "name", "prereq", "files", "shield", "keys", "config", "services", "join", "tray", "enclavedns", "done" };
+        static readonly int[] InstallWeights = { 1, 1, 1, 1, 4, 2, 1, 1, 3, 5, 1, 2, 1 };
         static readonly string[] UninstallSteps = { "services", "shield", "tray", "files", "data", "done" };
         static readonly int[] UninstallWeights = { 2, 2, 1, 2, 1, 1 };
         readonly CheckBox removeData = new CheckBox();
+        // the install's one extra: EnclaveDNS, ticked by default
+        readonly CheckBox enclaveDns = new CheckBox();
+        readonly Label enclaveDnsNote = new Label();
         string phase = "", runningKey, runningMsg;
         DateTime runningSince, startedAt;
         int frame;
@@ -115,9 +119,10 @@ namespace Enclave.Setup
         bool nameOk, busy;
         Action onPrimary;
 
-        public SetupForm(string resumeName, bool uninstall, string referral)
+        public SetupForm(string resumeName, bool uninstall, string referral, bool withEnclaveDns)
         {
             this.resumeName = resumeName;
+            enclaveDns.Checked = withEnclaveDns;
             refBox.Text = referral ?? "";
             Text = uninstall ? "Remove Enclave" : "Enclave setup";
             FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
@@ -149,7 +154,18 @@ namespace Enclave.Setup
             refNote.Margin = new Padding(3, Theme.Px(6), 3, 0); refNote.ForeColor = Theme.Dim;
             refNote.Text = "If someone sent you here, their code. Letters, digits, '.', '_' or '-'.";
             nameRow.Controls.Add(nameBox); nameRow.Controls.Add(nameNote);
-            nameRow.Controls.Add(refLabel); nameRow.Controls.Add(refBox); nameRow.Controls.Add(refNote); nameRow.Visible = false;
+            nameRow.Controls.Add(refLabel); nameRow.Controls.Add(refBox); nameRow.Controls.Add(refNote);
+            enclaveDns.AutoSize = true; enclaveDns.MaximumSize = new Size(Wide, 0); enclaveDns.ForeColor = Theme.Text; enclaveDns.BackColor = Theme.Bg;
+            enclaveDns.FlatStyle = FlatStyle.Flat; enclaveDns.Margin = new Padding(3, Theme.Px(16), 3, 0);
+            enclaveDns.Text = "Also install EnclaveDNS (recommended)";
+            enclaveDns.AccessibleDescription = "EnclaveDNS lets this PC open .eth names, so Enclave stays reachable at EnclaveHost.eth if the enclave.host website ever goes down.";
+            enclaveDnsNote.AutoSize = true; enclaveDnsNote.MaximumSize = new Size(Wide - Theme.Px(22), 0); enclaveDnsNote.Font = Theme.Mono(8.5f, FontStyle.Regular);
+            enclaveDnsNote.ForeColor = Theme.Dim; enclaveDnsNote.Margin = new Padding(Theme.Px(22), Theme.Px(4), 3, 0);
+            enclaveDnsNote.Text = "Enclave's own DNS resolver, running in an attested enclave. With it, this PC opens .eth names in the browser, "
+                + "so you can still reach Enclave at EnclaveHost.eth if the enclave.host website ever goes down. It becomes this PC's DNS "
+                + "(answers checked with DNSSEC, with a fallback if it cannot be reached). Remove it any time from Installed apps.";
+            nameRow.Controls.Add(enclaveDns); nameRow.Controls.Add(enclaveDnsNote);
+            nameRow.Visible = false;
             flow.Controls.Add(nameRow);
             // the uninstall's one choice
             removeData.AutoSize = true; removeData.MaximumSize = new Size(Wide, 0); removeData.ForeColor = Theme.Text; removeData.BackColor = Theme.Bg;
@@ -337,7 +353,8 @@ namespace Enclave.Setup
                 string self = Path.Combine(WorkDir, "EnclaveSetup.exe");
                 try { File.Copy(Application.ExecutablePath, self, true); } catch { }
                 using (var k = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"))
-                    k.SetValue("EnclaveSetup", "\"" + self + "\" --resume " + (name ?? "-") + (Referral.Length > 0 ? " --referral " + Referral : ""));
+                    k.SetValue("EnclaveSetup", "\"" + self + "\" --resume " + (name ?? "-") + (Referral.Length > 0 ? " --referral " + Referral : "")
+                               + (enclaveDns.Checked ? "" : " --no-enclavedns"));
                 Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 5 /c \"Enclave setup: restarting to turn on Hyper-V\"") { CreateNoWindow = true, UseShellExecute = false });
                 Close();
             });
@@ -391,7 +408,7 @@ namespace Enclave.Setup
             phase = "install"; rail.Failed = false;
             string owner = Environment.UserDomainName + "\\" + Environment.UserName;
             RunScript(Path.Combine(bundleDir, "install-host.ps1"), "-Name " + name + " -Owner \"" + owner + "\" -SetupExe \"" + Application.ExecutablePath + "\""
-                      + (Referral.Length > 0 ? " -Referral " + Referral : ""), delegate (int code)
+                      + (Referral.Length > 0 ? " -Referral " + Referral : "") + (enclaveDns.Checked ? " -EnclaveDNS" : ""), delegate (int code)
             {
                 if (code == 0) Done();
                 else if (code == 3010) NeedsRestart();

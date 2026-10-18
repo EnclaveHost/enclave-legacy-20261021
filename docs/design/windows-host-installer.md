@@ -51,6 +51,11 @@ A Windows 11 Pro/Enterprise 24H2+ PC with Hyper-V, Secure Boot and an AMD fTPM, 
 6. Register tasks, start manager → node; wait for attach (hardware attestation) and the SPONSORED registration
    (EnclaveHostPaymaster, no ETH needed); then the TUNA agent.
 7. Install the tray for the signed-in user; open it on the payout-wallet step.
+8. **EnclaveDNS** (optional, ticked by default on the Name page): the bundle's pinned EnclaveDNS installer
+   (github.com/EnclaveHost/enclavedns-client) runs silently (`/VERYSILENT /TASKS=enable,path`): the EnclaveDNS service,
+   this PC's DNS through it (one NRPT rule for "."), and its .eth-only CA, so the owner can reach Enclave at
+   EnclaveHost.eth if enclave.host is down. `install-host.ps1 -EnclaveDNS`; a failure only warns, and updates never pass
+   it (an update cannot change a host's DNS). An unticked box survives the Hyper-V restart (`--no-enclavedns`).
 
 `irm https://get.enclave.host/host.ps1 | iex` downloads and verifies `EnclaveSetup.exe` and runs it (no Mark of the
 Web, so no SmartScreen prompt while unsigned). The Host page links both.
@@ -101,7 +106,7 @@ Files at its next start when they differ. Publishing a release (`scripts/publish
 ## Bundle build
 
 `windows/installer/build-bundle.ps1` on a Windows build box: a sources map (bundle path → file + sha256) collects the
-known-good parts above, downloads Node.js and Python (embeddable) at pinned versions and sha256, drops test/probe
+known-good parts above, downloads Node.js, Python (embeddable) and the EnclaveDNS installer at pinned versions and sha256, drops test/probe
 artefacts, writes `manifest.json` (every file's sha256) and `SHA256SUMS`, zips `enclave-host-<version>.zip`. v1 takes
 binaries from the known-good runtime; making each one build from the public repo (Rust, MSVC, Go, the IGVM) is the
 next step, and is what SignPath needs.

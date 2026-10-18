@@ -1,6 +1,6 @@
 # install-host.ps1 -- install an Enclave host on this Windows PC (docs/design/windows-host-installer.md). EnclaveSetup.exe
 # runs it elevated from the expanded bundle; it can also be run by hand:
-#   powershell -ExecutionPolicy Bypass -File install-host.ps1 -Name my-box [-Owner DOMAIN\user] [-Referral code] [-CheckOnly]
+#   powershell -ExecutionPolicy Bypass -File install-host.ps1 -Name my-box [-Owner DOMAIN\user] [-Referral code] [-EnclaveDNS] [-CheckOnly]
 # Progress goes to stdout as one JSON object per line: {"step","state":"run|ok|warn|fail|reboot","message"}.
 # Re-running is safe: every step checks what is already there. Nothing is downloaded: the bundle is this folder.
 param(
@@ -11,7 +11,8 @@ param(
   [string] $Relay = "https://api.enclave.host",
   [string] $SetupExe = "",              # EnclaveSetup.exe: kept in Program Files as the uninstaller Windows' Installed apps runs
   [switch] $Delta,                      # an update over this install: replace only the files whose sha256 changed (update-host.ps1)
-  [string] $Referral = ""               # the referral code this machine came with (attribution only; relay/referrals.mjs)
+  [string] $Referral = "",              # the referral code this machine came with (attribution only; relay/referrals.mjs)
+  [switch] $EnclaveDNS                  # also install EnclaveDNS (setup's checkbox, ticked by default; updates never pass it)
 )
 $ErrorActionPreference = "Stop"
 $Bundle = $PSScriptRoot
@@ -468,5 +469,30 @@ elseif ($Owner) {
   finally { Unregister-ScheduledTask -TaskName "EnclaveTrayInstall" -Confirm:$false -ErrorAction SilentlyContinue }
 }
 Emit "tray" "ok" "Open 'Enclave Hosting' from the tray, the Desktop or the Start Menu to set your payout wallet and caps"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# EnclaveDNS (optional): this PC's DNS through Enclave's resolver, and .eth names in the browser, so EnclaveHost.eth
+# stays reachable if enclave.host is not. Its own installer, from the bundle, silently: it installs the EnclaveDNS
+# service, points DNS at it (one NRPT rule) and trusts its .eth-only CA. A failure here never fails the host install.
+# ---------------------------------------------------------------------------------------------------------------------
+if ($EnclaveDNS) {
+  Emit "enclavedns" "run" "Installing EnclaveDNS"
+  $dnsSetup = Join-Path $Bundle "enclavedns\EnclaveDNS-Setup.exe"
+  if (-not (Test-Path -LiteralPath $dnsSetup)) {
+    Emit "enclavedns" "warn" "This bundle has no EnclaveDNS installer; skipped (get it from github.com/EnclaveHost/enclavedns-client)"
+  } else {
+    try {
+      $p = Start-Process -FilePath $dnsSetup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=enable,path" -Wait -PassThru
+      $svc = Get-Service -Name EnclaveDNS -ErrorAction SilentlyContinue
+      if ($p.ExitCode -eq 0 -and $svc -and $svc.Status -eq "Running") {
+        Emit "enclavedns" "ok" "EnclaveDNS is this PC's DNS; .eth names such as EnclaveHost.eth open in the browser after it restarts"
+      } else {
+        Emit "enclavedns" "warn" "EnclaveDNS did not finish installing (exit $($p.ExitCode)); hosting is unaffected. Its installer: github.com/EnclaveHost/enclavedns-client"
+      }
+    } catch {
+      Emit "enclavedns" "warn" "EnclaveDNS was not installed ($($_.Exception.Message)); hosting is unaffected"
+    }
+  }
+}
 Emit "done" "ok" "Enclave host '$Name' is set up"
 exit 0
