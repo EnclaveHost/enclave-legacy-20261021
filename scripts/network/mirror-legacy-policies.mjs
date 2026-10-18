@@ -21,8 +21,9 @@ export async function mirrorPolicies({file,directories,log=console.log}){
     try{
       for(const envelope of publicPolicies(JSON.parse(await fs.readFile(file,'utf8')))){
         const id=envelope.policy.deploymentId,bytes=JSON.stringify(envelope);if(sent.get(id)===bytes)continue;
-        await client.publish('/v1/network/policy/'+id,{envelope});sent.set(id,bytes);
-        log('public policy replicated '+id+' nonce '+envelope.policy.nonce);
+        try{await client.publish('/v1/network/policy/'+id,{envelope});sent.set(id,bytes);
+          log('public policy replicated '+id+' nonce '+envelope.policy.nonce);
+        }catch(e){log('policy replication '+id+': '+e.message);}
       }
     }catch(e){log('policy replication: '+e.message);}finally{busy=false;}
   };
