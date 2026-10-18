@@ -97,6 +97,14 @@ export function createNetworkEnroll({ agentDir, binDir, runner, relayBase, confi
       cfg.enclaveNetwork = want; switched = !fresh; changed = true;
       log(fresh ? "Enclave network: new config" : "Enclave network: this box's network configuration changes");
     }
+    // the chain RPCs follow the node's list (chain.mjs RPCS, or BASE_RPCS): a box kept the list it was set up with forever,
+    // and on k11-4 two of its three public RPCs rate-limited, so 2 of 3 agreeing failed most rounds (2026-10-18). The agent
+    // reads them at start, so a change restarts it once.
+    const rpcs = Array.isArray(config.chainRpc) ? config.chainRpc.filter((u) => /^https:\/\//.test(String(u))) : [];
+    if (!fresh && rpcs.length >= 2 && JSON.stringify(cfg.chain?.rpc || []) !== JSON.stringify(rpcs)) {
+      cfg.chain = { ...(cfg.chain || {}), rpc: rpcs }; switched = true; changed = true;
+      log(`chain RPCs now ${rpcs.map((u) => new URL(u).host).join(", ")}`);
+    }
     // paths follow the agent's directory (it moved once, tuna -> network): the state directory needs a restart
     if (!fresh && cfg.directory !== file("state")) { cfg.directory = file("state"); switched = true; changed = true; log(`state directory now ${cfg.directory}`); }
     if (!fresh && cfg.shield && cfg.shield.policyFile !== config.policyFile) { cfg.shield.policyFile = config.policyFile; switched = true; changed = true; }

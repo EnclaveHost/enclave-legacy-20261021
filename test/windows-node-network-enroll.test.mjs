@@ -168,3 +168,21 @@ test("an operator's paceMbps is kept across passes (no restart); a bad value is 
     assert.equal(w.read().enclaveNetwork.paceMbps, undefined, `${JSON.stringify(bad)} is not carried`);
   }
 });
+
+test("the agent's chain RPCs follow the node's list: a changed list is written once and restarts the agent once", async () => {
+  const w = world();
+  await w.enroll.pass();
+  assert.deepEqual(w.read().chain.rpc, ["https://rpc"], "a fresh config takes the node's list");
+  const before = w.restarts();
+  w.config.chainRpc = ["https://base-rpc.publicnode.com", "https://base.gateway.tenderly.co", "https://base-public.nodies.app"];
+  await w.enroll.pass();
+  assert.deepEqual(w.read().chain.rpc, w.config.chainRpc);
+  assert.equal(w.restarts(), before + 1, "one restart for the new list");
+  assert.ok(w.logs.some((m) => /chain RPCs now base-rpc\.publicnode\.com, base\.gateway\.tenderly\.co, base-public\.nodies\.app/.test(m)));
+  await w.enroll.pass();
+  assert.equal(w.restarts(), before + 1, "settled: no more restarts");
+  w.config.chainRpc = ["https://only-one"];
+  await w.enroll.pass();
+  assert.deepEqual(w.read().chain.rpc, ["https://base-rpc.publicnode.com", "https://base.gateway.tenderly.co", "https://base-public.nodies.app"],
+    "a list too short for a 2-agreeing quorum is not applied");
+});

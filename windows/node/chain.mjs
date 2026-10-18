@@ -31,7 +31,8 @@ import path from "node:path";
 import { parseWaf } from "./waf.mjs";
 import { planCheckpoints } from "./verification-checkpoints.mjs";
 
-const RPCS = (process.env.BASE_RPCS || "https://base-rpc.publicnode.com,https://base.drpc.org,https://mainnet.base.org")
+// five public RPCs: the privacy agent wants 2 agreeing (network/lease-reader.mjs) and drpc / mainnet.base.org rate-limit often
+const RPCS = (process.env.BASE_RPCS || "https://base-rpc.publicnode.com,https://base.gateway.tenderly.co,https://base-public.nodies.app,https://base.drpc.org,https://mainnet.base.org")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const BOOK = (process.env.ADDRESS_BOOK_ADDRESS || "0xab214342d5A490150A4A977063A2f88E21F80907").trim();
 /** The Base RPCs this node reads (the privacy agent's config names the same ones: tuna-enroll.mjs). */
