@@ -62,6 +62,8 @@ contract EnclaveSecretVaultV2 {
     address public immutable enclaveOwner;
     IVaultV2HostOwnership public immutable hostOwnership;
     address public immutable hostRegistry;
+    address public immutable deploymentLedger;
+    address public immutable sessionVaultFactory;
 
     // ---------------------------------------------------------------- committees
     struct Machine {
@@ -163,6 +165,12 @@ contract EnclaveSecretVaultV2 {
         if (registry_.code.length == 0) revert NoRegistry();
         hostRegistry = registry_;
         book = IVaultV2Book(book_);
+        address ledger_ = IVaultV2Book(book_).addr(BOOK_DEPLOYMENTS);
+        if (ledger_.code.length == 0) revert NoLedger();
+        deploymentLedger = ledger_;
+        address factory_ = IVaultV2Book(book_).addr(BOOK_SESSION_FACTORY);
+        if (factory_ != address(0) && factory_.code.length == 0) revert();
+        sessionVaultFactory = factory_;
         enclaveOwner = enclaveOwner_;
     }
 
@@ -467,16 +475,14 @@ contract EnclaveSecretVaultV2 {
 
     // ================================================================= ownership (as v1)
     function _ledger() private view returns (IVaultV2Ledger) {
-        address a = book.addr(BOOK_DEPLOYMENTS);
-        if (a == address(0)) revert NoLedger();
-        return IVaultV2Ledger(a);
+        return IVaultV2Ledger(deploymentLedger);
     }
     /// the ledger's owner of `id`, or, for a SessionVault-held record, that vault's owner (who alone may set secrets: a
     /// session key never can). address(0) for no such deployment.
     function beneficialOwnerOf(bytes32 id) public view returns (address o) {
         o = _ledger().get(id).owner;
         if (o == address(0) || o.code.length == 0) return o;
-        address f = book.addr(BOOK_SESSION_FACTORY);
+        address f = sessionVaultFactory;
         if (f != address(0)) {
             try IVaultV2Factory(f).isVault(o) returns (bool v) {
                 if (v) return IVaultV2Session(o).owner();

@@ -3,7 +3,6 @@
 // that block, and (custodians, relay) the block must be fresh against this machine's clock (maxAgeSec).
 import { createPublicClient, http, keccak256, toBytes, bytesToHex, hexToBytes, stringToHex } from "viem";
 
-const BOOK_ABI = [{ type: "function", name: "addr", stateMutability: "view", inputs: [{ name: "key", type: "bytes32" }], outputs: [{ type: "address" }] }];
 export const MACHINE = [
   { name: "identity", type: "address" }, { name: "encKey", type: "bytes32" }, { name: "endpoint", type: "string" },
   { name: "chipId", type: "bytes32" }, { name: "registryId", type: "bytes32" }, { name: "measurement", type: "bytes32" },
@@ -15,6 +14,8 @@ const HOST_OWNERSHIP_ABI = [
 export const VAULT_V2_ABI = [
   { type: "function", name: "hostOwnership", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
   { type: "function", name: "hostRegistry", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
+  { type: "function", name: "deploymentLedger", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
+  { type: "function", name: "sessionVaultFactory", stateMutability: "view", inputs: [], outputs: [{type:"address"}] },
   { type: "function", name: "book", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "enclaveOwner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "policyOf", stateMutability: "view", inputs: [{ name: "id", type: "bytes32" }],
@@ -77,10 +78,12 @@ async function readCommitteeAt(rd, vault, cid) {
 
 async function readReleaseAt(client, vault, { id, endpoint }, blockNumber) {
   const rd = (address, abi, functionName, args = []) => client.readContract({ address, abi, functionName, args, blockNumber });
-  const [policy, bundle, bookAddr, beneficialOwner] = await Promise.all([
-    rd(vault, VAULT_V2_ABI, "policyOf", [id]), rd(vault, VAULT_V2_ABI, "bundleOf", [id]), rd(vault, VAULT_V2_ABI, "book"), rd(vault, VAULT_V2_ABI, "beneficialOwnerOf", [id])]);
+  const [policy, bundle, ledgerAddr, registryAddr, beneficialOwner] = await Promise.all([
+    rd(vault, VAULT_V2_ABI, "policyOf", [id]), rd(vault, VAULT_V2_ABI, "bundleOf", [id]),
+    rd(vault, VAULT_V2_ABI, "deploymentLedger"), rd(vault, VAULT_V2_ABI, "hostRegistry"),
+    rd(vault, VAULT_V2_ABI, "beneficialOwnerOf", [id])]);
   const [owner, policyRev, secretRev, committeeId, paused, rules] = policy;
-  const [ledgerAddr, registryAddr] = await Promise.all([rd(bookAddr, BOOK_ABI, "addr", [BOOK_KEYS.deployments]), rd(bookAddr, BOOK_ABI, "addr", [BOOK_KEYS.registry])]);
+  if (lc(ledgerAddr) === ZERO || lc(registryAddr) === ZERO) throw err("release_authority_missing", "pinned release authorities required");
   const epId = endpoint ? endpointIdOf(endpoint) : null;
   const zeroCid = /^0x0{64}$/.test(committeeId);
   const [row, reg, committee] = await Promise.all([

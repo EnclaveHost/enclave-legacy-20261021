@@ -1072,11 +1072,47 @@ contract EnclaveSecretVaultV2Test is Test {
     function test_constructorAndImmutables() public {
         assertEq(address(vault.hostOwnership()), address(ownership));
         assertEq(vault.hostRegistry(), address(registry));
+        assertEq(vault.deploymentLedger(), address(ledger));
+        assertEq(vault.sessionVaultFactory(), address(factory));
         assertEq(address(vault.book()), address(book));
         assertEq(vault.enclaveOwner(), enclaveOwner);
         vm.expectRevert();
         new EnclaveSecretVaultV2(address(0), enclaveOwner, address(ownership));
         vm.expectRevert();
         new EnclaveSecretVaultV2(address(book), address(0), address(ownership));
+    }
+
+    function testBookCannotRedirectDeploymentOwnership() public {
+        V2Ledger substitute = new V2Ledger();
+        substitute.setOwner(D, stranger);
+        book.set("deployments", address(substitute));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+        ledger.setOwner(D, otherWallet);
+        assertEq(vault.beneficialOwnerOf(D), otherWallet);
+        book.set("deployments", address(0));
+        assertEq(vault.beneficialOwnerOf(D), otherWallet);
+    }
+
+    function testBookCannotDisableSessionOwnershipResolution() public {
+        V2SessionVault session = new V2SessionVault(owner);
+        factory.add(address(session));
+        ledger.setOwner(D, address(session));
+        book.set("sessionVaultFactory", address(new V2Factory()));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+        book.set("sessionVaultFactory", address(0));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+    }
+
+    function testConstructorRequiresARealLedgerAndOptionalRealFactory() public {
+        book.set("deployments", address(0));
+        vm.expectRevert(EnclaveSecretVaultV2.NoLedger.selector);
+        new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        book.set("deployments", address(ledger));
+        book.set("sessionVaultFactory", stranger);
+        vm.expectRevert();
+        new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        book.set("sessionVaultFactory", address(0));
+        EnclaveSecretVaultV2 noSessions = new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        assertEq(noSessions.sessionVaultFactory(), address(0));
     }
 }

@@ -239,6 +239,11 @@ test("custody v2 end to end: genesis, release at t=1, join + handover through th
     assert.deepEqual(await unlock([E1, E2, NB, NC]), env, "all answer: one Enclave partial used");
     await assert.rejects(unlock([E1, E2], { expectEnclaveRule: false }), /exactly 2 distinct/, "two Enclave machines are ONE seat: they cannot reach t");
     assert.deepEqual(await unlock([NB, NC]), env, "no Enclave machine online: the other seats suffice");
+    await send(deployer, book, C.book.abi, "set", [stringToHex("deployments", {size:32}), "0x"+"00".repeat(20)]);
+    await send(deployer, book, C.book.abi, "set", [stringToHex("registry", {size:32}), "0x"+"00".repeat(20)]);
+    assert.deepEqual(await unlock([NB, NC]), env, "book edits cannot disable independent custody release");
+    await send(deployer, book, C.book.abi, "set", [stringToHex("deployments", {size:32}), ledger]);
+    await send(deployer, book, C.book.abi, "set", [stringToHex("registry", {size:32}), registry]);
     // ---- 5. the relay's v2 pointer for the guest's signed release (relay/custody-state.mjs) ----
     const relayReader = createCustodyReader({ vault2: vault, chainId, rpcs: [anvil.url], minAgree: 1, maxAgeSec: null });
     const ptr = await relayReader.custodyStateFor(id);

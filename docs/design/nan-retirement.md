@@ -37,4 +37,4 @@ Do not deploy this custody change as a completed veto migration. Remaining work 
 - Native ENS recovery works without enclave.host, and guest TLS renewal succeeds independently.
 - A timed nan outage demonstrates these properties before services or data on nan are removed.
 
-The legacy release reader still resolves deployment state and app-host bindings through the address book. Removing mutable global routing/ledger authority from the independent path remains necessary; pinned custody membership alone does not establish censorship resistance.
+The proposed vault also pins its deployment ledger and SessionVault factory at construction; the compatible release reader uses that ledger and the pinned host registry. A real-chain test clears the book's ledger/registry entries and verifies that the independent custody quorum can still release. Older deployed vaults and readers retain their legacy authority path until explicitly migrated. Other serving and discovery paths still resolve mutable address-book entries; this custody change alone does not remove all global authority.

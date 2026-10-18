@@ -7,7 +7,7 @@
 //
 // The vault has NO owner, NO admin and NO proxy: the deployer key holds no power over it after the deployment transaction.
 // Constructor (book, enclaveOwner, hostOwnership):
-//   - book: the EnclaveAddressBook it resolves the ledger and the SessionVault factory through
+//   - book: used once at construction to pin the ledger and SessionVault factory
 //     (Base: 0xab214342d5A490150A4A977063A2f88E21F80907);
 //   - enclaveOwner: the accepted owning wallet that identifies the Enclave seat
 //     (Base: 0x0b2d009c0c9Af05b12100D77F3c815fea822eE61, the governance Trezor).
@@ -75,6 +75,11 @@ export async function deploySecretVaultV2({ rpc, chain, privateKey, book, enclav
   const wc = createWalletClient({ chain, account, transport: http(rpc) });
   if ((await pc.getChainId()) !== chain.id) die(`the RPC is not chain ${chain.id}`);
   if ((await pc.getCode({ address: book })) === undefined) die(`no contract at the book address ${book}`);
+  const bookABI = [{type:"function",name:"addr",stateMutability:"view",inputs:[{type:"bytes32"}],outputs:[{type:"address"}]}];
+  const pinNames = {deploymentLedger:"deployments",sessionVaultFactory:"sessionVaultFactory"};
+  const pins = Object.fromEntries(await Promise.all(Object.entries(pinNames).map(async([getter,key])=>
+    [getter,getAddress(await pc.readContract({address:book,abi:bookABI,functionName:"addr",args:[stringToHex(key,{size:32})]}))])));
+  log(`immutable release authorities: ${JSON.stringify(pins)}`);
   if (!(await confirm(`deploy from ${account.address} on chain ${chain.id}?`))) die("aborted");
   const hash = await wc.deployContract({ abi: art.abi, bytecode: art.bytecode, args: [book, enclaveOwner, hostOwnership] });
   const r = await pc.waitForTransactionReceipt({ hash });
@@ -89,6 +94,10 @@ export async function deploySecretVaultV2({ rpc, chain, privateKey, book, enclav
   if (getAddress(gotOwner) !== getAddress(enclaveOwner)) die(`the vault names enclaveOwner ${gotOwner}, not ${enclaveOwner}`);
   const gotOwnership = await readBack(pc, vault, art.abi, "hostOwnership");
   if (!gotOwnership || getAddress(gotOwnership) !== getAddress(hostOwnership)) die("hostOwnership read-back mismatch");
+  for (const [getter, expected] of Object.entries(pins)) {
+    const actual = await readBack(pc, vault, art.abi, getter);
+    if (!actual || getAddress(actual) !== expected) die(`${getter} read-back mismatch; do not activate this vault`);
+  }
   log(`deployed ${vault} (tx ${hash}, block ${r.blockNumber})`);
   const setData = encodeFunctionData({ abi: [{ type: "function", name: "set", stateMutability: "nonpayable", inputs: [{ type: "bytes32" }, { type: "address" }], outputs: [] }],
                                       functionName: "set", args: [stringToHex(BOOK_KEY, { size: 32 }), vault] });

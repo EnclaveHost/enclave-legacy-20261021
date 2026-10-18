@@ -9,9 +9,11 @@ contract, the custodian HTTP API, guestd/supervisor authorization and the guest'
 Source migration proposal (not the live deployed vault): wallet-based admission requires a new vault and compatible measured custodian runtime. Existing committees and encrypted bundles must be migrated explicitly before changing discovery.
 
 No owner, no admin, no proxy. Constructor: `(address book, address enclaveOwner, address hostOwnership)`.
-- `book` is the EnclaveAddressBook (`addr(bytes32)`), as in v1, for deployment/session state.
+- `book` is the EnclaveAddressBook (`addr(bytes32)`), consulted once at construction to pin `deploymentLedger` and `sessionVaultFactory`. The ledger must have code; the factory may be zero (no SessionVault unwrapping) or a contract. Later book edits cannot redirect ownership or release decisions.
 - `hostOwnership` is a deployed `EnclaveHostOwnership`. It and its registry are pinned immutably. Registry operators nominate initial wallet owners; those wallets must accept.
 - `enclaveOwner` is `0x0b2d009c0c9Af05b12100D77F3c815fea822eE61` on Base.
+
+The compatible release reader obtains the ledger and host registry from the vault's immutable getters. It refuses older vaults without these getters instead of falling back to address-book lookups. The deployment script reads back these pins; a mismatch must not be activated. This binds a committee to one ledger and registry, so migrating either requires an explicit new-vault/bundle migration.
 
 ### 1.1 Machines and seats
 

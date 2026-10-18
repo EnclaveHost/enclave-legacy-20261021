@@ -3,7 +3,7 @@
 //   run: node --test test/custody-v2-deploy.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWalletClient, http, decodeFunctionData, hexToString, encodeAbiParameters, keccak256, toHex } from "viem";
+import { createWalletClient, http, decodeFunctionData, hexToString, encodeAbiParameters, keccak256, toHex, stringToHex } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { anvilAvailable, startAnvil, compileContracts } from "./helpers/custody-rig.mjs";
 import { deploySecretVaultV2, compileSecretVaultV2, compileHostOwnership, EIP170, NETWORKS } from "../scripts/deploy-secret-vault-v2.mjs";
@@ -37,6 +37,8 @@ test("deploy on anvil: reads back book and enclaveOwner, prints the book step, a
     const book = (await a.client.waitForTransactionReceipt({ hash: await w.deployContract({ abi: C.book.abi, bytecode: C.book.bytecode }) })).contractAddress;
     const enclaveOwner = "0x0b2d009c0c9Af05b12100D77F3c815fea822eE61";
     const registry = (await a.client.waitForTransactionReceipt({hash:await w.deployContract({abi:C.registry.abi,bytecode:C.registry.bytecode})})).contractAddress;
+    const ledger = (await a.client.waitForTransactionReceipt({hash:await w.deployContract({abi:C.ledger.abi,bytecode:C.ledger.bytecode})})).contractAddress;
+    await a.client.waitForTransactionReceipt({hash:await w.writeContract({address:book,abi:C.book.abi,functionName:"set",args:[stringToHex("deployments",{size:32}),ledger]})});
     const ownershipArtifact = compileHostOwnership();
     const hostOwnership = (await a.client.waitForTransactionReceipt({hash:await w.deployContract({abi:ownershipArtifact.abi,bytecode:ownershipArtifact.bytecode,args:[registry]})})).contractAddress;
     const logs = [];
