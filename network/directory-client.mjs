@@ -26,10 +26,12 @@ export class DirectoryClient {
     this.checkPath(path);
     const results=await Promise.allSettled(this.origins.map(async origin=>{
       const response=await this.fetch(origin+path,{redirect:'error',credentials:'omit',signal:AbortSignal.timeout(this.timeoutMs)});
+      // Legacy relays report an unset policy as 404; new replicas use a null envelope.
+      if(response.status===404&&path.startsWith('/v1/network/policy/')){await response.body?.cancel();return {origin,value:{envelope:null}};}
       return {origin,value:await boundedJSON(response)};
     }));
     const answers=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
-    if(!answers.length)throw Error('all public directories unavailable');
+    if(!answers.length)throw Error('all public directories unavailable: '+results.map(r=>String(r.reason?.message||'unavailable').slice(0,200)).join('; '));
     return answers;
   }
   async publish(path,value){
