@@ -63,7 +63,7 @@ c-deployments{display:contents;}
 .enc-main .ap-badge.ok::before,.enc-main .ap-badge.warn::before,.enc-main .ap-badge.info:not(.ep-waf)::before{content:"●" / "";margin-right:.45em;font-size:.8em;}
 .enc-main .ap-badge.ok::before{animation:encpulse 1.2s ease-in-out infinite;}
 @media (prefers-reduced-motion:reduce){.enc-main .ap-badge.ok::before{animation:none;}}
-.enc-thumb{flex:none;width:48px;aspect-ratio:16/9;border-radius:var(--radius-sm);border:1px solid var(--line-soft);background:var(--bg-1) center/cover no-repeat;}   /* the app's cover art (store thumbnail or generated stand-in) */
+.enc-thumb{flex:none;width:48px;aspect-ratio:16/9;border-radius:var(--radius-sm);border:1px solid var(--line-soft);background:var(--bg-1) center/contain no-repeat;}   /* the app's cover art (store thumbnail or generated stand-in); contain, not cover, so a square or tall logo fits whole instead of being cropped */
 .enc-br{flex-basis:100%;height:0;}   /* hard wrap after the id chip: tier/spend/meter start the next line */
 /* the card's name is the APP; the bytes32 lives in the copy chip beside it */
 .enc-title{font-family:var(--font-mono);font-size:.95rem;font-weight:600;letter-spacing:.01em;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
