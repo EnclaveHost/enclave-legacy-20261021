@@ -243,7 +243,7 @@ const host = new Host({
   maxBodyMb: Number(process.env.ENCLAVE_APP_MAX_BODY_MB) || 64,
   wasmtime: process.env.WASMTIME_BIN || path.join(DIR, 'wasmtime.exe'),
   python: process.env.PYTHON_BIN || 'python',
-  gateway: process.env.IPFS_GATEWAY || 'https://ipfs.enclave.host',
+  gateway: process.env.IPFS_GATEWAYS || process.env.IPFS_GATEWAY || 'https://ipfs.enclave.host',
   portBase: Number(process.env.APP_PORT_BASE || 9700),
   appSlots: Number(process.env.APP_SLOTS || 4),
   // The owner's hosting caps (hosting.mjs), beside the node's other state unless set.

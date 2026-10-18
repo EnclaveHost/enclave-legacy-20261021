@@ -15,6 +15,8 @@
 import base64
 import hashlib
 import urllib.request
+import urllib.parse
+import json
 
 RAW_CODEC = 0x55
 DAGPB_CODEC = 0x70
@@ -195,8 +197,33 @@ def verify_car(cid_str, car, max_bytes):
     return reconstruct(cid_bytes, blocks, max_bytes)
 
 
+def gateway_config(value):
+    """An explicit JSON array replaces the legacy gateway; never append nan."""
+    if isinstance(value, str) and value.lstrip().startswith("["):
+        value = json.loads(value)
+    if isinstance(value, list):
+        if not 1 <= len(value) <= 8 or len(set(value)) != len(value):
+            raise ValueError("one to eight distinct artifact gateways required")
+        for gateway in value:
+            u = urllib.parse.urlsplit(gateway)
+            if u.scheme not in ("https", "http") or not u.hostname or u.username or u.password or u.query or u.fragment:
+                raise ValueError("invalid artifact gateway")
+    elif not isinstance(value, str):
+        raise ValueError("artifact gateway must be a URL or JSON URL array")
+    return value
+
+
 def fetch_verified(cid_str, gateway, max_bytes, timeout=120):
     """Fetch the DAG for cid_str from `gateway` as a CAR and return verified file bytes."""
+    gateway = gateway_config(gateway)
+    if isinstance(gateway, list):
+        errors = []
+        for origin in gateway:
+            try:
+                return fetch_verified(cid_str, origin, max_bytes, min(timeout, 30))
+            except Exception as e:
+                errors.append(type(e).__name__ + ": " + str(e)[:180])
+        raise ValueError("no artifact gateway returned verified content: " + "; ".join(errors))
     cid_bytes = cid_str_to_bytes(cid_str)
     _, info, end = _cid_info(cid_bytes, 0)
     if end != len(cid_bytes):
