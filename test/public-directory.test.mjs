@@ -115,3 +115,13 @@ test('legacy migration bridge exports only the signed public policy',async t=>{
   state.policies[id].policy={...r.policy,privateKey:'must-fail'};
   assert.throws(()=>publicPolicies(state),/policy/);
 });
+test('unchanged gossip does not repeat admission RPCs but reads still reject a changed lease',async t=>{
+  const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);await r.d.accept('route',await r.publication());
+  const snapshot=await r.d.snapshot();let calls=0;
+  r.d.leaseOf=async()=>{calls++;return {...r.lease};};
+  assert.deepEqual(await r.d.import(snapshot),{accepted:0,rejected:0});assert.equal(calls,0);
+  r.lease.runner='0x'+'ef'.repeat(32);
+  assert.equal(Object.keys((await r.d.routes()).labels).length,0);assert.ok(calls>0);
+  const altered=structuredClone(snapshot);altered.publications[0].bundle.record.sequence++;
+  assert.equal((await r.d.import(altered)).rejected,1);
+});

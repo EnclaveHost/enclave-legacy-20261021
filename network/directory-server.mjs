@@ -43,10 +43,20 @@ export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
 export async function runDirectory(config){
   const log=m=>console.log(new Date().toISOString(),m);
   const reader=new LeaseReader({rpc:config.rpc,addressBook:config.addressBook,includeHostPayout:true});
-  const leases=new Map(),operators=new Map();let registry=null,registryAt=0;
+  const leases=new Map(),operators=new Map();let registry=null,registryAt=0,refreshLeases=null;
   const leaseOf=async id=>{
     const cached=leases.get(id);if(cached&&cached.at+15000>Date.now())return cached.row;
-    const row=(await reader.refresh([id]))[0];leases.set(id,{at:Date.now(),row});return row;
+    // Admission is serialized, so refreshing one app at a time defeats the
+    // reader's multicall batching. Refresh known publications at one block.
+    if(refreshLeases){await refreshLeases;return leaseOf(id);}
+    refreshLeases=(async()=>{
+      const s=await directory.read();
+      const ids=[id,...Object.keys(s.publications).filter(x=>x!==id)].slice(0,256);
+      const rows=await reader.refresh(ids),at=Date.now(),byId=new Map(rows.map(row=>[row.id,row]));
+      for(const key of ids)leases.set(key,{at,row:byId.get(key)});
+    })();
+    try{await refreshLeases;}finally{refreshLeases=null;}
+    return leases.get(id)?.row;
   };
   const hostOperator=async id=>{
     if(!registry||registryAt+30000<Date.now()){registry=await reader.bookAddress('registry');registryAt=Date.now();}

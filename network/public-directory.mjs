@@ -120,10 +120,18 @@ export class PublicDirectory {
   async import(snapshot){
     if(snapshot?.version!==1||!['providers','policies','publications'].every(k=>Array.isArray(snapshot[k])&&snapshot[k].length<=this.maxRecords))throw Error('invalid public snapshot');
     const results={accepted:0,rejected:0};
+    // Gossip repeatedly includes the entire snapshot. Already stored exact
+    // records need no admission work; reads still revalidate current leases,
+    // policies and qualification expiry. Never skip a changed envelope.
+    const current=await this.read();
     const put=async(k,e)=>{try{if(await this.accept(k,e))results.accepted++;}catch{results.rejected++;}};
-    for(const p of snapshot.providers){await put('provider',p.record);for(const q of (p.qualifications||[]).slice(0,16))await put('qualification',q);}
-    for(const p of snapshot.policies)await put('policy',p);
-    for(const p of snapshot.publications)await put('route',p);
+    for(const p of snapshot.providers){
+      const old=current.providers[p?.record?.record?.providerId];
+      if(!old||!equal(old.record,p.record))await put('provider',p.record);
+      for(const q of (p.qualifications||[]).slice(0,16))if(!(old?.qualifications||[]).some(e=>equal(e,q)))await put('qualification',q);
+    }
+    for(const p of snapshot.policies){const old=current.policies[p?.policy?.deploymentId];if(!old||!equal(old.envelope,p))await put('policy',p);}
+    for(const p of snapshot.publications){const old=current.publications[p?.bundle?.record?.deploymentId];if(!old||!equal(old,p))await put('route',p);}
     return results;
   }
 }
