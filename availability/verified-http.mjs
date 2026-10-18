@@ -3,12 +3,13 @@ import {randomBytes,timingSafeEqual} from 'node:crypto';
 import {verifyShieldAppPolicy} from '../relay/shield-app-policy.mjs';
 import {verifyEvidence} from '../verifier/index.mjs';
 import {runtimeId,bind2} from '../isolation/contract/runtime.mjs';
+import {appLookup} from './public-dns.mjs';
 
 function exchange(url,{method='GET',headers={},body,timeoutMs,maxBytes=131072,pinnedSpki}={}) {
  return new Promise((resolve,reject)=>{
   if(url.protocol!=='https:')return reject(new Error('HTTPS required'));
   const bytes=body===undefined?null:Buffer.from(JSON.stringify(body));
-  const req=https.request(url,{method,agent:false,headers:{...headers,...(bytes?{'content-type':'application/json','content-length':String(bytes.length)}:{})}},res=>{
+  const req=https.request(url,{method,agent:false,lookup:appLookup,headers:{...headers,...(bytes?{'content-type':'application/json','content-length':String(bytes.length)}:{})}},res=>{
    const cert=res.socket.getPeerX509Certificate();if(!cert){req.destroy(new Error('no peer certificate'));return;}
    const spki=cert.publicKey.export({format:'der',type:'spki'});
    if(pinnedSpki&&(pinnedSpki.length!==spki.length||!timingSafeEqual(pinnedSpki,spki))){req.destroy(new Error('guest key changed'));return;}

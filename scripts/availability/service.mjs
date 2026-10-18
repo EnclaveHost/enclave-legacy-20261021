@@ -29,6 +29,7 @@ import { createFeeChainAdapter } from "../../availability/fee-chain-adapter.mjs"
 import { stageDeploymentSecrets } from "../../availability/secrets.mjs";
 import { createCpuWorkload } from "../../availability/workload.mjs";
 import { verifiedAppRequest } from "../../availability/verified-http.mjs";
+import { httpsStatus } from "../../availability/public-dns.mjs";
 import { createObservationLoader } from "../../availability/observation.mjs";
 import { createWitness } from "../../availability/witness.mjs";
 import { createHostAcceptor } from "../../availability/host-acceptor.mjs";
@@ -180,8 +181,7 @@ async function untilReady(job) {
   // readiness answer over TLS is enough to start (the attested exchange checks everything)
   if (hostKind.get(lc(job.offer.hostId)) === "shield") {
     for (;;) {
-      const r = await fetch(origin + ".well-known/enclave-ready", { signal: AbortSignal.timeout(15_000) }).catch(() => null);
-      if (r && r.status === 200) return;
+      if (await httpsStatus(origin + ".well-known/enclave-ready") === 200) return;
       if (Date.now() > leaseEndMs) throw new Error("the Shield guest was not ready within its lease");
       await new Promise((res) => setTimeout(res, 10_000));
     }
@@ -190,7 +190,7 @@ async function untilReady(job) {
   for (;;) {
     if (!p) { const r = await fetch(`${cfg.relay}/v1/expected-guest?id=${job.deployment.id}`, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
               if (r && r.ok) { const j = await r.json().catch(() => null); if (j && (j.images || []).length) p = j; } }
-    if (p) { const r = await fetch(origin + ".well-known/enclave-attestation?nonce=" + "00".repeat(32), { signal: AbortSignal.timeout(15_000) }).catch(() => null);
+    if (p) { const r = { status: await httpsStatus(origin + ".well-known/enclave-attestation?nonce=" + "00".repeat(32)) };
              if (r && r.status === 200) { predictions.set(job.deployment.id, p); return; } }
     if (Date.now() > leaseEndMs) throw new Error(p ? "the guest did not answer over TLS within its lease" : "no prediction for the job's guest within its lease");
     await new Promise((r) => setTimeout(r, 10_000));
