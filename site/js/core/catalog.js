@@ -1,4 +1,4 @@
-import {directUploadHeaders} from "../../../sdk/storage/upload-auth.mjs";
+import {directUploadHeaders} from "./upload-auth.js";
 /* ============================================================
    App store · on-chain catalog (EnclaveAppCatalog on Base) + IPFS CIDs
    Apps are versioned: keyed by keccak256(publisher, slug), each with an
