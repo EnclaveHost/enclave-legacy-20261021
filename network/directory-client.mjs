@@ -44,10 +44,10 @@ export class DirectoryClient {
     const body=JSON.stringify(value);if(Buffer.byteLength(body)>65536)throw Error('public record too large');
     const results=await Promise.allSettled(this.origins.map(async origin=>{
       const r=await this.fetch(origin+path,{method:'POST',redirect:'error',credentials:'omit',headers:{'content-type':'application/json'},body,signal:AbortSignal.timeout(this.timeoutMs)});
-      if(!r.ok)throw Error('directory HTTP '+r.status);await r.body?.cancel();return origin;
+      if(!r.ok){const detail=await boundedJSON(new Response(r.body,{headers:r.headers}),4096).then(b=>String(b.error||'').slice(0,200)).catch(()=>'');throw Error('directory HTTP '+r.status+' '+detail);}await r.body?.cancel();return origin;
     }));
     const accepted=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
-    if(!accepted.length)throw Error('all public directory publications failed');
+    if(!accepted.length)throw Error('all public directory publications failed: '+results.map(r=>String(r.reason?.message||'unavailable').slice(0,200)).join('; '));
     return accepted;
   }
   async providers({hostOperator,now=Date.now()}={}){

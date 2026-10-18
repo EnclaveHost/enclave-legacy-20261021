@@ -6,7 +6,7 @@ import {DirectoryClient} from './directory-client.mjs';
 import {LeaseReader} from './lease-reader.mjs';
 import {verifyOwnerSignature} from './owner-signature.mjs';
 
-export function createDirectoryServer(directory,{maxInFlight=32}={}){
+export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
   let inFlight=0,tokens=100,last=Date.now();
   return http.createServer({requestTimeout:15000,headersTimeout:10000,maxHeaderSize:8192},async(req,res)=>{
     const send=(status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store','access-control-allow-origin':'*','x-content-type-options':'nosniff'});res.end(JSON.stringify(value));};
@@ -35,8 +35,8 @@ export function createDirectoryServer(directory,{maxInFlight=32}={}){
       const envelope=kind==='policy'?body.envelope:kind==='route'?body.publication:body;
       if(policy&&envelope?.policy?.deploymentId!==policy[1])throw Error('policy path mismatch');
       const changed=await directory.accept(kind,envelope);send(200,{ok:true,changed});
-    }catch(e){if(!res.headersSent)send(400,{error:String(e.message).slice(0,200)});}
-    finally{inFlight--;}
+    }catch(e){log('directory refusal '+String(req.url).slice(0,120)+': '+String(e.message).slice(0,200));if(!res.headersSent)send(400,{error:String(e.message).slice(0,200)});}
+    finally{inFlight--;if(Date.now()-now>4000)log('slow public request '+String(req.url).slice(0,120)+' '+(Date.now()-now)+'ms');}
   });
 }
 
@@ -57,7 +57,7 @@ export async function runDirectory(config){
   const directory=new PublicDirectory({directory:config.stateDir,checkers:config.checkers,leaseOf,hostOperator,
     verifyOwner:(owner,message,signature)=>verifyOwnerSignature({clients:reader.clients,owner,message,signature,addressBook:config.addressBook})});
   await directory.read(); // corruption must refuse startup, not forget replay floors
-  const server=createDirectoryServer(directory);
+  const server=createDirectoryServer(directory,{log});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(config.port||8188,config.bind||'127.0.0.1',resolve);});
   let busy=false;
   const peers=config.peers?.length?new DirectoryClient({origins:config.peers}):null;
