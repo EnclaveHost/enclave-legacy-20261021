@@ -2808,10 +2808,19 @@ class Deployments extends EnclaveElement {
       const [amount6, d] = await Promise.all([depRefundableOf(id), depGet(id)]);
       const bal6 = d ? BigInt(d.balance6 || 0) : 0n;
       const leased = d && Number(d.leaseUntil) * 1000 > Date.now();
-      if (!(amount6 > 0n))
-        throw new Error(leased
-          ? "nothing refundable yet - everything still held is reserved for the running lease. Suspend it and try again once the host hands the lease back."
-          : "nothing to refund - this deployment has already spent everything the contract held for it");
+      if (!(amount6 > 0n)){
+        if (leased)
+          throw new Error("nothing refundable yet - everything still held is reserved for the running lease. Suspend it and try again once the host hands the lease back.");
+        // Nothing to send back, but the owner still asked to END it. Refusing here
+        // left a queued record active (zero-escrow and ETH fundings hold nothing
+        // refundable from day one), so Cancel could never take it off the queue.
+        // The ledger's refund() reverts on amount=0; the stop is setActive(false).
+        if (btn){ btn.disabled = false; btn.textContent = orig; }
+        if (!d || !d.active){ showToast("already stopped - there is nothing left on " + id.slice(0, 10) + "… to refund"); setTimeout(() => this.refresh(), 900); return; }
+        if (!confirm("Nothing to refund on " + id.slice(0, 10) + "… - the contract holds nothing for it that it can send back.\n\n"
+                   + "Stop it and take it off the queue anyway?")) return;
+        return this._kill(id, null);
+      }
       const usd = (v) => "$" + (Number(v) / 1e6).toFixed(2);
       const lines = ["Cancel " + id.slice(0, 10) + "… and send " + usd(amount6) + " back to " + where + "?", ""];
       if (bal6 > amount6)
