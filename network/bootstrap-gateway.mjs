@@ -7,7 +7,8 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 const CID=/^b[a-z2-7]{10,100}$/;
-export async function createBootstrapGateway({directory,manifest}){
+export async function createBootstrapGateway({directory,manifest,maxObjectBytes=256*1024*1024}){
+ if(!Number.isSafeInteger(maxObjectBytes)||maxObjectBytes<1||maxObjectBytes>1024*1024*1024)throw Error("artifact size limit must be 1 byte..1 GiB");
  const entries=new Map();
  if(!Array.isArray(manifest.verifiedObjects)||manifest.verifiedObjects.length>4096)throw Error('verified bootstrap manifest required');
  for(const entry of manifest.verifiedObjects){
@@ -16,7 +17,7 @@ export async function createBootstrapGateway({directory,manifest}){
   for(const [extension,expected] of [['bin',entry.sha256],['car',entry.carSha256]]){
    if(!/^[0-9a-f]{64}$/.test(expected||''))throw Error('bootstrap digest required');
    const file=path.join(directory,entry.cid+'.'+extension),stat=await fs.stat(file),hash=createHash('sha256');
-   if(!stat.isFile()||stat.size>256*1024*1024)throw Error('invalid bootstrap file');
+   if(!stat.isFile()||stat.size>maxObjectBytes)throw Error('invalid bootstrap file');
    for await(const chunk of createReadStream(file))hash.update(chunk);
    if(hash.digest('hex')!==expected)throw Error('bootstrap file digest mismatch');
    files[extension]={file,size:stat.size};

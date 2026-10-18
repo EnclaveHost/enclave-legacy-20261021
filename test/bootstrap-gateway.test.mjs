@@ -13,3 +13,9 @@ test('only manifest artifacts are served and corrupt stored bytes refuse startup
  assert.equal((await fetch(base+'/config.json')).status,404);
  await writeFile(path.join(directory,cid+'.bin'),'tampered');await assert.rejects(createBootstrapGateway({directory,manifest}),/digest mismatch/);
 });
+
+test('replica object-size limits remain explicit and bounded',async()=>{
+ const manifest={verifiedObjects:[]};
+ for(const maxObjectBytes of [0,-1,1.5,1024*1024*1024+1])await assert.rejects(createBootstrapGateway({directory:'.',manifest,maxObjectBytes}),/size limit/);
+ const server=await createBootstrapGateway({directory:'.',manifest,maxObjectBytes:1024*1024*1024});server.close();
+});
