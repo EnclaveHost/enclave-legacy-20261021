@@ -87,6 +87,7 @@ const VAULT_DEP_ID = "0x" + "f1".repeat(32);   // a deployment the account's cre
 // ---- the platform double -----------------------------------------------------
 // state the tests poke at between runs
 const S = {
+  rpcCalls: [],
   logins: 0, apiCalls: [], txs: [],            // recorded traffic
   claimed: false,                              // get(ID) shows a live lease?
   active: true,                                // get(ID).active (false = suspended)
@@ -278,6 +279,7 @@ function rpcServer() {
   return http.createServer(async (req, res) => {
     let body = ""; for await (const c of req) body += c;
     const { id, method, params } = JSON.parse(body);
+    S.rpcCalls.push({ method, params });
     const reply = (result) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id, result })); };
     try {
       switch (method) {
@@ -368,6 +370,7 @@ function run(cliArgs, { input, env } = {}) {
              ENCLAVE_IPFS_UPLOAD: `http://127.0.0.1:${ipfsPort}/add-wasm`,
              ENCLAVE_IPFS_JSON_UPLOAD: `http://127.0.0.1:${ipfsPort}/add-json`,
              ENCLAVE_ADDRESS_BOOK: "",   // opt out of the on-chain address book: the double must stay offline (and the 4s resolve cap × every invocation would blow the suite timeout)
+             ENCLAVE_CONTRACT_PINS_FILE: "",
              XDG_CONFIG_HOME: confDir,
              ...env },                   // per-test overrides (ENCLAVE_KEY: "" = the passkey-only, wallet-less user)
     });
@@ -1236,4 +1239,102 @@ test("explicit deploy and upgrade leave rejected, yanked and delisted admission 
     const missing = await run(["deploy","hello-world:missing","--fund","2","--no-wait"]);
     assert.notEqual(missing.code,0); assert.equal(S.txs.length,0);
   } finally {S.catalogActive = true; S.versionCount = 1; S.v2 = null; S.txs.length = 0;}
+});
+
+/* Explicit authority pins: mutable discovery cannot redirect an operation. */
+function writeAuthorityPins(overrides = {}) {
+  const file = path.join(confDir, 'contract-pins.json');
+  const zero = '0x' + '00'.repeat(20);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, chainId: 8453, contracts: {
+    registry: REGISTRY, deployments: DEPLOYMENTS, appCatalog: BOOK_CATALOG,
+    proofOfTime: '0x' + '91'.repeat(20), enclavePay: zero, verificationFees: zero,
+    sessionVaultFactory: zero, secretVaultV2: zero, ...overrides,
+  } }));
+  return file;
+}
+const callsTo = (address) => S.rpcCalls.filter(x => x.method === 'eth_call' && x.params[0].to.toLowerCase() === address.toLowerCase());
+
+test('explicit pins publish to the selected catalog without consulting an unavailable address book', async () => {
+  S.rpcCalls.length = 0; S.txs.length = 0; S.numVersions = 0n; S.book = 'fail';
+  try {
+    const r = await run(['publish', component(), '--slug', 'hello-world', '--contract-pins', writeAuthorityPins()],
+      { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(S.txs.find(t => t.functionName === 'publishVersion')?.to, BOOK_CATALOG);
+    assert.equal(callsTo(BOOK_ADDR).length, 0);
+    assert.equal(callsTo(CATALOG).length, 0, 'no baked-catalog fallback');
+    assert.ok(callsTo(BOOK_CATALOG).length > 0);
+  } finally { S.book = 'ok'; }
+});
+
+test('invalid authority pins refuse before RPC, API or transaction activity', async () => {
+  const file = writeAuthorityPins({ deployments: '0x' + '00'.repeat(20) });
+  S.rpcCalls.length = 0; S.apiCalls.length = 0; S.txs.length = 0;
+  const r = await run(['apps'], { env: { ENCLAVE_CONTRACT_PINS_FILE: file, ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /invalid contract pin: deployments/);
+  assert.equal(S.rpcCalls.length, 0); assert.equal(S.apiCalls.length, 0); assert.equal(S.txs.length, 0);
+});
+
+test('a missing pin file does not fall back to address-book or baked discovery', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['apps', '--contract-pins', path.join(confDir, 'missing.json')]);
+  assert.notEqual(r.code, 0); assert.match(r.err, /ENOENT/); assert.equal(S.rpcCalls.length, 0);
+});
+
+test('zero custody pin refuses instead of the baked v2 vault or an environment override', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['custody', 'status', ID, '--v2', '--contract-pins', writeAuthorityPins()],
+    { env: { ENCLAVE_SECRET_VAULT_V2: '0x' + 'a1'.repeat(20) } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /pins disable secretVaultV2/);
+  assert.equal(S.rpcCalls.length, 0);
+});
+
+test('custody environment cannot replace an explicit vault pin', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['custody', 'status', ID, '--v2', '--contract-pins',
+    writeAuthorityPins({ secretVaultV2: '0x' + 'a1'.repeat(20) })],
+    { env: { ENCLAVE_SECRET_VAULT_V2: '0x' + 'a2'.repeat(20) } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /override conflicts/); assert.equal(S.rpcCalls.length, 0);
+});
+
+test('disabled session factory cannot fall back to the address book or baked factory', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['session', 'delegate', '--contract-pins', writeAuthorityPins()],
+    { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /pins disable sessionVaultFactory/);
+  assert.equal(S.rpcCalls.length, 0);
+});
+
+test('chain-only wallet deployment creates and funds without API, upload gateway or address-book requests', async () => {
+  S.rpcCalls.length = 0; S.apiCalls.length = 0; S.txs.length = 0; S.pinnedWasm = 0; S.pinnedJson.length = 0;
+  const previous = { depRev: S.depRev, catRev: S.catRev, versionCount: S.versionCount, v2: S.v2, book: S.book };
+  S.depRev = 15n; S.catRev = 5n; S.versionCount = 2;
+  S.v2 = { approval: 2, yanked: true, config: '{"wasi":"0.3"}' }; S.book = 'fail';
+  try {
+    const r = await run(['deploy', 'hello-world:2', '--chain-only', '--contract-pins', writeAuthorityPins(),
+      '--cpu', '0.1', '--gpu', '0', '--max-rate', '1', '--fund', '2', '--isolation', 'snp-guest-per-app', '--config', '{"hello":"world"}', '--json'],
+      { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+    assert.equal(r.code, 0, r.err);
+    const create = S.txs.find(x => x.functionName === 'create');
+    assert.equal(create.to, DEPLOYMENTS);
+    assert.equal(create.args[0], `catalog://${APP_ID}/1`);
+    assert.equal(create.args[2], 100);
+    assert.deepEqual(JSON.parse(create.args[6]), { isolation: { require: 'snp-guest-per-app' }, config: { hello: 'world' } });
+    assert.equal(create.args.at(-1), 278n, 'owner spend ceiling, not an invented quote');
+    assert.ok(S.txs.some(x => x.functionName === 'fundWithAuthorization'));
+    assert.match(r.out, /"readinessVerified": false/);
+    assert.equal(S.apiCalls.length, 0); assert.equal(callsTo(BOOK_ADDR).length, 0);
+    assert.equal(S.pinnedWasm, 0); assert.equal(S.pinnedJson.length, 0);
+  } finally { Object.assign(S, previous); }
+});
+
+test('chain-only refuses incomplete intent and relay secrets before spending', async () => {
+  for (const [extra, why] of [
+    [[], /explicit --cpu, --gpu and --max-rate/],
+    [['--cpu','0.1','--gpu','0','--max-rate','1','--secrets','{"TOKEN":"test"}'], /cannot stage relay-held secrets/],
+  ]) {
+    S.txs.length = 0; S.apiCalls.length = 0;
+    const r = await run(['deploy','hello-world:1','--chain-only','--contract-pins',writeAuthorityPins(),'--fund','2',...extra]);
+    assert.notEqual(r.code, 0); assert.match(r.err, why); assert.equal(S.txs.length, 0); assert.equal(S.apiCalls.length, 0);
+  }
 });

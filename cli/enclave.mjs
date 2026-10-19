@@ -46,6 +46,7 @@ import { base } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
 import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
+import {loadContractPins} from "../network/contract-pins.mjs";
 
 const VERSION = "1.6.0";
 
@@ -335,7 +336,7 @@ const APPROVAL_WORD = ["pending", "approved", "rejected"];
 // ---- global flags + config ---------------------------------------------------
 // Parsed once, up front; command args are whatever remains.
 const opt = { json: false, trace: false, base: null, rpc: null, yes: false,
-              unsigned: false, signer: null, from: null,
+              unsigned: false, signer: null, from: null, contractPins: null,
               // --wallet: act with the wallet key even when a session is active (see "sessions" below)
               wallet: false,
               // `enclave attest` (verifier/metal-box.mjs, this repository's own verifier): --expect pins the launch measurement(s)
@@ -351,6 +352,10 @@ const args = [];
     else if (a[i] === "--yes" || a[i] === "-y") opt.yes = true;
     else if (a[i] === "--base") opt.base = a[++i];
     else if (a[i] === "--rpc") opt.rpc = a[++i];
+    else if (a[i] === "--contract-pins") {
+      if (!a[i + 1] || a[i + 1].startsWith("--")) throw new Error("--contract-pins needs a JSON file");
+      opt.contractPins = a[++i];
+    }
     // ---- signing somewhere other than this machine ----------------------
     // The CLI's own key is a hot key in a file. These two let it drive a
     // wallet that is not: --unsigned prints the transaction for you to sign
@@ -385,6 +390,44 @@ const die = (msg, code = 1) => { stderr.write("error: " + msg + "\n"); exit(code
 const trace = (...s) => { if (opt.trace) stderr.write("x " + s.join(" ") + "\n"); };
 const jout = (o) => say(JSON.stringify(o, (_k, v) => typeof v === "bigint" ? v.toString() : v, 2));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Explicit operator/user trust pins take precedence over mutable discovery. A
+// missing, malformed or disabled binding never falls back to the address book.
+let CONTRACT_PINS = null;
+let CHAIN_ONLY = false;
+function configureContractPins() {
+  CONTRACT_PINS = loadContractPins({ ...env,
+    ENCLAVE_CONTRACT_PINS_FILE: opt.contractPins || env.ENCLAVE_CONTRACT_PINS_FILE });
+  if (!CONTRACT_PINS) return;
+  for (const [key, name] of Object.entries({ deployments: "DEPLOYMENTS_ADDRESS",
+    registry: "REGISTRY_ADDRESS", appCatalog: "APP_CATALOG_ADDRESS",
+    sessionVaultFactory: "SESSION_VAULT_FACTORY_ADDRESS" })) DEFAULTS[name] = CONTRACT_PINS[key];
+  trace("using explicit contract pins; address-book discovery disabled");
+}
+function pinnedContract(name, override) {
+  const a = CONTRACT_PINS[name];
+  if (!a || /^0x0{40}$/i.test(a)) throw new Error(`contract pins disable ${name}`);
+  if (override && getAddress(override) !== getAddress(a))
+    throw new Error(`${name} override conflicts with the explicit contract pin`);
+  return getAddress(a);
+}
+let _pinnedSessionFactoryCheck;
+async function assertPinnedSessionFactory() {
+  if (!CONTRACT_PINS) return;
+  if (!_pinnedSessionFactoryCheck) _pinnedSessionFactoryCheck = (async () => {
+    const factory = pinnedContract("sessionVaultFactory");
+    const abi = [{ type: "function", name: "authorityPins", stateMutability: "view", inputs: [],
+      outputs: [{ type: "address" }, { type: "address" }, { type: "address" }] }];
+    let result;
+    try { result = await read(factory, abi, "authorityPins"); }
+    catch { throw new Error("the pinned session factory must expose fixed authorityPins; legacy mutable-book factories are not supported in pinned mode"); }
+    const [ledger, catalog, authority] = result;
+    if (getAddress(ledger) !== pinnedContract("deployments") || getAddress(catalog) !== pinnedContract("appCatalog")
+      || /^0x0{40}$/i.test(authority)) throw new Error("session factory authorityPins do not match the explicit contract pins");
+    return factory;
+  })();
+  return _pinnedSessionFactoryCheck;
+}
 
 // flag parser for the per-command remainder
 function flags(rest, { bool = [], val = [] } = {}) {
@@ -663,6 +706,7 @@ async function bearer(account) {
 // error. auth: a wallet account object (SIWE session, auto-minted) or the
 // string "account" (the stored `enclave login` session token).
 async function api(method, p, { body, auth, ok404, text } = {}) {
+  if (CHAIN_ONLY) throw new Error("--chain-only does not contact an Enclave control API");
   const url = API_BASE + p;
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -1923,14 +1967,27 @@ const isoHostNames = (hosts) => hosts.map((h) => h.name || h.id).join(", ");
 
 async function cmdDeploy(rest) {
   // with a session: deploy.create through the vault, which holds the record (--env staging|prod)
-  const sess = await sessionForCommand();
+  CHAIN_ONLY = rest.includes("--chain-only");
+  if (CHAIN_ONLY && sessionConfigured() && !walletChosen())
+    throw new Error("--chain-only uses direct wallet transactions; pass --wallet explicitly when a session is active");
+  const sess = CHAIN_ONLY ? null : await sessionForCommand();
   const account = sess ? null : loadKey();
   const f = flags(rest, {
     val: ["--gpu", "--cpu", "--fund", "--fund-eth", "--port", "--ports", "--config-cid", "--waf", "--config",
           "--secrets", "--secrets-file", "--max-rate", "--isolation", ...(sess ? ["--env"] : [])],
-    bool: ["--private", "--public", "--no-wait", "--gpu-optional"],
+    bool: ["--private", "--public", "--no-wait", "--gpu-optional", "--chain-only"],
   });
   if (!f._[0]) throw new Error("usage: enclave deploy <app> [--gpu 0..1] [--cpu 0..1] --fund <usd> [flags]");
+  if (CHAIN_ONLY) {
+    if (!CONTRACT_PINS) throw new Error("--chain-only requires --contract-pins (or ENCLAVE_CONTRACT_PINS_FILE)");
+    if (f.cpu === undefined || f.gpu === undefined || f["max-rate"] === undefined)
+      throw new Error("--chain-only requires explicit --cpu, --gpu and --max-rate; no API supplies hardware or price estimates");
+    if (!(numFlag(f.cpu, "--cpu") > 0)) throw new Error("--chain-only requires --cpu greater than zero");
+    if (f.secrets !== undefined || f["secrets-file"] !== undefined)
+      throw new Error("--chain-only cannot stage relay-held secrets; configure owner-authorized custody separately before funding a secret-dependent deployment");
+    f["no-wait"] = true;
+    say("chain-only: hosts decide admission; this submits your resource request and spend ceiling without API discovery or a readiness claim");
+  }
   if (sess) await sessionDeployPreflight(sess, f);
   const { ref, ver, app, notice } = await resolveAppRef(sess ? sessionAppInput(sess, f._[0]) : f._[0]);
   if (sess) sessionRequireApp(sess, app.appId, "deploy.create", app.slug);
@@ -1945,7 +2002,7 @@ async function cmdDeploy(rest) {
   // funding unrecoverable - fail with words before any wallet step.
   let verWasi3 = false;
   try { verWasi3 = JSON.parse(ver?.config || "{}").wasi === "0.3"; } catch {}
-  if (verWasi3) {
+  if (verWasi3 && !CHAIN_ONLY) {
     let av = null; try { av = await api("GET", "/availability"); } catch {}
     if (!(av && av.aggregate && av.p3 === true)) {
       const rows = await api("GET", "/enclaves").then((j) => j?.enclaves || []).catch(() => []);
@@ -2008,13 +2065,13 @@ async function cmdDeploy(rest) {
   if (f.isolation !== undefined) {
     isoBackend = String(f.isolation).trim();
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(isoBackend)) throw new Error("--isolation takes a backend name, e.g. --isolation snp-guest-per-app");
-    let hosts;
-    try { hosts = ((await api("GET", "/enclaves")).enclaves || []).filter((e) => e && e.availability && e.availability.isolation === isoBackend); }
+    let hosts = [];
+    if (!CHAIN_ONLY) try { hosts = ((await api("GET", "/enclaves")).enclaves || []).filter((e) => e && e.availability && e.availability.isolation === isoBackend); }
     catch (e) { throw new Error(`couldn't read the fleet to confirm a ${isoBackend} host: ${e.message}`); }
-    if (!hosts.length) throw new Error(`no live host advertises the ${isoBackend} tier; a deployment requiring it would never be claimed`);
+    if (!CHAIN_ONLY && !hosts.length) throw new Error(`no live host advertises the ${isoBackend} tier; a deployment requiring it would never be claimed`);
     isoHosts = hosts;
     envParts.isolation = { require: isoBackend };
-    say(`isolation: REQUIRES ${isoBackend} (hosts: ${hosts.map((h) => h.name || h.id).join(", ")}); every other runner refuses it`);
+    say(`isolation: REQUIRES ${isoBackend} (${CHAIN_ONLY ? "host availability not queried" : "hosts: " + hosts.map((h) => h.name || h.id).join(", ")}); every other runner refuses it`);
   }
   if (f.config !== undefined) {
     let c; try { c = JSON.parse(f.config); } catch (e) { throw new Error("--config must be a JSON object, e.g. --config '{\"api_key\":\"…\"}': " + e.message); }
@@ -2029,7 +2086,8 @@ async function cmdDeploy(rest) {
     // loud warning.
     // An isolation tier is not in the fleet-wide AND (its host advertises configOverride:false on purpose: it takes
     // config only through the attested release), so the gate that matters there is the release, stated instead.
-    if (isoBackend) say(isoTakesConfig(isoHosts, "configOverride")
+    if (CHAIN_ONLY) say("config: the owner-authored override is on chain; a host must support and enforce it to claim");
+    else if (isoBackend) say(isoTakesConfig(isoHosts, "configOverride")
       ? `config: the ${isoBackend} host(s) take a per-deployment config themselves (availability.configOverride: ${isoHostNames(isoHosts)})`
       : `config: delivered only INTO the ${isoBackend} guest, through the attested release; the deployment stays Queued until the relay lists it for the release and its host has opted in`);
     else try {
@@ -2072,6 +2130,7 @@ async function cmdDeploy(rest) {
   }
   let envelope = Object.keys(envParts).length ? JSON.stringify(envParts) : "";
   if (Buffer.byteLength(envelope) > 4096 && envParts.config) {
+    if (CHAIN_ONLY) throw new Error("--chain-only currently requires an inline config envelope of at most 4096 bytes; no implicit upload service is used");
     const body = JSON.stringify(envParts.config);
     if (Buffer.byteLength(body) > CONFIG_MAX_BYTES)
       throw new Error(`the config is ${Buffer.byteLength(body)} bytes; enclaves refuse anything over ${CONFIG_MAX_BYTES} at launch`);
@@ -2124,7 +2183,7 @@ async function cmdDeploy(rest) {
 
   // price it before asking for money (the same formula the claim will apply)
   const [prices, maxGpuMilli] = await Promise.all([
-    livePrices6(),
+    CHAIN_ONLY ? null : livePrices6(),
     // operator-set per-deployment GPU-share cap; contracts predating it have
     // no getter (the read reverts) -> 1000 = a whole card, i.e. uncapped
     read(DEFAULTS.DEPLOYMENTS_ADDRESS,
@@ -2155,7 +2214,9 @@ async function cmdDeploy(rest) {
   const envCap = depRev >= 5 ? 4096 : 100;
   if (Buffer.byteLength(envelope) > envCap)
     throw new Error(`the options envelope is ${Buffer.byteLength(envelope)} bytes but this ledger caps the field at ${envCap} bytes (create() reverts "configCid length") - trim the ${envParts.config ? "config override" : "protection rules"}`);
-  const rate = rate6Of(prices, gpuMilli, cpuMilli) + fee6;
+  if (CHAIN_ONLY && depRev < 8) throw new Error("--chain-only requires a ledger with owner spend ceilings (schema 8 or newer)");
+  const rate = CHAIN_ONLY ? perSec6FromHour(numFlag(f["max-rate"], "--max-rate"))
+    : rate6Of(prices, gpuMilli, cpuMilli) + fee6;
   if (fee6 > 0n)
     say(`publisher fee: ${usd6(fee6 * 3600n)}/h, paid straight to ${app.publisher} out of each funding (included in the rate below)`);
   // The spend ceiling (rev-8 ledgers). Default: exactly what we just quoted —
@@ -2183,7 +2244,7 @@ async function cmdDeploy(rest) {
   const eth = await pub().getBalance({ address: account.address });
   if (eth === 0n) throw new Error(`${account.address} has no Base ETH for transaction gas; bridge a little first`);
   const buys = fundUsd ? dur(fundUsd * 1e6 / Number(rate)) : `(ETH at the live rate)`;
-  if (!(await confirm(`deploy ${f._[0]}: gpu ${gpuMilli / 10}% cpu ${cpuMilli / 10}% at ${usd6(rate * 3600n)}/h, `
+  if (!(await confirm(`deploy ${f._[0]}: gpu ${gpuMilli / 10}% cpu ${cpuMilli / 10}% ${CHAIN_ONLY ? "capped at" : "at"} ${usd6(rate * 3600n)}/h, `
                     + `fund ${fundUsd ? "$" + fundUsd.toFixed(2) : fundEth + " ETH"} ≈ ${buys}?`))) return say("aborted");
 
   // 1. create — the id is minted on-chain, read back from the Created event
@@ -2249,6 +2310,10 @@ async function cmdDeploy(rest) {
     throw new Error(`created but NOT funded (${e.message}); top up later: ${fundHint}`);
   }
   say(`funded ${fundUsd ? "$" + fundUsd.toFixed(2) : fundEth + " ETH"}`);
+  if (CHAIN_ONLY) {
+    if (opt.json) return jout({ id, status: "funded", ledger: DEFAULTS.DEPLOYMENTS_ADDRESS, readinessVerified: false });
+    return say(`submitted to ledger ${DEFAULTS.DEPLOYMENTS_ADDRESS}; verify the serving host and its signed route before sending application data`);
+  }
 
   // 3. nudge the fleet (advisory; the ~60s sweep would find it anyway)
   try {
@@ -2909,6 +2974,7 @@ async function cmdCustodyHere(rest) {
     readFile: (p) => fs.readFileSync(p, "utf8"),
     pubEachClients: () => pubEach().map((x) => x.c),
     vaultAddress: async () => {
+      if (CONTRACT_PINS) throw new Error("pinned contract mode supports custody v2; use --v2 with an explicitly pinned vault");
       if (env.ENCLAVE_SECRET_VAULT) return getAddress(env.ENCLAVE_SECRET_VAULT);
       const book = env.ENCLAVE_ADDRESS_BOOK !== undefined ? env.ENCLAVE_ADDRESS_BOOK : DEFAULTS.ADDRESS_BOOK_ADDRESS;
       const a = book ? await bookEntry(book, "secretVault") : null;
@@ -2916,6 +2982,7 @@ async function cmdCustodyHere(rest) {
       return a;
     },
     vaultV2Address: async () => {
+      if (CONTRACT_PINS) return pinnedContract("secretVaultV2", env.ENCLAVE_SECRET_VAULT_V2);
       if (env.ENCLAVE_SECRET_VAULT_V2) return getAddress(env.ENCLAVE_SECRET_VAULT_V2);
       const book = env.ENCLAVE_ADDRESS_BOOK !== undefined ? env.ENCLAVE_ADDRESS_BOOK : DEFAULTS.ADDRESS_BOOK_ADDRESS;
       const a = book ? await bookEntry(book, "secretVaultV2") : null;
@@ -3215,6 +3282,13 @@ async function loadSession(idArg) {
 async function sessionForCommand() {
   if (walletChosen() || !sessionConfigured()) return null;
   const s = await loadSession();
+  if (CONTRACT_PINS) {
+    const factory = await assertPinnedSessionFactory();
+    const actual = await read(s.vault, [{ type: "function", name: "factory", stateMutability: "view",
+      inputs: [], outputs: [{ type: "address" }] }], "factory");
+    if (s.chainId !== DEFAULTS.chainId || getAddress(actual) !== factory)
+      throw new Error("active session is not on the pinned chain and session factory; explicitly migrate or use --wallet");
+  }
   // the ledger and catalog reads go through this CLI's RPCs: they must be on the session's chain
   if (s.chainId !== DEFAULTS.chainId && !explicitRpc())
     throw new Error(`the active session lives on chain ${s.chainId}, but this CLI reads Base (${DEFAULTS.chainId}); point it at that chain `
@@ -3708,11 +3782,13 @@ async function bookEntry(book, name) {
   return /^0x0{40}$/i.test(a) ? null : getAddress(a);
 }
 async function delegationTarget(S, owner) {
-  const book = env.ENCLAVE_ADDRESS_BOOK !== undefined ? env.ENCLAVE_ADDRESS_BOOK : DEFAULTS.ADDRESS_BOOK_ADDRESS;
-  if (!book) throw new Error(`the delegation lives on the ledger the on-chain address book names, and ENCLAVE_ADDRESS_BOOK="" switches the book off`);
-  const ledger = await bookEntry(book, "deployments");
+  const book = CONTRACT_PINS ? null : env.ENCLAVE_ADDRESS_BOOK !== undefined ? env.ENCLAVE_ADDRESS_BOOK : DEFAULTS.ADDRESS_BOOK_ADDRESS;
+  if (!book && !CONTRACT_PINS) throw new Error(`the delegation lives on the ledger the on-chain address book names, and ENCLAVE_ADDRESS_BOOK="" switches the book off`);
+  const ledger = CONTRACT_PINS ? pinnedContract("deployments") : await bookEntry(book, "deployments");
   if (!ledger) throw new Error(`the address book ${book} names no "deployments" ledger`);
-  const factory = (await bookEntry(book, S.BOOK_KEY_FACTORY)) ?? DEFAULTS.SESSION_VAULT_FACTORY_ADDRESS;
+  const factory = CONTRACT_PINS ? pinnedContract("sessionVaultFactory")
+    : (await bookEntry(book, S.BOOK_KEY_FACTORY)) ?? DEFAULTS.SESSION_VAULT_FACTORY_ADDRESS;
+  if (CONTRACT_PINS) await assertPinnedSessionFactory();
   let vault;
   try { vault = getAddress(await S.vaultAddress(pub(), factory, owner)); }
   catch (e) { throw new Error(`can't read the session vault factory ${factory} (${String(e?.shortMessage || e?.message || e).split("\n")[0]})`); }
@@ -3915,6 +3991,10 @@ identity
 
 deployments
   deploy <app> --fund <usd>  create + fund + wait until live; prints the URL
+    --chain-only             submit directly to pinned contracts without an API;
+                             requires --contract-pins, --cpu, --gpu, --max-rate.
+                             Wallet-only, inline config, no relay-held secrets;
+                             returns after funding without claiming readiness.
          [--gpu 0..1] [--cpu 0..1]      shares of one card / one node (default: app minimums)
          [--fund-eth <eth>] [--private] [--port N] [--ports CSV] [--no-wait]
          [--max-rate <usd/hour>]        hourly spend ceiling (default: what the cheapest live
@@ -4117,6 +4197,10 @@ Signing without a key on this machine (hardware wallets, Safes, air-gapped):
 
 Global: --json machine output · -x print every REST call + transaction ·
 --base/--rpc (ENCLAVE_API_BASE/ENCLAVE_RPC) target an enclave or your own RPC ·
+--contract-pins FILE (ENCLAVE_CONTRACT_PINS_FILE) fixes contract addresses from
+the host pin-document format and disables mutable address-book discovery.
+Invalid pins refuse; zero optional bindings disable that feature. Pins select
+contracts, not their internal governance or an independent API operator.
 ENCLAVE_KEY overrides the key file · --wallet acts with the wallet key even when a
 session is active (ENCLAVE_SESSION / ENCLAVE_SESSION_DIR). Auth is SIWE (wallet) or an Enclave account
 session (enclave login); keys never leave this machine. Account sessions read
@@ -4469,6 +4553,7 @@ function catalogWriteAllowed() {
     + `to use the baked addresses on purpose.`);
 }
 async function resolveAddressBook() {
+  if (CONTRACT_PINS) return;
   const book = env.ENCLAVE_ADDRESS_BOOK !== undefined ? env.ENCLAVE_ADDRESS_BOOK : DEFAULTS.ADDRESS_BOOK_ADDRESS;
   if (!book) return;
   BOOK.wanted = true;
@@ -4506,6 +4591,9 @@ if (!COMMANDS[cmd]) die(`unknown command "${cmd}"; run: enclave help`);
 // `session …` reads only the sessions relay and the session's own vault (`session delegate` reads the book itself).
 const OFFLINE = cmd === "key" || cmd === "login" || cmd === "logout" || cmd === "session";
 try {
+  configureContractPins();
+  if (cmd === "deploy" && args.includes("--chain-only") && !CONTRACT_PINS)
+    throw new Error("--chain-only requires --contract-pins (or ENCLAVE_CONTRACT_PINS_FILE)");
   if (!OFFLINE) await resolveAddressBook();
   await COMMANDS[cmd](args);
 } catch (e) {
