@@ -1,6 +1,6 @@
 // Authoritative Enclave DNS. Application A/AAAA and raw-port SRV answers come
 // only from unexpired, operator-signed Enclave-network routes joined to live leases
-// and host admission on Nan. There is no wildcard or legacy relay fallback.
+// and host admission in the configured validating directory. There is no wildcard or legacy relay fallback.
 // DNS-01 TXT challenges and the box control namespace remain available.
 //
 // IP_ZONE, APP_ZONE and NS_NAME are required. Optional TCP_ZONE preserves its
@@ -9,6 +9,8 @@
 // NET_POLL_SEC controls refresh (default 15). DNS_PORT defaults to 53,
 // DNS_API_PORT to 8153; DNS_API_BIND restricts the challenge API listener.
 // DNS_BIND is a comma-separated IP list; unset preserves the dual-stack wildcard.
+// DNS_READ_ONLY=1 serves route answers without fleet discovery or challenge writes;
+// it requires an explicit ROUTE_MAP_URL and cannot serve the box control zone.
 // DNS_TXT_KEY is HMAC-SHA256(fleet SECRET, 'enclave dns-txt v1') as hex, never
 // the raw fleet secret. TXT_TTL_SEC caps challenges (default 600).
 // Fleet discovery (REGISTRY_ADDRESS or ENCLAVES, BASE_RPC) authenticates DNS-01
@@ -25,13 +27,18 @@ installProcessGuards("dns-relay");
 
 const need = (k) => { const v = (process.env[k] || "").trim(); if (!v) { console.error(`fatal: ${k} is required`); process.exit(1); } return v; };
 const fqdn = (s) => s.trim().toLowerCase().replace(/\.+$/, "");
+const READ_ONLY = process.env.DNS_READ_ONLY === "1";
+if (READ_ONLY && (!(process.env.ROUTE_MAP_URL || "").trim() || process.env.BOX_ZONE)) {
+  console.error("fatal: DNS_READ_ONLY requires explicit ROUTE_MAP_URL and no BOX_ZONE");
+  process.exit(1);
+}
 
 const CFG = fleetConfig();
-if (!CFG.registryAddress && !CFG.staticList.length) {
+if (!READ_ONLY && !CFG.registryAddress && !CFG.staticList.length) {
   console.error("fatal: set REGISTRY_ADDRESS (on-chain discovery) or ENCLAVES (static list)");
   process.exit(1);
 }
-const fleet     = createFleet(CFG, (m) => console.log("[dns-relay]", m));
+const fleet     = READ_ONLY ? null : createFleet(CFG, (m) => console.log("[dns-relay]", m));
 const IP_ZONE   = fqdn(need("IP_ZONE"));
 const APP_ZONE  = fqdn(need("APP_ZONE"));
 // zone 3 (optional): the SNI relay's TLS namespace — same wildcard-to-one-box
@@ -63,8 +70,8 @@ const API_BIND  = process.env.DNS_API_BIND || undefined;
 // (see supervisor.js's DNS_TXT_KEY). Set DNS_TXT_KEY to that derived hex.
 // `SECRET` stays as a DEPRECATED fallback (it was mislabeled "the fleet secret"
 // but always had to hold the derived key for a push to verify).
-let TXT_KEY = (process.env.DNS_TXT_KEY || "").trim();
-if (!TXT_KEY && (process.env.SECRET || "").trim()) {
+let TXT_KEY = READ_ONLY ? "" : (process.env.DNS_TXT_KEY || "").trim();
+if (!READ_ONLY && !TXT_KEY && (process.env.SECRET || "").trim()) {
   TXT_KEY = process.env.SECRET.trim();
   console.error("[dns-relay] SECRET is DEPRECATED — rename it to DNS_TXT_KEY. Its value must be the DERIVED key HMAC(fleet SECRET,'enclave dns-txt v1') hex, never the raw fleet SECRET.");
 }
@@ -613,10 +620,11 @@ function apiHandler(req, res) {
   if (req.method === "GET" && u.pathname === "/health") {
     let txtRecords = 0;
     for (const name of [...txtStore.keys()]) txtRecords += txtValues(name).length;
-    return json(200, { ok: true, zones: { ip: IP_ZONE, app: APP_ZONE, tcp: TCP_ZONE, box: BOX_ZONE },
+    return json(200, { ok: true, readOnly: READ_ONLY, zones: { ip: IP_ZONE, app: APP_ZONE, tcp: TCP_ZONE, box: BOX_ZONE },
                        deployments: deployments.length, txtRecords,
                        routeLabels: appRoutes.size, routeMap: ROUTE_MAP_URL || null });
   }
+  if (READ_ONLY) { req.resume(); return json(405, { error: "read_only", routes: ["GET /health"] }); }
   if (u.pathname !== "/v1/txt" || (req.method !== "POST" && req.method !== "DELETE"))
     return json(404, { error: "not_found", routes: ["GET /health", "POST /v1/txt", "DELETE /v1/txt"] });
   if (!dnsRate(req.socket?.remoteAddress || "unknown")) return json(429, { error: "rate_limited" });   // fix 11
@@ -704,8 +712,7 @@ api.listen(API_PORT, API_BIND, () => console.log(`[dns-relay] challenge-push api
 
 // ---- boot ---------------------------------------------------------------------
 
-await fleet.start();
-await fleet.startEligibility();
+if (!READ_ONLY) { await fleet.start(); await fleet.startEligibility(); }
 await poll();
 setInterval(poll, POLL_MS);
 console.log(`[dns-relay] authoritative for ${IP_ZONE} + ${APP_ZONE}${TCP_ZONE ? " + " + TCP_ZONE : ""} (ns ${NS_NAME}, serial ${SERIAL}); ` +
