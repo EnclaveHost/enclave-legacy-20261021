@@ -743,3 +743,29 @@ preserved. That test used the existing host's attested records, not an independe
 operator or new hardware attestation. The scheduled metal0 reconciler is activated
 with explicit pins. Its privacy agent, guest provisioning, public DNS and
 certificate issuance have separate remaining activation and authority work.
+
+## Metal0 network authority and health-probe activation
+
+Metal0's network agent now pins the deployment ledger, registry, connectivity
+contract and existing SessionVault factory. The reconciler uses matching pins.
+This activates the network consumer's existing quorum-bound signature and lease
+reads; it does not migrate session grants to the newly deployed factory or remove
+administration inside the pinned contracts. The previous agent did not understand
+these pins, so configuration alone would not have activated them.
+
+The same rollout removes `enclave.host` as the required egress health destination.
+Probes use multiple operator-selected HTTPS endpoints (the configured RPC origins
+by default); one responsive endpoint suffices and losing probes are cancelled.
+Control probes use the configured signed-record directories. Health observations
+cannot extend a lease or authorize an app. Seventy-two targeted tests passed,
+including conflicting and stale authority reads and probe refusal/failure cases.
+
+The live agent restarted with the pinned bundle, formed two control circuits, and
+renewed both local guests' proofs and two ingress/egress circuits per app. Both
+EyesOff replacement exit addresses answered certificate-verified HTTPS requests.
+A network-agent restart rebuilds routes; DNS caches can retain the prior exits
+while the replacement routes are already healthy. This is not proof of an
+independent-host refusal test: providers/checkers remain Enclave-operated, the
+legacy API mirror is still configured, and guest provisioning and certificates
+still have separate control dependencies. Other running agent builds require
+individual activation and verification.
