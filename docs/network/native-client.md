@@ -1,9 +1,11 @@
 # Connect without Enclave discovery or a website CA
 
-`network/native-client.mjs` and `scripts/network/native-get.mjs` provide a native
-GET/HEAD client. The client resolves signed public records itself, checks an
-agreeing Base RPC quorum against explicit contract addresses, and verifies a
-fresh hardware attestation before sending application headers or a path.
+`network/native-client.mjs` is a native HTTP client library for application APIs:
+ordinary methods, bounded request bodies, and buffered or streamed responses.
+`scripts/network/native-get.mjs` is its GET command-line wrapper. The client
+resolves signed public records itself, checks an agreeing Base RPC quorum against
+explicit contract addresses, and verifies a fresh hardware attestation before it
+sends any application path, header, credential or body.
 
 ```sh
 node scripts/network/native-get.mjs /absolute/path/trust-profile.json /ping
@@ -11,9 +13,105 @@ node scripts/network/native-get.mjs /absolute/path/trust-profile.json /ping
 
 Response bytes go to stdout. Status, selected route, verified identities, TLS key
 digest, lease block and authorization deadline go to stderr. Non-2xx responses
-produce a nonzero exit code. Redirects are returned, never followed. The library
-accepts `request({path, method: 'GET' | 'HEAD', headers, maxBytes})`; it does not
-retry application requests. It is not a browser proxy or a POST/streaming client.
+produce a nonzero exit code. Redirects are returned, never followed. The wrapper
+is GET only; writes and streams use the library API below. It is not a browser
+proxy.
+
+## Library API: requests, writes and streams
+
+```js
+import {NativeClient} from './network/native-client.mjs';
+const client = new NativeClient(profile, {maxConcurrent: 4});
+
+// Buffered: resolves after the whole (bounded) response.
+const r = await client.request({method: 'POST', path: '/v1/chat',
+  headers: {authorization: 'Bearer …', 'content-type': 'application/json'},
+  body: JSON.stringify({messages})});
+// r.status, r.headers, r.body (Buffer), r.route, r.proof, r.expectation, r.leaseBlock, r.validUntil
+
+// Streamed: resolves when response headers arrive; bytes arrive as the guest sends them.
+const controller = new AbortController();
+const s = await client.stream({method: 'POST', path: '/v1/chat/stream', headers, body, signal: controller.signal});
+for await (const chunk of s.body) render(chunk);   // a Node Readable: iterate or pipe it
+s.cancel();                                        // or controller.abort(); both close the connection
+const {bytes, error} = await s.closed;             // always resolves
+```
+
+| Option | Meaning | Default | Allowed |
+| --- | --- | --- | --- |
+| `method` | `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` | `GET` | `CONNECT`/`TRACE` refused |
+| `path` | Origin-form path and query | `/` | starts with one `/`; no controls, spaces or `#`; up to 8192 characters |
+| `headers` | Application headers, including credentials | `{}` | up to 100 names and 64 KiB; no CR/LF/NUL; one spelling per name |
+| `body` | String, Buffer, typed array or ArrayBuffer, copied when called | none | not with GET/HEAD; up to `maxRequestBytes` |
+| `maxRequestBytes` | Upload limit | 8 MiB | 0 to 64 MiB |
+| `maxBytes` | Response limit | 8 MiB (`request`), 64 MiB (`stream`) | up to 64 MiB / 1 GiB |
+| `timeoutMs` | `request`: the whole exchange. `stream`: until response headers | 30 s | 1 s to 120 s |
+| `idleTimeoutMs` | `stream`: longest gap between delivered chunks | 60 s | 1 s to 10 min |
+| `maxDurationMs` | `stream`: total lifetime | 10 min | 1 s to 1 h |
+| `recheckMs` | `stream`: how often chain state is checked again | 30 s | 1 s to 5 min |
+| `signal` | `AbortSignal`, cancels at any stage | none | must be a real `AbortSignal` |
+
+Unknown options are refused. So are the framing and hop-by-hop headers `Host`,
+`Connection`, `Upgrade`, `Content-Length`, `Transfer-Encoding`,
+`Proxy-Authorization`, `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer` and
+`Expect`. The client sets `Host` and `Content-Length` itself.
+
+### Semantics
+
+- **Order of checks.** These happen in order before any application byte is
+  written:
+  - discovery and a lease check;
+  - a fresh hardware proof on a signed literal route;
+  - a second read of the records and chain state, which must show the same
+    deployment and route;
+  - a handshake check: the TLS key must equal the attested key, the send
+    deadline must not have passed, and the lease identity must not have changed.
+
+  Node writes the request only after that last check passes. A refusal at any
+  step sends nothing; the tests confirm the guest stand-in decrypts zero
+  application bytes.
+- **Snapshot.** Options, headers and body are copied synchronously when
+  `request` or `stream` is called, so later caller mutation changes nothing.
+  The signal is deliberately kept by reference. Streamed (unbounded) uploads are
+  not supported.
+- **One send.** Each call attests once and sends at most once. Route failover
+  happens only during attestation, before any application byte. After the
+  request is written, a reset, timeout or partial response is reported as an
+  error and never retried; a POST may already have taken effect. Redirects are
+  returned, not followed.
+- **Backpressure and cleanup.**
+  - `stream().body` applies backpressure through to the guest connection.
+  - An idle gap counts whatever the cause, including a consumer that stops
+    reading.
+  - A limit, timeout, cancel, abort, guest reset or end of response closes the
+    connection, clears the timers and frees the concurrency slot.
+  - Errors reach iterators and pipes. A consumer that attaches no error handler
+    does not crash the process.
+- **Concurrency.** Authorization and connection setup are serialized per client.
+  The queue is released when response headers arrive. At most `maxConcurrent`
+  requests or streams (1–32, default 4) may be open per client; beyond that the
+  call is refused at once.
+- **What authorization covers.** `validUntil` is the latest moment a new send
+  may start: the earliest of route expiry, lease snapshot expiry, and 60 s after
+  the proof began. An established stream is not proof of continuing ownership.
+  The client re-reads the lease every `recheckMs` and cuts the stream (`native
+  authorization ended`) if the owner, runner, app, configuration or lease
+  changed, or if current state can no longer be confirmed. A route withdrawal
+  alone does not cut an open stream; `maxDurationMs` bounds it.
+- **Logging.** Errors carry fixed messages and never include request header
+  values or bodies.
+
+### Gaps
+
+- **Browsers.** There is no browser integration. Browsers cannot pin an attested
+  key or skip WebPKI; this library runs in Node, not as a browser-wide proxy.
+- **Authentication.** Credentials are whatever the application expects. The
+  client passes them through only after the checks above and adds no
+  Enclave-issued session.
+- **Other transports.** Streamed request uploads, WebSocket/`Upgrade`,
+  `100-continue` and HTTP/2 are not supported.
+- **Proof scope.** The guest-side TLS key is attested once per request. Later
+  requests attest again; no proof is cached across requests.
 
 ## The caller's trust profile
 
