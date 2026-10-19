@@ -88,8 +88,35 @@ bytes are rechecked against current owner scope before every use.
 This removes the need to obtain per-app identity or predicted measurements from
 Enclave's host/control service. Selecting trusted runtime source/release pins,
 firmware floors, chain readers and checker keys remains the client's explicit
-trust decision. This command does not automatically acquire release or bundle
-files or prove their independent retention.
+trust decision.
+
+For a client with no release or bundle cache, replace `--release` and `--bundle`
+with explicit public artifact sources:
+
+```sh
+node scripts/network/native-profile.mjs \
+  --profile base-profile.json --release-id <64-hex-reviewed-release> \
+  --artifact-gateways http://<provider-a>:8189/ipfs,http://<provider-b>:8189/ipfs \
+  --vcpus 1 --out new-client-profile.json
+```
+
+Remote mode has no local-input fallback. It downloads the release manifest by
+its pinned SHA-256 raw CID, validates its canonical form, paths, file count and
+size limits, then streams every file into a newly created private directory.
+Each file must match its committed digest and size. The bundle is addressed and
+verified by the owner's AppID. Source failure or wrong bytes permits another
+explicit source; redirects and credentials are forbidden. Partial output is
+removed only after all active writers settle. Existing paths are never replaced.
+The ordinary release verifier then checks the reconstructed tree and recomputes
+the measured image. Temporary inputs are removed after the profile is prepared.
+
+These gateways serve complete bytes at SHA-256 raw-CID URLs, including large
+runtime files. This is HTTP content-addressed retrieval, not a claim that such
+large raw blocks are available over the IPFS DHT/Bitswap network. The source may
+be operated by anyone; it needs no app admission or identity authority. Client
+software, the build tools and independently selected trust pins must already be
+available. Remote acquisition alone does not prove future retention or independent
+operation of the storage providers.
 
 Keep `stateDir` persistent, with one process owning it. Signed policies, route
 withdrawals and sequence floors survive restart. Corrupted state fails closed.
@@ -166,3 +193,20 @@ profile reproduction and refusal evidence, not a new hardware boot or active
 end-to-end owner-startup request. Release and bundle files were already present
 locally; independent cold artifact acquisition is not proved by this run. The
 four replicas still have one operator. No wallet transaction was submitted.
+
+A subsequent cold-artifact run retrieved the manifest, all 19 runtime files and
+the app bundle through literal-IP HTTP replicas, checked every byte, and again
+reproduced `caf11b48…a733a`. The previous local release, bundle store and transfer
+archive were hidden in a private mount namespace. There was no default network
+route, external DNS, Nan, minipc or API access; US-West's storage endpoint was
+also blocked. All 21 verified download receipts came from CA-East. The final
+owner/commitment read was Base block 52829232. This closes the local-artifact
+dependency for profile preparation; it still does not claim a fresh guest boot
+or an active owner-startup application session. The deployment remained suspended.
+
+A second cold run swapped the unavailable storage provider: CA-East was blocked
+and all 21 receipts came from EU-Central. It reproduced the same measurement and
+rechecked the commitment at Base block 52829359. All four gateways now retain the
+19 unique public objects (83,046,781 bytes), each verified through its HTTP service
+after publication. This is currently Enclave-operated replication, not evidence
+of independent operation or a long-term retention guarantee.

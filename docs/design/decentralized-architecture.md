@@ -922,5 +922,16 @@ hash matches that commitment. It uses the existing release/image verifier and
 rechecks the owner commitment before emitting a profile. Missing packages,
 substituted bundles, changed runtime identities and changed commitments refuse
 preparation or connection. This does not select the client's trusted runtime
-release, fetch the runtime/bundle artifacts, or migrate legacy production apps
-to owner-committed startup.
+release or migrate legacy production apps to owner-committed startup.
+
+Profile preparation also supports cold retrieval of the pinned release manifest,
+every runtime file and the owner-committed bundle from explicit literal-IP HTTP
+replicas. Streams are bounded and digest/size checked; release paths and work
+limits are validated before materialization. A private namespace test hid the
+previous runtime, bundle cache and transfer archive, blocked US-West storage and
+all Enclave control/DNS access, and reproduced the prior hardware measurement
+from 21 verified remote downloads. A second run blocked CA-East and recovered
+all inputs from EU-Central; all four gateways retain the public inputs with
+HTTP digest readback checks. This proves cold client-side artifact
+acquisition with a failed storage endpoint. It does not yet prove a cold live
+host/guest recovery, future independent retention, or distributed storage writes.
