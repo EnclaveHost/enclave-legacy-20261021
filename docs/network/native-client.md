@@ -145,3 +145,24 @@ and verification path with explicit pins, not independently derived first-user
 trust. The participating providers still share Enclave operation. Existing
 browsers, production control/custody, deployment creation and storage writes are
 not migrated by this client feature.
+
+The owner-startup profile path was then verified separately against deployment
+`0x87508b958c4d14381b58fe05a781efbd3f185a36d5239abdf37e8f242f944538`.
+Its public package is replicated as
+`bafkreigbngcd3wnrsi6z7yr2hx6bvunxlfzlvklr2ry3snqy62flxlndmi` on all four existing
+bootstrap gateways. From a base profile with no app expectations, runtime identity
+or measurement, the generator fetched the owner-committed bytes, checked a local
+bundle against the committed AppID, verified release
+`5ef70f6a950b1deadcf21119a0e02ba2f75dea029d870ef25a0e6d7940ac9aad`, and reconstructed
+the same `caf11b48…a733a` measurement seen in the earlier real SNP boot. The
+network-namespace run had no default route, external DNS, Enclave API, Nan or
+minipc access; exact forwarders allowed only three RPC peers and two literal-IP
+package replicas, with a third configured package source unreachable. The final
+chain snapshot was Base block 52828852.
+
+That deployment remains suspended and unleased. A separate fresh native request
+was refused before package/directory fetch or attestation. This is live-chain
+profile reproduction and refusal evidence, not a new hardware boot or active
+end-to-end owner-startup request. Release and bundle files were already present
+locally; independent cold artifact acquisition is not proved by this run. The
+four replicas still have one operator. No wallet transaction was submitted.
