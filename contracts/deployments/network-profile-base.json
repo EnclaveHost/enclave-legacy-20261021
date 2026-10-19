@@ -1,0 +1,367 @@
+{
+  "builds": {
+    "independent-authorities": {
+      "compiler": "0.8.35+commit.47b9dedd.Emscripten.clang",
+      "record": "contracts/deployments/independent-authorities-base.json",
+      "sourceCommit": "d8fac3c44b32115e80501c45ee0fb919ca2df56c",
+      "sourceSha256": {
+        "EnclaveHostOwnership.sol": "20c1485fc5682038fbd881106de23bfa5ac5bf1b5baa9a57c88470a3db228224",
+        "EnclaveSecretVaultV2.sol": "fc43ab52da0bca1fb62e0289a254332b49faea0990322ab39dbd03d4d8e2ef9b",
+        "PinnedSessionVaultFactory.sol": "fe071b7178476ae0938b3f8f94e6b40d6468ee327bbb0c8568ce3b7dec1a6d16",
+        "SessionVault.sol": "a447add6f44ca65ecdf19625450623dce5c41270a28f0ab2b3240382d3ceeb1c"
+      }
+    }
+  },
+  "chainId": 8453,
+  "contracts": {
+    "appCatalog": {
+      "address": "0x18419ca2b502d423a8de6269aeee171a378626e3",
+      "codeHash": "0x3f3c4cc028abd3e117465362e196243cafaaffa7508dc6297d78a6b709dcc79f",
+      "codeProvenance": "observed",
+      "immutable": {},
+      "ownerPowers": [
+        "owner can setApproval and setVerified on any version, grantCid (bind any CID to an app id), transferApp (move a publisher lineage to another address) and setMaxFee.",
+        "Versions the owner publishes start Approved; everyone else's start Pending. importsSealed=true closes owner imports.",
+        "Runtime pinned by observed hash; powers per contracts/EnclaveAppCatalog.sol."
+      ],
+      "reviewedState": {
+        "importsSealed": true,
+        "owner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "pendingOwner": "0x0000000000000000000000000000000000000000"
+      },
+      "role": "host-pin",
+      "runtimeBytes": 22733
+    },
+    "connectivity": {
+      "address": "0x5f8b636e0768e84bd47b736652030b65db615111",
+      "codeHash": "0xf353785902b40e59bf67f655ed58fb9fbc72150e1812c40ae9703aadee8fe550",
+      "codeProvenance": "observed",
+      "immutable": {
+        "ledger": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "registry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "ownerPowers": [
+        "No global owner in source; per-app bootstrap trust and payment policy are set by that deployment's ledger owner.",
+        "Runtime pinned by observed hash."
+      ],
+      "reviewedState": {},
+      "role": "network",
+      "runtimeBytes": 17778
+    },
+    "deployments": {
+      "address": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+      "codeHash": "0x71d50076336283e774ba2ef8d5cbf7602e9cdc5dd918a7e7390c743367766682",
+      "codeProvenance": "observed",
+      "immutable": {
+        "deploymentsSchema": "16",
+        "registry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac",
+        "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "owner (two-step setOwner/acceptOwnership) can slashBond an operator bond (up to its amount) to payout, and sweepEscrow a lapsed, unfundable deployment's escrow to payout.",
+        "owner can setClaimBond, setMaxGpuMilli, setMaxFee, setRunnerBps, setLeaseSec, setProofRequiredFrom and setEthUsdFeed (0 disables ETH funding); these future-create parameters are not pinned here.",
+        "owner can setPayout and retire the ledger (one-way: closes claims, renewals and funding and opens refund to every record owner).",
+        "One-shot owner bindings bandwidthRouter, feeRouter and prover are already set and pinned; importsSealed=true closes owner record imports.",
+        "Runtime pinned by observed hash; owner powers are as written in contracts/EnclaveDeployments.sol, not proven for these bytes."
+      ],
+      "reviewedState": {
+        "bandwidthRouter": "0x5f8b636e0768e84bd47b736652030b65db615111",
+        "ethUsdFeed": "0x71041dddad3595f9ced3dccfbe3d1f4b0a16bb70",
+        "feeRouter": "0x87c7266543ff5839b2c20226bd9b3cd511a23641",
+        "importsSealed": true,
+        "owner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "payout": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "pendingOwner": "0x0000000000000000000000000000000000000000",
+        "prover": "0x6f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+        "retired": false
+      },
+      "role": "host-pin",
+      "runtimeBytes": 24368
+    },
+    "enclavePay": {
+      "address": "0x580270e88e5df35dad59e7fe3d907ebea96673a6",
+      "codeHash": "0xf902e3481a78768e93e7f1c0eacdc730ba110581f39c540fa6f50291d714f025",
+      "codeProvenance": "observed",
+      "immutable": {
+        "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "owner can setPayout (where USDC and ETH payments are forwarded); two-step ownership transfer.",
+        "Runtime pinned by observed hash; powers per contracts/EnclavePay.sol."
+      ],
+      "reviewedState": {
+        "owner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "payout": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "pendingOwner": "0x0000000000000000000000000000000000000000"
+      },
+      "role": "host-pin",
+      "runtimeBytes": 2376
+    },
+    "hostOwnership": {
+      "address": "0xf5e9e6c02449001f6e8e95e5d87413f2cb6790ea",
+      "artifact": "EnclaveHostOwnership",
+      "build": "independent-authorities",
+      "codeHash": "0xe38a0e160dd929c366bccd30636285458c288ada475f1b74ffc3289febf1d5dd",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {
+        "registry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "ownerPowers": [
+        "No global admin. Per host: the registry's active operator nominates the first owner, that wallet accepts, and only the current owner sets policy or nominates a successor."
+      ],
+      "reviewedState": {},
+      "role": "new-path",
+      "runtimeBytes": 1999
+    },
+    "keyAttestations": {
+      "address": "0xb49241efe5af6078be6aa84850ae45eed34df61b",
+      "codeHash": "0x1a2032764e44a056267bb3585e2179b6bf2e7f7b9248e9810c61cee3cb8233c1",
+      "codeProvenance": "observed",
+      "immutable": {},
+      "ownerPowers": [
+        "owner can setAttestor (removal voids that attestor's bindings) and revoke any key binding; two-step ownership. Measurement-bound session grants depend on it.",
+        "Runtime pinned by observed hash; powers per contracts/EnclaveKeyAttestations.sol."
+      ],
+      "reviewedState": {
+        "owner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "pendingOwner": "0x0000000000000000000000000000000000000000"
+      },
+      "role": "dependency",
+      "runtimeBytes": 2000
+    },
+    "legacySessionVaultFactory": {
+      "address": "0x1f5c887c0cdf491b16ab6c449abafdf9b2ec9c9c",
+      "codeHash": "0xc9b6214babb0126b26e818de8555c98b7e2a284b08a7cfd42f51b121e93d4f6c",
+      "codeProvenance": "observed",
+      "immutable": {
+        "implementation": "0x66c76a47209f44612343dbeab98b8ef77ad01f65"
+      },
+      "ownerPowers": [
+        "Not part of the new path. Production network sessions use this factory; its vaults resolve deployments through the mutable EnclaveAddressBook (book binding), and pinned-mode CLI refuses it. Pinned only to make the difference reviewable."
+      ],
+      "reviewedState": {},
+      "role": "legacy-compatibility",
+      "runtimeBytes": 2208
+    },
+    "legacySessionVaultImplementation": {
+      "address": "0x66c76a47209f44612343dbeab98b8ef77ad01f65",
+      "codeHash": "0x3dd35d4c4bdf112e2ded90da36a16510bfe938a0c9b8b9ed4414698323efb76e",
+      "codeProvenance": "observed",
+      "immutable": {
+        "book": "0xab214342d5a490150a4a977063a2f88e21f80907",
+        "factory": "0x1f5c887c0cdf491b16ab6c449abafdf9b2ec9c9c",
+        "keyAttestations": "0xb49241efe5af6078be6aa84850ae45eed34df61b",
+        "router": "0xf17157b42ebbd65e33dd592878a8f1769c69d56a",
+        "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "Not part of the new path. Production network sessions use this factory; its vaults resolve deployments through the mutable EnclaveAddressBook (book binding), and pinned-mode CLI refuses it. Pinned only to make the difference reviewable.",
+        "Its immutable book is the mutable EnclaveAddressBook; whoever controls the book chooses which ledger these vaults act on."
+      ],
+      "reviewedState": {
+        "owner": "0x0000000000000000000000000000000000000001"
+      },
+      "role": "legacy-compatibility",
+      "runtimeBytes": 23664
+    },
+    "paymentRouter": {
+      "address": "0xf17157b42ebbd65e33dd592878a8f1769c69d56a",
+      "codeHash": "0x3497b4ce1a0a8b7018627a3a3862096a013e42283901909a5054f1989fdb3b75",
+      "codeProvenance": "observed",
+      "immutable": {
+        "treasury": "0x271a59b4b1ee756e0e46d84aa4c9c26a8d48f44d",
+        "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "No owner, setter, pause, rescue or upgrade; every payment lands at the immutable treasury (per contracts/PaymentRouter.sol). Runtime pinned by observed hash."
+      ],
+      "reviewedState": {},
+      "role": "dependency",
+      "runtimeBytes": 1229
+    },
+    "pinnedSessionAuthority": {
+      "address": "0xf76a138ceb162aa4bab47d4787793c569759cac8",
+      "artifact": "PinnedSessionAuthority",
+      "build": "independent-authorities",
+      "codeHash": "0x81b24e366984840a2f94a5f92a6704f755a172b9d0ac46bc6cfe3ad6106bd557",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {
+        "appCatalog": "0x18419ca2b502d423a8de6269aeee171a378626e3",
+        "deployments": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "sessionVaultFactory": "0xec9277a32f98ad3108747fe3da78c35e1bee097b"
+      },
+      "ownerPowers": [
+        "No owner or setter; addr() answers only deployments, appCatalog and sessionVaultFactory."
+      ],
+      "reviewedState": {},
+      "role": "new-path",
+      "runtimeBytes": 562
+    },
+    "proofOfTime": {
+      "address": "0x6f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+      "codeHash": "0x6b2eff59ba3f32f2d56515ec1b625dfabea05d2dbe8c7edd63a72e4bb20b0f72",
+      "codeProvenance": "observed",
+      "immutable": {
+        "deployments": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "registry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "ownerPowers": [
+        "owner can setProofWindow within [60 s, ledger leaseSec); two-step ownership transfer.",
+        "Runtime pinned by observed hash; powers per contracts/EnclaveProofOfTime.sol."
+      ],
+      "reviewedState": {
+        "owner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "pendingOwner": "0x0000000000000000000000000000000000000000"
+      },
+      "role": "host-pin",
+      "runtimeBytes": 6503
+    },
+    "registry": {
+      "address": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac",
+      "codeHash": "0x39911d6f53959c610b9108bb906fc36ea8f57016c4b2571b5cd52c9c32a6f518",
+      "codeProvenance": "observed",
+      "immutable": {
+        "registrySchema": "4"
+      },
+      "ownerPowers": [
+        "No owner or admin in EnclaveRegistry source; register and registerRelay are permissionless.",
+        "The deployed registry reports registrySchema 4 while source HEAD declares 5; its runtime is pinned by observed hash, not source-verified."
+      ],
+      "reviewedState": {},
+      "role": "host-pin",
+      "runtimeBytes": 5892
+    },
+    "secretVaultV2": {
+      "address": "0x56b81b3970a8ac2c52f9874bd2758ede30758228",
+      "artifact": "EnclaveSecretVaultV2",
+      "build": "independent-authorities",
+      "codeHash": "0xb27f04b1bc81e2db3e6913c84016f1f2b75083abe5a87dcc65afafcc207a48c5",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {
+        "book": "0xf76a138ceb162aa4bab47d4787793c569759cac8",
+        "deploymentLedger": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "enclaveOwner": "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+        "hostOwnership": "0xf5e9e6c02449001f6e8e95e5d87413f2cb6790ea",
+        "hostRegistry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac",
+        "sessionVaultFactory": "0xec9277a32f98ad3108747fe3da78c35e1bee097b"
+      },
+      "ownerPowers": [
+        "No setter. The immutable enclaveOwner decides which hosts count as Enclave-owned seats (hosts whose hostOwnership owner equals it)."
+      ],
+      "reviewedState": {},
+      "role": "new-path",
+      "runtimeBytes": 21956
+    },
+    "sessionVaultFactory": {
+      "address": "0xec9277a32f98ad3108747fe3da78c35e1bee097b",
+      "artifact": "PinnedSessionVaultFactory",
+      "build": "independent-authorities",
+      "codeHash": "0xf985ee527a6ae282a8ca8a67adcc0034faabe3d0317c6b989d7a95aa523a694c",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {
+        "authorityPins": [
+          "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+          "0x18419ca2b502d423a8de6269aeee171a378626e3",
+          "0xf76a138ceb162aa4bab47d4787793c569759cac8"
+        ],
+        "implementation": "0x87bc7bfc8ca8b857fb43ebc6f4e49c807351ff5c"
+      },
+      "ownerPowers": [
+        "No owner, setter, proxy or delegatecall; compiled-runtime verified. Acts on the deployments ledger and appCatalog, whose owner powers apply."
+      ],
+      "reviewedState": {},
+      "role": "new-path",
+      "runtimeBytes": 2610
+    },
+    "sessionVaultImplementation": {
+      "address": "0x87bc7bfc8ca8b857fb43ebc6f4e49c807351ff5c",
+      "artifact": "SessionVault",
+      "build": "independent-authorities",
+      "codeHash": "0xbd05cd680b27bd879809787189430fa3dd3789064004aff6347a3af53b9f9f31",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {
+        "book": "0xf76a138ceb162aa4bab47d4787793c569759cac8",
+        "factory": "0xec9277a32f98ad3108747fe3da78c35e1bee097b",
+        "keyAttestations": "0xb49241efe5af6078be6aa84850ae45eed34df61b",
+        "maxVault6": "250000000",
+        "router": "0xf17157b42ebbd65e33dd592878a8f1769c69d56a",
+        "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "No admin; the implementation is initialized to owner 0x…01. Each clone has only its own wallet owner and sessions. Calls the ledger, catalog, PaymentRouter and KeyAttestations, whose powers apply."
+      ],
+      "reviewedState": {
+        "owner": "0x0000000000000000000000000000000000000001"
+      },
+      "role": "new-path",
+      "runtimeBytes": 23664
+    },
+    "sessionVaultLib": {
+      "address": "0xcc2824cdd4be8ad2656b5201662e60e025bf12b4",
+      "artifact": "SessionVaultLib",
+      "build": "independent-authorities",
+      "codeHash": "0x26117a09e75f60c5aa2449339b32110ee05a07268088636c061e90b6bc5a9b06",
+      "codeProvenance": "compiled-runtime",
+      "immutable": {},
+      "ownerPowers": [
+        "Linked library; no state or owner."
+      ],
+      "reviewedState": {},
+      "role": "new-path",
+      "runtimeBytes": 10681
+    },
+    "usdc": {
+      "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "codeHash": "0xa6705a10bb756b5dea144591118be77d7af0c3eee3bf2dfe2583dcb0364fefab",
+      "codeProvenance": "observed",
+      "immutable": {},
+      "ownerPowers": [
+        "External: Circle-administered upgradeable proxy with pause and blacklist roles. Only the proxy bytes are pinned; the implementation can change without changing this hash."
+      ],
+      "reviewedState": {},
+      "role": "external",
+      "runtimeBytes": 1852
+    },
+    "verificationFees": {
+      "address": "0x87c7266543ff5839b2c20226bd9b3cd511a23641",
+      "codeHash": "0xf649e393d201db4cd3a0377384381a95bf32e33d53bab290a6824067d7f66ab9",
+      "codeProvenance": "observed",
+      "immutable": {
+        "ledger": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "proof": "0x6f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "ownerPowers": [
+        "No owner, rescue or treasury function in source; fee wallets are controller-only per source deployment and payer.",
+        "Runtime pinned by observed hash."
+      ],
+      "reviewedState": {},
+      "role": "host-pin",
+      "runtimeBytes": 17257
+    }
+  },
+  "kind": "enclave.authority-profile",
+  "review": {
+    "blockHash": "0x40ec8c624a852b899cebddf9e5c00dc5a4ccfc31e666855472e3a643af9dd4ce",
+    "blockNumber": "52830935",
+    "blockTimestamp": 1792451217,
+    "capturedAt": "2026-10-19T23:07:08Z",
+    "inputs": {
+      "deploymentRecord": {
+        "description": "contracts/deployments/independent-authorities-base.json (compiled-runtime verification of the independent authorities)",
+        "sha256": "92dda05e210e5e7b1bd0de58513f874f9ba3ccab80b015b438673fd620d8c0f5"
+      },
+      "publicHostPins": {
+        "description": "Public host contract-pins.json (registry, deployments, appCatalog, proofOfTime, enclavePay, verificationFees)",
+        "sha256": "b687a8da232c3984b2e6eeb4b1d3f46be36ab1fe2044f1deed197cffb8d21336"
+      }
+    },
+    "rpcHosts": [
+      "base-rpc.publicnode.com",
+      "base.drpc.org",
+      "mainnet.base.org"
+    ]
+  },
+  "scope": "New-path trust choice for owner-committed deployments on Base: the pinned session factory and authority, SecretVaultV2 and EnclaveHostOwnership from the independent-authorities deployment, plus the existing host contract pins. It is not evidence that production migrated, that governance is sealed, that an independent custody committee is active, or that any service is independently operated. Base, its sequencer, USDC (Circle) and the chosen RPCs remain trusted. Code hashes do not remove owner powers inside or behind the pinned contracts; see ownerPowers.",
+  "version": 1
+}
