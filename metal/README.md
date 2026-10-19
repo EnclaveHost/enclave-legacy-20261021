@@ -493,3 +493,51 @@ fills in the paths and checks the answers. To sell hosting, keep going with
 SNP mode needs: BIOS `SMEE`/`SEV-SNP` enabled + SNP RMP coverage, kernel
 `kvm_amd sev_snp=Y`, `/dev/sev` present; then set `"mode": "snp"` in the
 config. TDX mode: `"mode": "tdx"` on a TDX host.
+
+### Wallet-owned admission policy
+
+A metal host can enforce the accepted wallet owner's policy without consulting
+an Enclave API moderation decision. Build both admission bundles with
+`node scripts/build-host-admission.mjs` before building the measured image.
+The launcher configuration accepts this optional public configuration:
+
+```json
+{
+  "hostAdmission": {
+    "hostId": "<lowercase bytes32 registered host ID>",
+    "ownershipContract": "<lowercase EnclaveHostOwnership contract address>",
+    "pinsFile": "/absolute/path/contract-pins.json",
+    "policyFiles": ["/absolute/path/host-policy.json"],
+    "policyOrigins": ["https://operator-selected-policy-mirror.example"]
+  }
+}
+```
+
+`pinsFile` uses the version 1 Base contract-pins schema. `policyFiles` contains
+at most eight public host admission documents, each bound to this exact host
+and ownership contract. Paths remain on the host; the launcher validates and
+passes only public document contents through fw_cfg. The measured guest installs
+these under `/run/enclave-host-admission` and supplies the supervisor's policy
+and contract-pin environment. An incomplete or foreign configuration refuses
+startup. Omitting `hostAdmission` preserves the legacy mode; omission does not
+activate wallet enforcement.
+
+The supervisor reads the accepted owner and policy commitment from a fresh chain
+quorum. A missing owner or missing committed document fails closed. The accepted
+owner's zero commitment permits service without catalog moderation; a committed
+policy can refuse particular deployments or opt this host into catalog approval.
+That refusal has no authority over other hosts. Before enabling this mode, finish
+the operator nomination and wallet acceptance, publish the chosen policy, and
+verify the commitment on chain. A host environment flag alone cannot update an
+already running control VM: its measured image must contain the runtime and guest
+installer.
+
+Optional `policyOrigins` contains up to eight explicit HTTP(S) origins with no
+credentials, path, query or fragment. Each serves `/<policy-hash>.json`. Mirrors
+supply public bytes only; the current on-chain hash and host binding authorize the
+document. All mirrors are tried concurrently with an eight-second deadline and a
+2 MiB bound per response. A matching document is cached locally. Policy changes
+can then be adopted without rebooting the VM, after the bounded authority cache
+expires (at most 15 seconds). A withholding or corrupt mirror cannot override a
+matching peer, and no Enclave-operated mirror is implicit. A cold boot still
+requires the current document in `policyFiles` or at an available chosen mirror.

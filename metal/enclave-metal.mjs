@@ -20,11 +20,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { measureGflops } from './compute-measure.mjs';
+import {prepareMetalHostPolicy} from './guest/host-policy.bundle.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 function arg(name, dflt) { const i = process.argv.indexOf('--' + name); return i > 0 ? process.argv[i + 1] : dflt; }
 const cfgPath = arg('config', path.join(HERE, 'config.json'));
 const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+const HOST_ADMISSION=prepareMetalHostPolicy(cfg.hostAdmission);
 
 let stopping = false;      // hoisted: the shielded-worker supervisor reads it too
 
@@ -187,6 +189,7 @@ if (cfg.measureGflops !== false) {
   } catch (e) { console.error(`[metal] compute NOT measured (${e.message}): the guest keeps the 62.5-per-vCPU convention`); }
 }
 const runtimeCfg = { name: NAME, mode: MODE, publicUrl: cfg.publicUrl || '', relayUrl: cfg.relayUrl || '', tunnelToken: cfg.tunnelToken || '',
+  ...(HOST_ADMISSION?{hostAdmission:HOST_ADMISSION}:{}),
   // the referral code this machine was set up with (`enclave host init --referral`): attribution only; the guest agent
   // says it when it attaches (x-metal-referral, relay/referrals.mjs). fw_cfg, so it never changes the measurement
   referral: cfg.referral || '',

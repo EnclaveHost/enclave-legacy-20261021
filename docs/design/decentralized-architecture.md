@@ -14,7 +14,7 @@ live network of independently operated machines.
 
 | Path | Required behavior under Enclave refusal | Current gap |
 | --- | --- | --- |
-| Host admission | Accepted host owner chooses its policy; payout and operator are not ownership | Source and wallet-policy tests exist; compatible runtime activation remains |
+| Host admission | Accepted host owner chooses its policy; payout and operator are not ownership | Windows runtime enabled on its enrolled authority; Linux measured delivery and mirror tests implemented, metal0 enrollment and runtime activation remain |
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory deployed and bytecode verified on Base; clients/grants not migrated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
@@ -837,3 +837,30 @@ diagnostic host status intentionally ages out of the legacy API; it is not
 fabricated from a route record. Providers remain Enclave-operated and DNS-01,
 runtime provisioning, custody, governance and storage writes retain separate
 remaining dependencies.
+
+
+## Linux wallet-policy delivery
+
+The metal launcher now validates an explicit `hostAdmission` configuration and
+passes public contract pins and policy contents through fw_cfg. The measured guest
+installs those files and binds the supervisor to the configured host ID. Both the
+full image builder and its supervisor overlay carry the policy runtime dependencies.
+The exact standalone guest bundle is tested against fw_cfg captured from the real
+launcher using a fake QEMU; this is a configuration-boundary test, not a hardware
+attestation or production activation claim.
+
+Optional operator-selected document mirrors serve hash-named public policies.
+Documents must match the wallet's current chain commitment; missing documents
+fail closed. Concurrent mirror retrieval, bounded responses and deadlines, and a
+verified local cache support policy changes without a VM restart. Tests use actual
+HTTP servers to demonstrate rejection of substituted data, recovery through a valid
+peer, cached operation with all mirrors down, and adoption of a new refusal while
+another host continues admitting the deployment. The owners and chain reader in
+this test are fixtures, not independent production operators.
+
+Metal0's Base enrollment preparation still requires operator nomination, wallet
+acceptance and policy commitment on the new ownership authority. Its current
+control image has not been replaced by this change. Captured contract pins include
+zero optional session-factory/vault entries from the current book; deployment
+review must reconcile those with explicitly selected custody/session bindings
+before activating them. This does not migrate the live single-seat custody vault.

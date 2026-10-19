@@ -185,7 +185,10 @@ const OVERLAY_SRC = arg('supervisor-overlay', '');
 let supervisorOverlay = null;
 if (OVERLAY_SRC) {
   const src = path.resolve(OVERLAY_SRC);
-  const files = ['supervisor.js', 'sdk/bootstrap/package.mjs', 'isolation/m4/guestd/supervisor-transport.mjs',
+  const files = ['supervisor.js', 'addressbook.js', 'windows/node/session-api-auth.mjs', 'sdk/bootstrap/package.mjs', 'sdk/bootstrap/storage.mjs',
+                 'sdk/storage/gateways.mjs', 'sdk/storage/upload-auth.mjs', 'sdk/storage/replicas.mjs',
+                 'site/js/core/upload-auth.js',
+                 'windows/node/verification-checkpoints.mjs', 'windows/node/host-admission.bundle.mjs', 'isolation/m4/guestd/supervisor-transport.mjs',
                  'isolation/m4/guestd/control-client.mjs', 'isolation/m4/guestd/supervisor-splice.mjs',
                  // the guest-certificate relay and the judge it verifies each guest with (and the judge's imports)
                  'isolation/m4/guestd/supervisor-guestcert.mjs', 'isolation/m2/judge.mjs',
@@ -266,7 +269,7 @@ const md = path.join(ROOT, 'opt/metal'); fs.mkdirSync(md, { recursive: true });
 // the guest half of the shielded tier is trusted code and must be attested. The
 // worker it talks to is not, and is not shipped here: it runs on the host, is
 // assumed hostile, and its address arrives unmeasured over fw_cfg.
-for (const f of ['gsup.mjs', 'agent.mjs', 'shielded.mjs', 'shielded-probe.mjs', 'shielded-shm.mjs'])
+for (const f of ['gsup.mjs', 'host-policy.bundle.mjs', 'agent.mjs', 'shielded.mjs', 'shielded-probe.mjs', 'shielded-shm.mjs'])
   fs.copyFileSync(path.join(HERE, 'guest', f), path.join(md, f));
 // init (PID1), with the kernel version substituted in
 let init = fs.readFileSync(path.join(HERE, 'guest', 'init'), 'utf8').replaceAll('__KVER__', KVER);

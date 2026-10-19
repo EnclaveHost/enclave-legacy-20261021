@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
+import {constants} from 'node:fs';
 import path from 'node:path';
 import {parseAbi} from 'viem';
 import {LeaseReader} from './lease-reader.mjs';
-import {readHostAdmissionPolicy,hostAdmissionRefusal} from './host-admission-policy.mjs';
+import {readHostAdmissionPolicy,hostAdmissionRefusal,hostAdmissionPolicyHash} from './host-admission-policy.mjs';
 import {loadContractPins} from './contract-pins.mjs';
+import {boundedJSON,directoryOrigins} from './directory-client.mjs';
 export {loadContractPins,validateContractPins} from './contract-pins.mjs';
 
 const address=/^0x[0-9a-f]{40}$/,id=/^0x[0-9a-f]{64}$/;
@@ -22,9 +24,10 @@ const nonzero=a=>address.test(a||'')&&!/^0x0{40}$/.test(a);
 // of a particular document server. Never interpret a missing document as allow.
 export const fileHostPolicyLoader=directory=>async hash=>{
   if(!id.test(hash))throw Error('policy hash required');
-  const f=await fs.open(path.join(directory,hash+'.json'),'r');
+  const f=await fs.open(path.join(directory,hash+'.json'),constants.O_RDONLY|constants.O_NONBLOCK);
   try {
-    if((await f.stat()).size>2*1024*1024)throw Error('host policy document too large');
+    const stat=await f.stat();if(!stat.isFile())throw Error('host policy document must be a regular file');
+    if(stat.size>2*1024*1024)throw Error('host policy document too large');
     const bytes=Buffer.alloc(2*1024*1024+1);let size=0;
     while(size<bytes.length){const r=await f.read(bytes,size,bytes.length-size,null);if(!r.bytesRead)break;size+=r.bytesRead;}
     if(size>2*1024*1024)throw Error('host policy document too large');
@@ -32,12 +35,38 @@ export const fileHostPolicyLoader=directory=>async hash=>{
   } finally {await f.close();}
 };
 
-export function createHostAdmission({hostId,ownershipContract,registry,catalog,rpc,addressBook,policyDirectory,
+export const hostPolicyOrigins=origins=>origins===undefined?[]:Array.isArray(origins)&&origins.length===0?[]:directoryOrigins(origins);
+// A policy mirror supplies bytes, never authority. A malformed or withholding
+// mirror cannot hide the hash-matching document available from another mirror.
+export function publicHostPolicyLoader({directory,origins=[],fetch=globalThis.fetch}){
+ origins=hostPolicyOrigins(origins);const local=fileHostPolicyLoader(directory);
+ return async hash=>{
+  if(!id.test(hash))throw Error('policy hash required');
+  const checked=p=>{if(hostAdmissionPolicyHash(p)!==hash)throw Error('host policy commitment mismatch');return p;};
+  let localError;try{return checked(await local(hash));}catch(e){localError=e;}
+  if(!origins.length)throw localError;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{
+   const policy=await Promise.any(origins.map(async origin=>{
+    const response=await fetch(origin+'/'+hash+'.json',{redirect:'error',credentials:'omit',signal:controller.signal});
+    return checked(await boundedJSON(response,2*1024*1024));
+   }));
+   // Cache only verified public bytes. Cache failure is not permission to invent
+   // an allow policy, nor a reason to reject an already verified current policy.
+   const target=path.join(directory,hash+'.json'),temporary=target+'.tmp-'+process.pid+'-'+Math.random().toString(16).slice(2);
+   try{await fs.writeFile(temporary,JSON.stringify(policy)+'\n',{mode:0o600,flag:'wx'});await fs.rename(temporary,target);}catch{await fs.unlink(temporary).catch(()=>{});}
+   return policy;
+  }catch{throw Error('no hash-matching host policy available');}
+  finally{clearTimeout(timer);controller.abort();}
+ };
+}
+
+export function createHostAdmission({hostId,ownershipContract,registry,catalog,rpc,addressBook,policyDirectory,policyOrigins,
   reader,loadPolicy,now=Date.now,cacheMs=15000}) {
   if(!id.test(hostId)||![ownershipContract,registry,catalog].every(nonzero))throw Error('explicit host, ownership, registry and catalog pins required');
   if(!Number.isSafeInteger(cacheMs)||cacheMs<0||cacheMs>15000)throw Error('invalid host policy cache lifetime');
   reader ||= new LeaseReader({rpc,addressBook,now});
-  loadPolicy ||= fileHostPolicyLoader(policyDirectory||'');
+  loadPolicy ||= publicHostPolicyLoader({directory:policyDirectory||'',origins:policyOrigins});
   let cached=null,pending=null;
   const policy=async()=>{
     if(cached&&cached.reuseUntil>now())return cached;
@@ -83,14 +112,15 @@ export function createHostAdmission({hostId,ownershipContract,registry,catalog,r
 }
 
 const names=['ENCLAVE_HOST_OWNERSHIP','ENCLAVE_HOST_REGISTRY_PIN','ENCLAVE_HOST_CATALOG_PIN','ENCLAVE_HOST_POLICY_DIR'];
-export const hostAdmissionConfigured=(env=process.env)=>names.some(k=>env[k]);
+export const hostAdmissionConfigured=(env=process.env)=>[...names,'ENCLAVE_HOST_ID','ENCLAVE_HOST_POLICY_ORIGINS'].some(k=>env[k]);
 export function hostAdmissionFromEnv({hostId,rpc,addressBook,env=process.env}) {
   if(!hostAdmissionConfigured(env))return null;
   if(names.some(k=>!env[k]))throw Error('incomplete wallet host admission configuration');
+  if(env.ENCLAVE_HOST_ID&&env.ENCLAVE_HOST_ID!==hostId)throw Error('wallet policy config belongs to another host');
   const pins=loadContractPins(env);
   if(!pins||pins.registry!==env.ENCLAVE_HOST_REGISTRY_PIN.toLowerCase()||pins.appCatalog!==env.ENCLAVE_HOST_CATALOG_PIN.toLowerCase())
     throw Error('wallet host admission requires matching immutable contract pins');
   return createHostAdmission({hostId,ownershipContract:env.ENCLAVE_HOST_OWNERSHIP.toLowerCase(),
     registry:env.ENCLAVE_HOST_REGISTRY_PIN.toLowerCase(),catalog:env.ENCLAVE_HOST_CATALOG_PIN.toLowerCase(),
-    policyDirectory:env.ENCLAVE_HOST_POLICY_DIR,rpc,addressBook});
+    policyDirectory:env.ENCLAVE_HOST_POLICY_DIR,policyOrigins:env.ENCLAVE_HOST_POLICY_ORIGINS?JSON.parse(env.ENCLAVE_HOST_POLICY_ORIGINS):[],rpc,addressBook});
 }
