@@ -414,6 +414,22 @@ sandbox/nosniff headers. Both native Rust and the release WASM running under Was
 These are separate test stores on one machine; no new
 production kernel boot or independent operator is claimed.
 
+### Cold host runtime installation
+
+`scripts/network/fetch-runtime.mjs` installs a caller-pinned CPU release from
+explicit raw-CID replicas into a new directory, requires its firmware to be in
+the local verifying-firmware pin list and runs the boot path's release verifier
+before reporting success. `guestd -cpu-release DIR -isolation-release PIN` then
+takes kernel, firmware, command line, template and RuntimeID from that release
+alone: competing firmware/template flags and inherited boot overrides are
+refused, component gateways must be an explicit list, and every build and launch
+re-verifies the full release. No host `/boot`, module tree or `wasmtime` is used.
+See [cold host setup](../network/cold-host.md) for prerequisites and limits.
+A real downloaded release reproduced the earlier hardware measurement in an
+isolated build and a fresh manager derived the owner AppID through explicit
+gateways. No guest has yet booted from a downloaded release on a cold host, and
+no active owner-startup request or lease claim was made.
+
 ## Independent custody formation
 
 The previous v2 committee could only be created by an Enclave-owned founder;

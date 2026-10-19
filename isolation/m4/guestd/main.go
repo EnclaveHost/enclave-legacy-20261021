@@ -335,6 +335,7 @@ func main() {
 	adoptCheck := flag.Bool("adopt-check", false, "verify adoption of every existing guest without sweeping, stopping guests, or serving")
 	adoptRuntimes := flag.String("adopt-runtimes", "", "explicit historical release=runtime.json pins, comma-separated; verified again on adoption")
 	cpuTemplate := flag.String("cpu-template", "", "pinned CPU release template")
+	cpuRelease := flag.String("cpu-release", "", "complete verified CPU release directory (scripts/network/fetch-runtime.mjs); kernel, firmware, template and cmdline come from its one explicit -isolation-release pin. Needs an explicit -gateway JSON list and no competing firmware/template flag")
 	shieldTemplate := flag.String("shield-template", "", "pinned measured Shield inference release template")
 	shieldModel := flag.String("shield-model-file", "", "read-only public Q4 GGUF; hash verified inside the measured guest")
 	shieldSHM := flag.String("shield-shm-dir", "", "directory with card-0 and card-1 masked transport rings")
@@ -372,6 +373,24 @@ func main() {
 	if *chain == "" {
 		*chain = filepath.Join(*iso, "..", "test/fixtures/amd", *product+"-cert_chain.pem")
 	}
+	if *cpuRelease != "" {
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		dir, id, e := cpuReleaseMode(*cpuRelease, *isoRelease, *gateway, set, os.Getenv)
+		if e != nil {
+			log.Fatal(e)
+		}
+		out, e := exec.Command("python3", filepath.Join(*iso, "m4/release-manifest.py"), "verify", dir, "--expect", id).CombinedOutput()
+		if e != nil {
+			log.Fatalf("CPU release does not verify: %s", out)
+		}
+		if e := cpuReleaseFiles(dir); e != nil {
+			log.Fatal(e)
+		}
+		*cpuRelease, *isoRelease = dir, id
+		*cpuTemplate = filepath.Join(dir, "template")
+		*ovmf = filepath.Join(dir, "firmware.fd")
+	}
 	// A measured table over a firmware that does not verify it proves nothing, and every structural check still
 	// passes (isolation/m4/verifying-firmware.txt). So the firmware is pinned by digest, or guestd does not start.
 	fw, err := sha256File(*ovmf)
@@ -391,6 +410,11 @@ func main() {
 		log.Fatal(err)
 	}
 	env := append(os.Environ(), "OVMF="+*ovmf)
+	if *cpuRelease != "" {
+		env = append(env, "DOMAIN_RELEASE_DIR="+*cpuRelease, "DOMAIN_RELEASE_ID="+*isoRelease)
+	} else if os.Getenv("DOMAIN_RELEASE_DIR") != "" || os.Getenv("DOMAIN_RELEASE_ID") != "" {
+		log.Fatal("use explicit -cpu-release rather than inherited domain release environment")
+	}
 	fwd := filepath.Join(*root, "bin", "fwd")
 	build := exec.Command("go", "build", "-trimpath", "-o", fwd, "./fwd")
 	build.Dir = filepath.Join(*iso, "m2")
@@ -398,14 +422,18 @@ func main() {
 	if out, err := build.CombinedOutput(); err != nil {
 		log.Fatalf("building m2/fwd: %v %s", err, out)
 	}
-	wt, err := exec.LookPath("wasmtime")
-	if err != nil {
-		log.Fatal("no wasmtime on PATH: the guest image carries the host's runtime")
-	}
 	rid := filepath.Join(*root, "expected-runtime.json")
-	ridOut, err := exec.Command(filepath.Join(*iso, "contract", "runtime-identity.sh"), wt).Output()
+	var ridOut []byte
+	var wt string
 	if *cpuTemplate != "" {
 		ridOut, err = os.ReadFile(filepath.Join(*cpuTemplate, "rt/runtime.json"))
+	} else {
+		var e error
+		wt, e = exec.LookPath("wasmtime")
+		if e != nil {
+			log.Fatal("no wasmtime on PATH: the guest image carries the host's runtime")
+		}
+		ridOut, err = exec.Command(filepath.Join(*iso, "contract", "runtime-identity.sh"), wt).Output()
 	}
 	if err != nil || os.WriteFile(rid, ridOut, 0o600) != nil {
 		log.Fatalf("runtime identity: %v", err)
@@ -465,14 +493,16 @@ func main() {
 	// Same executable and probe as runtime-set.sh, which emits the measured
 	// marker dominit needs before passing SET flags. Legacy guests do not gain
 	// this capability merely because the new release has it.
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 25*time.Second)
-	probeOut, probeErr := exec.CommandContext(probeCtx, "sh", filepath.Join(*iso, "m4", "probe-set.sh"), wt).Output()
-	probeCancel()
-	s.RuntimeSET = probeErr == nil && string(probeOut) == "1\n"
-	probeCtx, probeCancel = context.WithTimeout(context.Background(), 25*time.Second)
-	probeOut, probeErr = exec.CommandContext(probeCtx, "sh", filepath.Join(*iso, "m4", "probe-mem64.sh"), wt).Output()
-	probeCancel()
-	s.RuntimeMem64 = probeErr == nil && string(probeOut) == "1\n"
+	if *cpuTemplate == "" {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 25*time.Second)
+		probeOut, probeErr := exec.CommandContext(probeCtx, "sh", filepath.Join(*iso, "m4", "probe-set.sh"), wt).Output()
+		probeCancel()
+		s.RuntimeSET = probeErr == nil && string(probeOut) == "1\n"
+		probeCtx, probeCancel = context.WithTimeout(context.Background(), 25*time.Second)
+		probeOut, probeErr = exec.CommandContext(probeCtx, "sh", filepath.Join(*iso, "m4", "probe-mem64.sh"), wt).Output()
+		probeCancel()
+		s.RuntimeMem64 = probeErr == nil && string(probeOut) == "1\n"
+	}
 	if *cpuTemplate != "" {
 		set, e := os.ReadFile(filepath.Join(*cpuTemplate, "rt/set.enabled"))
 		s.RuntimeSET = e == nil && string(set) == "1\n"
