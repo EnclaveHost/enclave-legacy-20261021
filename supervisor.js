@@ -339,6 +339,12 @@ const ISOLATION_BACKEND = (process.env.ISOLATION_BACKEND || "").trim().toLowerCa
 // contract - envelope, claim gate, derivation, manager channel and splice. Inert until a box sets it, and a client
 // cannot verify it until the judge has that evidence format's own branch (isolation/m2/judge.mjs).
 const ISOLATION_BACKENDS = ["snp-guest-per-app", "hyperv-partition-per-app"];
+// ISOLATION_DIRECT_ONLY=1: this host serves ONLY owner-committed startup deployments (guestBootstrap) on the SNP tier,
+// from explicitly pinned contracts and operator-selected package/artifact replicas, with every Enclave relay service
+// (secrets, release list, domains, certificates, DNS push) configured off. Startup refuses anything else
+// (directOnlyProblems, docs/network/direct-host-control.md); a legacy or uncommitted deployment is refused, never
+// launched by a fallback.
+const ISOLATION_DIRECT_ONLY = /^(1|true|on)$/i.test(process.env.ISOLATION_DIRECT_ONLY || "");
 const VMMGR_URL = (process.env.VMMGR_URL || "http://127.0.0.1:8091").replace(/\/+$/, "");
 function mgrReq(method, path, body, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
@@ -2510,7 +2516,9 @@ async function directPackageFor(d, manager) {
   const scope = {chainId:CHAIN_ID, ledger:DEPLOYMENTS_ADDRESS, deployment:String(d.id).toLowerCase(), owner:d.owner,
     appRef:d.appRef, runtimeId};
   if (bootstrapBytes.has(intent.sha256)) return verifyPackage(bootstrapBytes.get(intent.sha256),intent,scope);
-  const p = await fetchPackage(intent,scope,{gateways:bootstrapGateways()});
+  // Literal-IP HTTP replicas are accepted (never HTTP names, credentials, queries or redirects): the bytes are bound by
+  // the owner's on-chain hash and the scope above, so the transport supplies availability, not authority.
+  const p = await fetchPackage(intent,scope,{gateways:bootstrapGateways(),allowHttpIPs:true});
   if (bootstrapBytes.size >= 64) bootstrapBytes.delete(bootstrapBytes.keys().next().value);
   bootstrapBytes.set(intent.sha256,p.bytes);
   return p;
@@ -4148,6 +4156,7 @@ async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVra
     // on this tier launchSpec never pulls secret VALUES (enclave-99's L6): a release guest gets them from the relay
     // itself, and any other guest may not have any; `secretsStaged` is only whether some are staged
     const direct = !!bootstrap;
+    if (ISOLATION_DIRECT_ONLY && !direct) throw new Error("this direct-only host launches only owner-committed startup deployments");
     if (direct && h?.supports?.directBootstrap !== true) throw new Error("manager lost direct bootstrap support");
     const released = direct ? false : await isolationSpawnRelease(h, deploymentId,
       { config, configCid, staged: secrets ? true : (secretsStaged === undefined ? false : secretsStaged) });
@@ -6879,6 +6888,34 @@ const _domainGen = new Map();
 let _domainsKnown = !DOMAINS_API;
 const _certReports = new Map();      // hostname -> { owner, ok, ca, error } queued for the next fetch
 
+// What a direct-only host lacks or still has pointed at an Enclave service (PURE; [] = startable). Every value is read
+// as the code above resolved it, so an unset variable that DEFAULTS to an Enclave origin (SECRETS_API, DOMAINS_API,
+// IPFS_GATEWAY) counts as pointed at it: the operator must say "" or name their own.
+function directOnlyProblems(env, resolved) {
+  const out = [];
+  if (resolved.isolationBackend !== "snp-guest-per-app") out.push("ISOLATION_BACKEND must be snp-guest-per-app");
+  if (resolved.provisionBackend !== "vm") out.push("PROVISION_BACKEND must be vm");
+  if (!resolved.contractPins) out.push("ENCLAVE_CONTRACT_PINS_FILE must pin the contracts (no address book)");
+  if ((env.ADDRESS_BOOK_ADDRESS || "").trim()) out.push("ADDRESS_BOOK_ADDRESS must be empty");
+  if (!(env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE || "").trim() && !(env.GUEST_BOOTSTRAP_GATEWAYS || "").trim())
+    out.push("GUEST_BOOTSTRAP_STORAGE_PLAN_FILE or GUEST_BOOTSTRAP_GATEWAYS must name the package replicas");
+  if (!(env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE || "").trim() && !(env.IPFS_GATEWAY || "").trim())
+    out.push("IPFS_GATEWAY must name the component replicas the prefetch probe asks (its default is Enclave's)");
+  for (const [name, value] of [["SECRETS_API", resolved.secretsApi], ["DOMAINS_API", resolved.domainsApi],
+    ["CERTS_API", resolved.certsApi], ["DNS_API", resolved.dnsApi], ["APP_CERT_DOMAIN", resolved.appCertDomain]])
+    if (value) out.push(`${name} must be empty (set ${name}=""): this mode uses no relay, certificate or DNS service`);
+  if (/^(1|true|on)$/i.test(env.ISOLATION_RELEASE || "")) out.push("ISOLATION_RELEASE must be off: direct startup takes no relay ticket");
+  return out;
+}
+const DIRECT_ONLY_PROBLEMS = ISOLATION_DIRECT_ONLY ? directOnlyProblems(process.env, {
+  isolationBackend: ISOLATION_BACKEND, provisionBackend: PROVISION_BACKEND, contractPins: CONTRACT_PINS,
+  secretsApi: SECRETS_API, domainsApi: DOMAINS_API, certsApi: CERTS_API, dnsApi: DNS_API, appCertDomain: APP_CERT_DOMAIN }) : [];
+if (DIRECT_ONLY_PROBLEMS.length) {
+  console.error(`[direct] ISOLATION_DIRECT_ONLY refused: ${DIRECT_ONLY_PROBLEMS.join("; ")}`);
+  process.exit(2);
+}
+if (ISOLATION_DIRECT_ONLY) console.log("[direct] direct-only host control: owner-committed startup deployments only; relay, domain, certificate and DNS services off");
+
 // The reports waiting for ONE deployment. Both this map and acmeRetry below are keyed by hostname
 // across the whole box, but what they are ABOUT is a (deployment, hostname) pair: a custom domain
 // can be detached from one deployment and attached to another at any moment, and when it moves it
@@ -6998,6 +7035,8 @@ async function launchSpec(rec) {
     rec.config = pkg.manifest.configText; rec.appConfigCid = "";
     return {...launchSpecFrom(rec,null,[]), bootstrap:pkg.bytes.toString("base64"), bootstrapManifest:pkg.manifest, secretsStaged:false};
   }
+  // never the relay-held legacy launch below: an envelope edited away from its commitment fails here, not elsewhere
+  if (ISOLATION_DIRECT_ONLY) throw new Error("this direct-only host launches only owner-committed startup deployments");
   const relayHeld = PROVISION_BACKEND === "vm" && rec._onchain;
   // The per-app isolation tier never takes secret VALUES into this node (enclave-99's L6): a release guest fetches
   // them from the relay itself, sealed to it, and no other guest there may have any. It asks only WHETHER some are
@@ -10345,6 +10384,8 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
   let claimOpts;
   try { claimOpts = parseDepOptions(d.configCid, d.gpuMilli); }
   catch (e) { return "deployment options refused: " + e.message; }
+  if (ISOLATION_DIRECT_ONLY && !claimOpts.guestBootstrap)
+    return "this direct-only host serves only owner-committed startup deployments (guestBootstrap); this one has none";
   const pinRefusal = placementRefusal(d.configCid, _enclaveId);
   if (pinRefusal) return pinRefusal;
   // Routing: the deployment bought two shares. GPU work (gpuMilli > 0)
@@ -10852,6 +10893,100 @@ async function adopt(d, g, firewall, slice, { resume = false } = {}) {
     releaseLease(rec.id, "provision failed").catch(() => {});   // never served here: no proof, we earn nothing
   }
   saveStateSoon();
+}
+
+// DIRECT_CLAIM_SELFTEST='{"rows":[…],"catalog":{…},"health":{…},"bytes":"<b64>","replicas":{"<gateway>":how},…}'
+// (test/direct-only-supervisor.test.mjs): the REAL claim sweep (or a hint) -> considerClaim -> tryClaim -> adopt ->
+// provisionTenant -> launchSpec -> spawnContainer -> ticket pump for each row. Chain READS are answered from `catalog`
+// and the rows, the operator's transactions are recorded rather than sent, guestd is scripted, and globalThis.fetch is
+// a recorder in which ONLY the configured replicas answer (how: "serve" | "refuse" | "throw" | "corrupt" | "redirect" |
+// {"bytes":"<b64>"}); every other origin throws. The seam only replaces bindings, as the seams above do. Prints
+// {calls, reads, txs, prefetched, posted, deleted, records, declines} and exits.
+if (process.env.DIRECT_CLAIM_SELFTEST) {
+  const c = JSON.parse(process.env.DIRECT_CLAIM_SELFTEST);
+  const calls = [], reads = [], txs = [], prefetched = [], posted = [], deleted = [];
+  const bytes = Buffer.from(c.bytes, "base64"), lower = (a) => String(a).toLowerCase();
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url); calls.push(u);
+    const base = Object.keys(c.replicas || {}).find((b) => u.startsWith(b + "/"));
+    const how = base ? c.replicas[base] : "throw";
+    if (how === "throw") throw new TypeError("fetch failed: not reachable from this test");
+    if (how === "redirect") {
+      if (init.redirect === "error") throw new TypeError("fetch failed: redirect refused");
+      return new Response("", { status: 302, headers: { location: "http://203.0.113.9/elsewhere" } });
+    }
+    if (how === "refuse") return new Response("not held", { status: 503 });
+    if (how === "corrupt") return new Response(Buffer.concat([bytes, Buffer.from(" ")]));
+    return new Response(how && how.bytes ? Buffer.from(how.bytes, "base64") : bytes);
+  };
+  const rowOf = (id) => c.rows.find((r) => lower(r.id) === lower(id));
+  readLedgerContract = async (functionName, args) => {
+    reads.push({ address: lower(DEPLOYMENTS_ADDRESS), functionName });
+    if (functionName === "get" && rowOf(args[0])) return (c.latest && c.latest[lower(args[0])]) || rowOf(args[0]);
+    throw new Error("unscripted ledger read " + functionName);
+  };
+  chainClient.readContract = async ({ address, functionName, args }) => {
+    reads.push({ address: lower(address), functionName });
+    const k = c.catalog;
+    switch (functionName) {
+      case "catalogSchema": return 7n;
+      case "getApp": return lower(args[0]) === lower(k.app) ? { appId: k.app, publisher: k.publisher, slug: k.slug, name: k.slug,
+        description: "", versionCount: 1n, createdAt: 0n, updatedAt: 0n, active: true } : { appId: ZERO32, versionCount: 0n };
+      case "getVersion": return { cid: k.cid, version: k.version, vramMb: 0, gpuGflops: 0, memMb: k.memMb, cpuGflops: 0,
+        createdAt: 0n, verified: true, yanked: false, ports: k.ports || "", approval: 1, config: k.config || "" };
+      case "versionFee": return 0n;
+      case "versionConfigCid": return "";
+      case "deploymentsSchema": return 13n;
+      case "capOf": return 0n;
+      case "claimBond6": return 0n;
+      case "claimableBy": return true;
+    }
+    throw new Error("unscripted chain read " + functionName);
+  };
+  sendOperatorTx = (address, _abi, functionName, args) => {
+    txs.push({ address: lower(address), functionName, args: args.map(String) });
+    const p = Promise.resolve("0x" + "ab".repeat(32));
+    p.receipt = Promise.resolve({ status: "success", logs: [] });
+    return p;
+  };
+  leaseFromReceipt = () => c.leaseUntil;
+  const views = new Map();
+  if (c.held) views.set(c.held.id, c.held);
+  vmReq = async (method, path, body) => {
+    if (method === "GET" && path === "/health") return { status: 200, body: c.health };
+    if (method === "POST" && path === "/prefetch") { prefetched.push(body); return { status: 200, body: { appId: c.appId, bytes: 1, seconds: 0 } }; }
+    if (method === "GET" && path === "/vms") return { status: 200, body: { vms: [...views.values()] } };
+    if (method === "POST" && path === "/vms") {
+      posted.push(body);
+      const held = [...views.values()].find((v) => v.name === body.name);
+      if (held) return { status: 409, body: { id: held.id } };
+      const id = "gd" + String(posted.length).padStart(8, "0");
+      views.set(id, { id, name: body.name, status: "running", appId: c.appId, runtimeId: body.derive.runtimeId,
+        recordSha256: derivationDigest(body.derive), directBootstrap: !!body.bootstrap,
+        bootstrapSha256: body.bootstrap ? createHash("sha256").update(Buffer.from(body.bootstrap, "base64")).digest("hex") : undefined });
+      return { status: 201, body: { id, appId: c.appId, recordSha256: derivationDigest(body.derive) } };
+    }
+    const m = /^\/vms\/([A-Za-z0-9-]+)$/.exec(path);
+    if (m && method === "GET") return views.has(m[1]) ? { status: 200, body: views.get(m[1]) } : { status: 404, body: {} };
+    if (m && method === "DELETE") { deleted.push(m[1]); views.delete(m[1]); return { status: 200, body: {} }; }
+    return { status: 404, body: {} };
+  };
+  _vmTech = "amd-sev-snp"; _enclaveId = c.enclaveId; _advertisedEndpoint = c.endpoint; _firstClaimSweepAt = Date.now();
+  const hold = setInterval(() => {}, 250);
+  const settled = (id) => { const r = deployments.get(id); return !r ? _sweepDeclines.has(id) : ["running", "failed"].includes(r.status); };
+  // a hint awaits its own claim; a sweep starts new claims in the background, so wait for each row to settle
+  if (c.hint) for (const d of c.rows) { const why = await considerClaim(d, { hinted: true }); if (why) _sweepDeclines.set(d.id, why); }
+  else {
+    await claimSweep(c.rows);
+    for (const t0 = Date.now(); Date.now() - t0 < 15_000 && !c.rows.every((d) => settled(d.id));) await new Promise((r) => setTimeout(r, 50));
+  }
+  await new Promise((r) => setTimeout(r, 100));   // the pump's first poll
+  clearInterval(hold);
+  const records = Object.fromEntries(c.rows.map((d) => { const r = deployments.get(d.id);
+    return [d.id, r ? { status: r.status, error: r.error || null, vmId: r._vmId || null, config: r.config } : null]; }));
+  console.log(JSON.stringify({ calls, reads, txs, prefetched, posted, deleted, records,
+    declines: Object.fromEntries(c.rows.map((d) => [d.id, _sweepDeclines.get(d.id) || null])) }));
+  process.exit(0);
 }
 
 // Graceful shutdown: release every held lease (refunds the unused tail and
