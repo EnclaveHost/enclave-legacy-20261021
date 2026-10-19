@@ -2,6 +2,7 @@
 // production values into the bundle; these defaults are a placeholder that fails closed (no vault).
 export const MEASURED = Object.freeze({
   chainId: 8453,
+  transport: 'direct',
   vault: "0x0000000000000000000000000000000000000000",
   hostOwnership: "0x0000000000000000000000000000000000000000",
   rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://base.public.blockpi.network/v1/rpc/public"],

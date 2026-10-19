@@ -353,6 +353,52 @@ of each encrypted bundle. Existing ciphertext is not transferable to a new
 independent public key without an authorized decrypt/re-encrypt or separately
 verified handover. None of these source tests proves live custody migration.
 
+## Direct custody transport
+
+New custodian images default to `--transport direct`. The bundled guest
+supervisor starts only the custodian; it does not start the fleet-tunnel agent
+or contact Enclave's relay. The selection is measured, so unmeasured host
+configuration cannot switch a direct image back to tunnel mode. Explicit
+`--transport tunnel` remains available for intentional legacy transport use.
+This changes the image measurement and requires a new compatible deployment.
+
+The host launcher signs a binding only when the guest reports a consistent
+identity/encryption key and its endpoint and registry ID match the host's
+configuration. It checks the
+current operator and accepted owner through the vault's pinned registry and
+ownership contracts with RPC quorum. It no longer asks the mutable address
+book which registry to use. Existing guest signatures are verified before
+being treated as a completed binding. Inactive/unowned hosts, other operators,
+and substituted machine records are refused before the operator signs.
+
+An operator serves its own HTTPS origin and certificate. For a host config
+containing `endpoint: "https://custody.operator.example"` and `mgmtPort: 8788`:
+
+```sh
+node scripts/prepare-custodian-ingress.mjs host-config.json NEW_CADDYFILE
+caddy validate --config NEW_CADDYFILE --adapter caddyfile
+```
+
+The generated site sends only public custody API methods/routes to the
+loopback guest forwarding port. `/state`, `/submit`, `/receipts` and
+`/v2/custody/host-binding` are not public routes. The distinct `hostPort` state
+service must remain loopback-only. The host performs binding locally through
+`mgmtPort`. Configure the operator's DNS and normal HTTPS server with the
+generated site; no Enclave tunnel registration or certificate API is involved.
+The generator writes a new file and does not reload any server. The proxy
+terminates ordinary HTTPS outside the TEE; protocol signatures, attestation
+and HPKE provide the end-to-end custody protection. It is not an attested TLS
+endpoint and does not replace the recipient's protocol checks.
+
+Five direct-transport tests pass. They execute the actual bundled supervisor
+with conflicting host configuration, exercise operator-binding rejection, and
+run the generated site through Caddy 2.11.7 over verified local TLS. Public
+protocol payloads and recipient-encrypted values cross the proxy intact; eight
+private/wrong-method requests receive 404 without reaching the upstream.
+The integration uses a temporary test CA and a simulated guest HTTP service;
+it does not establish real hardware custody or public certificate issuance.
+The existing production custodian has not been restarted or moved.
+
 ## Custody chain availability verified before activation
 
 The old custody reader let any RPC force an unusably high target block and

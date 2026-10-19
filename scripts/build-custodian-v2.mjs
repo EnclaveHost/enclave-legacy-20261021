@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // The custody v2 CUSTODIAN image (docs/security/secret-custody-v2.md §8.1): a measured SEV-SNP guest made from a
 // digest-checked metal control image (its kernel, PID 1, Node, guest modules and the fleet-tunnel agent), with:
-//   - /opt/metal/gsup.mjs replaced by custody/v2/cvm-gsup.mjs (runs the custodian + the tunnel agent, nothing else);
+//   - /opt/metal/gsup.mjs replaced by bundled custody/v2/cvm-gsup.mjs (direct custodian by default; explicit tunnel mode available);
 //   - /opt/custodian/custodian.mjs: custody/v2/daemon.mjs bundled, with the MEASURED chain config (vault, RPCs) baked in;
 //   - /opt/custodian/snpkey: the derived-key helper (isolation/m2/cmd/snpkey), static.
 // Every other cpio entry is copied byte for byte. The launch measurement is printed (sev-snp-measure, 2 vCPUs).
 //
-//   node scripts/build-custodian-v2.mjs --base <metal dist dir> --out <new dir> --vault 0x… --host-ownership 0x… [--vcpus 2]
+//   node scripts/build-custodian-v2.mjs --base <metal dist dir> --out <new dir> --vault 0x… --host-ownership 0x… [--vcpus 2] [--transport direct|tunnel]
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
@@ -21,6 +21,8 @@ const arg = (n, d) => { const i = process.argv.indexOf("--" + n); return i > 0 ?
 const BASE = path.resolve(arg("base", "")), OUT = path.resolve(arg("out", "")), VAULT = String(arg("vault", "")).toLowerCase();
 const HOST_OWNERSHIP = String(arg("host-ownership", "")).toLowerCase();
 const VCPUS = String(arg("vcpus", "2"));
+const TRANSPORT=arg('transport','direct');
+if(!['direct','tunnel'].includes(TRANSPORT))throw Error('--transport must be direct or tunnel');
 const ENCLAVE_OWNER="0x0b2d009c0c9af05b12100d77f3c815fea822ee61";
 const ownerFile=arg("independent-owners",null);
 const INDEPENDENT_OWNERS=ownerFile ? independentOwners(JSON.parse(fs.readFileSync(ownerFile,'utf8')),ENCLAVE_OWNER) : null;
@@ -41,13 +43,14 @@ if (sha(fs.readFileSync(path.join(BASE, "vmlinuz"))) !== m.kernel.sha256) throw 
 
 // 2. the custodian bundle with the measured config
 const measured = `export const MEASURED = Object.freeze(${JSON.stringify({
-  chainId: 8453, vault: VAULT, hostOwnership: HOST_OWNERSHIP,
+  chainId: 8453, transport:TRANSPORT, vault: VAULT, hostOwnership: HOST_OWNERSHIP,
   rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://base.public.blockpi.network/v1/rpc/public"],
   minAgree: 3, confirmations: 2, maxAgeSec: 120, enclaveOwner: ENCLAVE_OWNER, independentOwners: INDEPENDENT_OWNERS,
   capacityContract: "0x87c7266543ff5839b2c20226bd9b3cd511a23641", witnesses: { "0xd80bf435467df887f1031743c2a2125a130fe225": "enclave-bootstrap" } })});\n`;
-const bundled = await build({ entryPoints: [path.join(ROOT, "custody/v2/daemon.mjs")], bundle: true, platform: "node", format: "esm", target: "node22",
+const bundleOptions={ bundle: true, platform: "node", format: "esm", target: "node22",
   write: false, legalComments: "none", banner: { js: 'import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);' },
-  plugins: [{ name: "measured", setup(b) { b.onLoad({ filter: /custody[\\/]v2[\\/]measured\.mjs$/ }, () => ({ contents: measured, loader: "js" })); } }] });
+  plugins: [{ name: "measured", setup(b) { b.onLoad({ filter: /custody[\\/]v2[\\/]measured\.mjs$/ }, () => ({ contents: measured, loader: "js" })); } }] };
+const bundled = await build({...bundleOptions,entryPoints:[path.join(ROOT,'custody/v2/daemon.mjs')]});
 const custodianJs = Buffer.from(bundled.outputFiles[0].contents);
 const tmpKey = path.join(OUT + ".snpkey");
 execFileSync("go", ["build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w -buildid=", "-o", tmpKey, "./cmd/snpkey"],
@@ -61,7 +64,7 @@ if(INDEPENDENT_OWNERS){
   dkg=fs.readFileSync(binary);
   dkgBuild={rustc:execFileSync('rustc',['--version'],{encoding:'utf8'}).trim(),cargo:execFileSync('cargo',['--version'],{encoding:'utf8'}).trim(),target:'x86_64-unknown-linux-musl',lockSha256:sha(fs.readFileSync(path.join(ROOT,'custody/dkg/Cargo.lock')))};
 }
-const gsup = fs.readFileSync(path.join(ROOT, "custody/v2/cvm-gsup.mjs"));
+const gsup=Buffer.from((await build({...bundleOptions,entryPoints:[path.join(ROOT,'custody/v2/cvm-gsup.mjs')]})).outputFiles[0].contents);
 
 // 3. rewrite the newc cpio: replace gsup, append the custodian dir + files before the trailer
 const raw = zlib.gunzipSync(gz);
@@ -105,6 +108,7 @@ const cmdline = fs.readFileSync(path.join(BASE, "cmdline"), "utf8").trim().repla
 fs.writeFileSync(path.join(OUT, "cmdline"), cmdline + "\n");
 const manifest = { role: "enclave-custodian-v2", commit, vault: VAULT, hostOwnership: HOST_OWNERSHIP, base: { dir: path.basename(BASE), initramfsSha256: sha(gz), kernelSha256: m.kernel.sha256 },
   independentOwners: INDEPENDENT_OWNERS,
+  transport:TRANSPORT,
   dkgBuild,
   files: { "/opt/metal/gsup.mjs": sha(gsup), "/opt/custodian/custodian.mjs": sha(custodianJs), "/opt/custodian/snpkey": sha(snpkey), ...(dkg?{'/opt/custodian/dkg':sha(dkg)}:{}) },
   kernel: { sha256: m.kernel.sha256 }, initramfs: { sha256: sha(out), bytes: out.length }, cmdline, vcpus: Number(VCPUS) };
