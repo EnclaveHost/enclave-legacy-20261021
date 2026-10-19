@@ -110,7 +110,7 @@ test("Featured is the first tab, selected, and the hero no longer holds the card
   const seg = html.slice(html.indexOf('id="storeFilter"'), html.indexOf("</div>", html.indexOf('id="storeFilter"')));
   const order = [...seg.matchAll(/data-filter="([a-z]+)"/g)].map((m) => m[1]);
   assert.equal(order[0], "featured", "and it is the first button");
-  assert.deepEqual(order, ["featured", "approved", "pending", "rejected", "delisted"], "the moderation tabs are kept, in place");
+  assert.deepEqual(order, ["featured", "approved", "all", "pending", "rejected", "delisted"], "All releases remains accessible alongside the moderation views");
   assert.match(seg, /data-filter="featured" class="on" type="button" aria-pressed="true"/, "selected state is on the button and announced");
   assert.doesNotMatch(seg, /data-filter="approved"[^>]*class="on"/, "and Approved is no longer the selected one");
   assert.doesNotMatch(html, /featuredSlot/, "the hero's aside is gone, so the banner uses the full width");

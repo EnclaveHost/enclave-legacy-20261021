@@ -183,10 +183,14 @@ test("the agent's chain RPCs follow the node's list: a changed list is written o
   const w = world();
   await w.enroll.pass();
   assert.deepEqual(w.read().chain.rpc, ["https://rpc"], "a fresh config takes the node's list");
+  const cfg = w.read();
+  cfg.chain.authorityPins = {deployments:'0x'+'11'.repeat(20),registry:'0x'+'22'.repeat(20),connectivity:'0x'+'00'.repeat(20),sessionVaultFactory:'0x'+'00'.repeat(20)};
+  fs.writeFileSync(path.join(w.agentDir, 'privacy-config.json'), JSON.stringify(cfg));
   const before = w.restarts();
   w.config.chainRpc = ["https://base-rpc.publicnode.com", "https://base.gateway.tenderly.co", "https://base-public.nodies.app"];
   await w.enroll.pass();
   assert.deepEqual(w.read().chain.rpc, w.config.chainRpc);
+  assert.deepEqual(w.read().chain.authorityPins, cfg.chain.authorityPins, "RPC refresh preserves the operator's pinned authorities");
   assert.equal(w.restarts(), before + 1, "one restart for the new list");
   assert.ok(w.logs.some((m) => /chain RPCs now base-rpc\.publicnode\.com, base\.gateway\.tenderly\.co, base-public\.nodies\.app/.test(m)));
   await w.enroll.pass();
