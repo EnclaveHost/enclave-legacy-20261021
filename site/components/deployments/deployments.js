@@ -295,7 +295,7 @@ function shortImg(s){ if (!s) return ""; return s.length > 44 ? s.slice(0, 42) +
 const FILTER_KEY = "enclave_dash_filters";
 // Decline reasons that no amount of waiting resolves (mirrors the enclave's
 // claim-gauntlet wording; deploy.js's watchClaimAndRun keys on the same set)
-const WHY_TERMINAL = /below the app|minimum shares|yanked|not .{0,12}approved|rejected|delisted|unlisted|configcid|retired|deactivated/i;
+const WHY_TERMINAL = /below the app|minimum shares|configcid|retired|deactivated/i;
 // Who can act on a row: "wallet" rows are owned by the connected wallet
 // (on-chain txs + enclave-session reads); "vault" rows are owned by the
 // account's credit vault (money/control ops are passkey-signed through the

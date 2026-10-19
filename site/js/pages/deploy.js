@@ -419,8 +419,10 @@ async function watchClaimAndRun(id, dPre, w, prefer){
           if (h && h.accepted === false && h.reason && h.reason !== lastReason){
             lastReason = h.reason;
             w.line("warn", "[!] fleet declines to claim: " + h.reason);
-            if (/yanked|not.approved|rejected|delisted|unlisted|below|minimum/i.test(h.reason)){
-              w.line("dimln", "    this won't resolve by waiting - fix the app version in the catalog. The deployment stays funded and is claimed automatically once deployable.");
+            if (/yanked|not.approved|rejected|delisted|unlisted/i.test(h.reason)){
+              w.line("dimln", "    this host declines the release; another host may accept it under its own policy. The deployment remains queued.");
+            } else if (/below|minimum/i.test(h.reason)){
+              w.line("dimln", "    check the deployment's resource allocation against the app's requirements. The deployment remains queued.");
               break;
             }
           }
