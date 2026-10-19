@@ -74,6 +74,7 @@ test('new host enrolls, reconciles an upgrade and rejects changed bytes with eve
  const dry=await reconcileApps({...opts,dryRun:true});assert(dry.changed);assert.equal(reloaded,0);assert.deepEqual(JSON.parse(await fs.readFile(configFile)).apps,[]);
  assert((await reconcileApps(opts)).changed);assert.equal(reloaded,1);
  const cfg=JSON.parse(await fs.readFile(configFile));assert.equal(cfg.apps.length,1);assert.deepEqual(cfg.apps[0].names,['independent.example']);
+ assert.equal(cfg.apps[0].publishToMirror,false,'new apps do not acquire an implicit API publication dependency');
  let expected=JSON.parse(await fs.readFile(cfg.apps[0].expectedFile));assert.equal(expected.measurement,instance.Measurement);
  instance.Measurement='55'.repeat(48);await fs.writeFile(path.join(guest,'instance.json'),JSON.stringify(instance));
  assert((await reconcileApps({...opts,namesFile:undefined})).changed);assert.equal(reloaded,2);
@@ -82,4 +83,10 @@ test('new host enrolls, reconciles an upgrade and rejects changed bytes with eve
  instance.Measurement='66'.repeat(48);await fs.writeFile(path.join(guest,'instance.json'),JSON.stringify(instance));
  assert.equal((await reconcileApps(opts)).changed,false);assert.equal(reloaded,2);
  assert.equal(JSON.parse(await fs.readFile(cfg.apps[0].expectedFile)).measurement,expected.measurement);
+ await fs.writeFile(path.join(guest,'app.bundle'),bundle());
+ cfg.apps=[];cfg.mirrorNewApps=true;cfg.mirror='https://compatibility.example';await fs.writeFile(configFile,JSON.stringify(cfg));
+ assert((await reconcileApps(opts)).changed);
+ assert.equal(JSON.parse(await fs.readFile(configFile)).apps[0].publishToMirror,true,'explicit legacy mirroring remains available');
+ cfg.mirrorNewApps='false';await fs.writeFile(configFile,JSON.stringify(cfg));
+ await assert.rejects(reconcileApps(opts),/mirrorNewApps must be boolean/);
 });

@@ -90,6 +90,23 @@ Control-circuit probes use the configured signed-record directories, or the
 explicitly configured relay when no directories are supplied. The transport has
 no built-in Enclave API probe URL.
 
+New Linux app enrollments publish to configured signed-record directories and
+default `publishToMirror` to false. Existing per-app choices are preserved. Set
+top-level `mirrorNewApps: true` together with an explicit `mirror` origin only if
+new apps must also push to a legacy compatibility API. Per-app
+`publishToMirror: false` takes effect on SIGHUP without rebuilding circuits.
+
+Legacy API consumers can instead pull public signed route publications with
+`scripts/network/mirror-public-providers.mjs`: set `routes: true` in its JSON
+configuration alongside `directories` and `destination`. This reads the signed
+directories every ten seconds and submits unexpired public envelopes to the
+destination's normal signature, current policy, provider and lease checks.
+Withdrawals and replay protection remain in force. No host key, private BYO
+configuration or diagnostic host status is copied. The API's policy must already
+match; this compatibility reader cannot override policy or make an independent
+host available through an API that refuses it. Production DNS can continue using
+its local signed directory even when that API is unavailable.
+
 ### Provider bootstrap without Enclave's relay
 
 `enclaveNetwork.directories` can supply the discovery origins without any `relay`

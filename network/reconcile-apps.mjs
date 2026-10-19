@@ -9,7 +9,8 @@
 // change leaves the agent refusing the new guest, and a privacy-routed app has no fallback route.
 // A deployment not yet in the config is enrolled on the Enclave network (docs/design/enclave-network.md): its
 // expectation, locally configured names (existing names are preserved) and
-// publishToMirror: true. Its route is the owner's network policy, which the agent reads; nothing here decides it.
+// publishes directly to configured directories. API mirroring is opt-in via
+// mirrorNewApps: true. Its route is still decided by the owner's signed policy.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -25,6 +26,8 @@ export async function reconcileApps({configFile,guestdRoot,pinFile,namesFile,dry
 if(!configFile||!guestdRoot||!pinFile)throw new Error('usage: --config FILE --guestd-root DIR --contract-pins FILE [--names-file FILE] [--dry-run]');
 const cfg=await readJSON(configFile);
 if(!cfg.enclaveNetwork)throw new Error('the privacy agent config has no enclaveNetwork section: TUNA is retired, and apps are enrolled only on the Enclave network');
+if(cfg.mirrorNewApps!==undefined&&typeof cfg.mirrorNewApps!=='boolean')throw Error('mirrorNewApps must be boolean');
+if(cfg.mirrorNewApps===true&&!cfg.mirror)throw Error('mirrorNewApps requires an explicit mirror origin');
 const runner=String(cfg.runner).toLowerCase(),appsDir=path.dirname(configFile);
 const pinDocument=await readJSON(pinFile);
 const configuredNames=namesFile?validateReconciliationNames(await readJSON(namesFile)):{};
@@ -79,7 +82,7 @@ for(const row of mine){
   if(DRY)continue;
   await fs.mkdir(dir,{recursive:true,mode:0o700});
   await writeAtomic(path.join(dir,'expected.json'),JSON.stringify(expected,null,2));
-  cfg.apps.push({deploymentId:id,names,expectedFile:path.join(dir,'expected.json'),internetMode:'enclave-network',publishToMirror:true});
+  cfg.apps.push({deploymentId:id,names,expectedFile:path.join(dir,'expected.json'),internetMode:'enclave-network',publishToMirror:cfg.mirrorNewApps===true});
   changed=true;log(`${id.slice(0,10)}: enrolled on the Enclave network`);
 }
 if(changed&&!DRY){

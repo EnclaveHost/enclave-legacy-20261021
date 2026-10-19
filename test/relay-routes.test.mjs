@@ -9,6 +9,7 @@ import {RoutePublisher} from '../network/route-publisher.mjs';
 import {DurableState} from '../network/durable-state.mjs';
 import {defaultNetworkPolicy,validateNetworkPolicy} from '../network/network-policy.mjs';
 import {checkMap} from '../network/preflight.mjs';
+import {mirrorRoutePass} from '../scripts/network/mirror-public-providers.mjs';
 
 const id='0x'+'ab'.repeat(32),runner='0x'+'cd'.repeat(32),endpoint='https://api.enclave.host/t/metal0';
 const account=privateKeyToAccount('0x'+'03'.repeat(32));
@@ -29,6 +30,31 @@ async function world(t,{lease:over={},policy=validateNetworkPolicy(defaultNetwor
  w.row=()=>({...w.lease,leaseUntil:w.lease.leaseUntil/1000});
  return w;
 }
+
+test('legacy API pulls public routes without a host POST, retains signature admission and observes withdrawal/expiry',async t=>{
+ const w=await world(t);let publication={...await w.publication(),status:{secret:'never copy'},privateData:'never copy'},posts=0;
+ const sources={read:async p=>{assert.equal(p,'/v1/network/records');return [{value:{publications:[publication]}},{value:{publications:[publication]}}];}};
+ const fetch=async(url,init)=>{
+  posts++;assert.equal(url,'http://127.0.0.1:8000/v1/network/routes');assert.equal(init.redirect,'error');assert.equal(init.credentials,'omit');
+  assert.equal(init.body.includes('never copy'),false);
+  try{await w.mirror.publish(JSON.parse(init.body).publication);return Response.json({ok:true});}
+  catch{return Response.json({error:'route_publication_refused'},{status:400});}
+ };
+ const options={sources,destination:'http://127.0.0.1:8000',fetch,sent:new Map(),now:()=>w.now};
+ assert.deepEqual(await mirrorRoutePass(options),{accepted:1,unchanged:1,rejected:0});
+ assert.deepEqual((await w.mirror.map([w.row()])).labels.abababab.addresses,exits);assert.deepEqual(w.statuses,[]);
+ assert.equal((await mirrorRoutePass(options)).unchanged,2);assert.equal(posts,1);
+ const valid=publication;publication={...await w.publication(),bundle:{...(await w.publication()).bundle,signature:'forged'}};
+ assert.equal((await mirrorRoutePass(options)).rejected,1);const failedPosts=posts;
+ assert.equal((await mirrorRoutePass(options)).rejected,1);assert.equal(posts,failedPosts+1,'failed imports retry');
+ publication={...valid,bundle:{...valid.bundle,privateData:'never copy'}};
+ assert.equal((await mirrorRoutePass(options)).rejected,2);assert.equal(posts,failedPosts+1);
+ publication=await w.publication([]);assert.equal((await mirrorRoutePass(options)).accepted,1);
+ assert.equal((await w.mirror.map([w.row()])).labels.abababab,undefined,'signed withdrawal takes effect');
+ w.now=publication.bundle.record.expiresAt+1;
+ assert.deepEqual(await mirrorRoutePass(options),{accepted:0,unchanged:0,rejected:0});
+ await assert.rejects(mirrorRoutePass({...options,sources:{read:async()=>{throw Error('all sources refused');}}}),/all sources refused/);
+});
 
 test('a v5 publication is mapped to both exits, with the Enclave-network DNS label, and passes the deploy preflight',async t=>{
  const w=await world(t);
