@@ -31,7 +31,8 @@ trust settings, and no mutable address-book lookup replaces a pin.
 | `authorityPins` | Explicit `deployments`, `registry`, `connectivity`, and `sessionVaultFactory` addresses; zero disables optional authorities |
 | `directories` | One to eight explicit HTTP(S) literal-IP origins serving `/v1/network/records` |
 | `checkers` | Explicit trusted provider-qualification signer addresses |
-| `expected` | `appRef`, `configCid`, `appSha256`, and `runtimeId`; include the applicable `requiresConfigBundleV5`, `requiresSecretsV1`, and `requiresConfigSocketServer` flags |
+| `expected` | For explicitly pinned apps: `appRef`, `configCid`, `appSha256`, and `runtimeId`; include applicable config/secret requirements. Omit when using `startup`. |
+| `startup` | Alternative to `expected`: `{ "gateways": ["http://<literal-IP>:8189/ipfs"] }`, or exact public package bytes in `packageBase64`. This mode requires an explicit SNP runtime policy. |
 | `linux` | SNP `measurement`, `runtime`, `minTcb`, and applicable `release`/`expectedVmpl` policy |
 
 For offline SNP certificate verification, `linux` may contain `vcekBase64`,
@@ -44,8 +45,51 @@ The live test below covers SNP only.
 Obtain app and runtime expectations from independently trusted build/deployment
 material. A config CID is not by itself the compiled guest's AppID. An owner
 startup bundle can incorporate configuration and secret commitments. Do not
-accept a peer's claimed expected hash as your own trust anchor. The native client
-does not yet derive these expectations from an owner-committed startup package.
+accept a peer's claimed expected hash as your own trust anchor. For deployments
+using owner-committed startup, `startup` mode derives app and runtime IDs from the
+exact package hash in the current deployment's ledger envelope. The package must
+name that chain, pinned ledger, full deployment ID, current owner, current app
+reference and the runtime selected by the client. It never falls back to a legacy
+config or a host's claimed app identity. Public package bytes may travel over
+explicitly selected literal-IP HTTP gateways: their hash and chain scope provide
+authority. Credentials and redirects are forbidden. Modified bytes, changed
+ownership and missing packages fail closed.
+
+### Reproduce the measurement instead of copying a host profile
+
+Start with a base profile containing the network pins, literal directory and
+startup gateway addresses, and your SNP firmware floor/collateral policy. Omit
+`expected`, and omit `linux.measurement`, `linux.runtime` and `linux.release`.
+Choose an independently reviewed release ID and obtain that release's directory
+and the app's contract bundle. Their transport need not be trusted: every release
+file is verified against the selected pin, and the bundle's SHA-256 must equal
+the owner-committed AppID. This command uses the existing image reconstruction
+tool, which requires Go, Python and `sev-snp-measure` on the client machine:
+
+```sh
+node scripts/network/native-profile.mjs \
+  --profile base-profile.json \
+  --release /path/to/release --release-id <64-hex-reviewed-release> \
+  --bundle /path/to/app.bundle --vcpus 1 \
+  --out new-client-profile.json
+node scripts/network/native-get.mjs new-client-profile.json /ping
+```
+
+The generator reads the owner commitment through the pinned RPC quorum, fetches
+and verifies the public package, checks the exact bundle hash, reconstructs the
+image and measurement, checks the resulting runtime identity, and re-reads chain
+state before writing the new profile. It refuses to overwrite an existing file.
+No host-supplied predicted measurement participates. A profile can be prepared for
+an inactive deployment, but that never authorizes a connection: the native client
+still requires an active public lease. Package updates selecting different app
+bytes or runtime images need a freshly reproduced profile. Cached public package
+bytes are rechecked against current owner scope before every use.
+
+This removes the need to obtain per-app identity or predicted measurements from
+Enclave's host/control service. Selecting trusted runtime source/release pins,
+firmware floors, chain readers and checker keys remains the client's explicit
+trust decision. This command does not automatically acquire release or bundle
+files or prove their independent retention.
 
 Keep `stateDir` persistent, with one process owning it. Signed policies, route
 withdrawals and sequence floors survive restart. Corrupted state fails closed.

@@ -1,6 +1,7 @@
 // Public startup packages: only the guest's fresh chain verification authorizes
 // startup. This module checks bytes and scope before a host spends a lease.
 import {createHash} from 'node:crypto';
+import {isIP} from 'node:net';
 export const MAX_PACKAGE_BYTES=128*1024;
 const hex32=/^[0-9a-f]{64}$/, addr=/^0x[0-9a-fA-F]{40}$/, id32=/^0x[0-9a-f]{64}$/;
 const nonzero=s=>!/^0x?0*$/.test(s)&&!/^0+$/.test(s);
@@ -57,12 +58,15 @@ export async function readBoundedResponse(res,limit){
   finally{await reader.cancel().catch(()=>{});}
   return Buffer.concat(parts,size);
 }
-export async function fetchPackage(intent,scope,{gateways,fetchImpl=fetch,timeoutMs=8000}={}){
+export async function fetchPackage(intent,scope,{gateways,fetchImpl=fetch,timeoutMs=8000,allowHttpIPs=false}={}){
   if(!Array.isArray(gateways)||!gateways.length||gateways.length>8)throw Error('startup package gateways required (1–8)');
-  const bases=gateways.map(raw=>{const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||u.search||u.hash)throw Error('startup gateways must be HTTPS without credentials/query');return u.href.replace(/\/$/,'');});
+  // Public bytes may travel over an explicitly selected literal HTTP origin:
+  // the caller's chain commitment authenticates them, never the gateway. This
+  // option does not permit uploads, credentials or uncommitted configuration.
+  const bases=gateways.map(raw=>{const u=new URL(raw);if(!(u.protocol==='https:'||allowHttpIPs&&u.protocol==='http:'&&isIP(u.hostname.replace(/^\[|\]$/g,'')))||u.username||u.password||u.search||u.hash)throw Error('startup gateways must be HTTPS without credentials/query (or explicitly allowed HTTP IPs)');return u.href.replace(/\/$/,'');});
   const cid=packageCID(intent.sha256),controller=new AbortController();
   try{return await Promise.any(bases.map(async base=>{
-    const res=await fetchImpl(`${base}/${cid}`,{redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(timeoutMs)])});
+    const res=await fetchImpl(`${base}/${cid}`,{redirect:'error',credentials:'omit',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(timeoutMs)])});
     if(!res.ok){await res.body?.cancel();throw Error('startup gateway refused');}
     return verifyPackage(await readBoundedResponse(res,MAX_PACKAGE_BYTES),intent,scope);
   }));}catch{throw Error('no gateway returned the committed startup package');}finally{controller.abort();}

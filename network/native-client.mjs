@@ -14,6 +14,8 @@ import {recordHash} from './route-record.mjs';
 import {probeGuest} from './guest-probe.mjs';
 import {DirectHttpsAgent} from './socks-connect.mjs';
 import {seedCertChain} from '../relay/snp-verify.mjs';
+import {startupExpectation,inlineStartupBytes} from './startup-expectation.mjs';
+import {bootstrapIntent} from '../sdk/bootstrap/package.mjs';
 
 const ZERO='0x'+'0'.repeat(40);
 const identity=l=>recordHash(Object.fromEntries(['id','chainId','deployments','owner','runner','runnerOperator','appRef','configCid'].map(k=>[k,l[k]])));
@@ -26,9 +28,16 @@ export class NativeClient {
     if(!p||p.version!==1||!/^0x[0-9a-f]{64}$/.test(p.deploymentId||'')||
       !/^(?=.{1,253}$)[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(p.hostname||'')||
       typeof p.stateDir!=='string'||!path.isAbsolute(p.stateDir)||
-      !p.expected||typeof p.expected.appRef!=='string'||typeof p.expected.configCid!=='string'||
-      !/^[0-9a-f]{64}$/.test(p.expected.appSha256||'')||!/^[0-9a-f]{64}$/.test(p.expected.runtimeId||'')||
       !(p.linux||p.shield&&p.hostSession||p.pvm))throw Error('explicit native client profile required');
+    if(p.startup!==undefined){
+      if(!p.startup||typeof p.startup!=='object'||Array.isArray(p.startup)||p.expected!==undefined||!p.linux||p.shield||p.pvm||p.hostSession||
+        Object.keys(p.startup).some(k=>!['gateways','packageBase64'].includes(k)))throw Error('owner startup requires an unambiguous SNP runtime policy');
+      this.startupBytes=inlineStartupBytes(p.startup.packageBase64);this.startupCache=null;
+      if(this.startupBytes===undefined&&(!Array.isArray(p.startup.gateways)||!p.startup.gateways.length||p.startup.gateways.length>8))throw Error('explicit startup package sources required');
+      // Keep first-use artifact discovery independent of any DNS authority too.
+      if(p.startup.gateways?.some(raw=>!isIP(new URL(raw).hostname.replace(/^\[|\]$/g,''))))throw Error('native startup requires literal gateway addresses');
+    }else if(!p.expected||typeof p.expected.appRef!=='string'||typeof p.expected.configCid!=='string'||
+      !/^[0-9a-f]{64}$/.test(p.expected.appSha256||'')||!/^[0-9a-f]{64}$/.test(p.expected.runtimeId||''))throw Error('explicit app expectations or owner startup required');
     this.pins=validateNetworkAuthorities(p.authorityPins);
     if(p.linux?.vcekBase64)p.linux.vcek=Buffer.from(p.linux.vcekBase64,'base64');
     if(p.linux?.certChainPem)seedCertChain(p.linux.product,p.linux.certChainPem);
@@ -36,7 +45,7 @@ export class NativeClient {
     this.transport=new DirectoryClient({origins:p.directories,fetch});
     // Literal directory origins make the DNS-independent claim enforceable.
     if(this.transport.origins.some(o=>!isIP(new URL(o).hostname.replace(/^\[|\]$/g,''))))throw Error('native discovery requires literal directory addresses');
-    this.now=now;this.probe=probe;this.operators=new Map();this.tail=Promise.resolve();
+    this.now=now;this.probe=probe;this.fetch=fetch;this.operators=new Map();this.tail=Promise.resolve();
     this.directory=new PublicDirectory({directory:path.join(p.stateDir,recordHash({chainId:p.chainId??8453,pins:this.pins,id:p.deploymentId,checkers:p.checkers})),checkers:p.checkers,now,
       leaseOf:async id=>id===p.deploymentId?this.reader.get(id):null,
       hostOperator:async id=>{
@@ -49,12 +58,19 @@ export class NativeClient {
     const p=this.profile,l=this.reader.get(p.deploymentId);
     if(!l||!l.active||!l.isPublic||l.validUntil<=this.now()||l.leaseUntil<=this.now()||
       l.chainId!==(p.chainId??8453)||l.deployments.toLowerCase()!==this.pins.deployments||
-      l.appRef!==p.expected.appRef||l.configCid!==p.expected.configCid)throw Error('no current lease matching the pinned application');
+      p.expected&&(l.appRef!==p.expected.appRef||l.configCid!==p.expected.configCid))throw Error('no current lease matching the pinned application');
     return l;
   }
   async resolve(){
     const p=this.profile;
-    await this.reader.refresh([p.deploymentId]);this.currentLease();this.operators.clear();
+    await this.reader.refresh([p.deploymentId]);const startLease=this.currentLease();this.operators.clear();
+    let expected=p.expected,provenance={source:'caller-pinned'};
+    if(p.startup){
+      const intent=bootstrapIntent(startLease.configCid);
+      const cached=this.startupCache?.sha256===intent?.sha256?this.startupCache.bytes:undefined;
+      const derived=await startupExpectation(startLease,{runtime:p.linux.runtime,gateways:p.startup.gateways,bytes:this.startupBytes??cached,fetchImpl:this.fetch});
+      expected=derived.expected;provenance=derived.provenance;this.startupCache={sha256:provenance.sha256,bytes:derived.bytes};
+    }
     const answers=await this.transport.read('/v1/network/records');
     let validSnapshots=0;
     for(const {value} of answers){
@@ -70,7 +86,8 @@ export class NativeClient {
     if(!validSnapshots)throw Error('no public record snapshot available');
     const routes=(await this.directory.routes()).deployments[p.deploymentId],lease=this.currentLease();
     if(!routes?.httpsRoutes?.length||routes.expiresAt<=this.now())throw Error('no current verified route');
-    return {routes,lease};
+    if(identity(startLease)!==identity(lease))throw Error('deployment changed during expectation verification');
+    return {routes,lease,expected,provenance};
   }
   // Serialize each client's discovery/proof/send operation. In particular a
   // second request cannot replace its lease context while the first attests.
@@ -89,8 +106,8 @@ export class NativeClient {
       try{
         proofStarted=this.now();
         proof=await this.probe({deploymentId:p.deploymentId,hostname:p.hostname,address:route.address,port:route.port,
-          direct:true,attestationBootstrap:true,expected:p.expected,linux:p.linux,shield:p.shield,hostSession:p.hostSession,pvm:p.pvm});
-        if(proof?.verified!==true||proof.ready!==true||proof.deploymentId!==p.deploymentId||proof.appSha256!==p.expected.appSha256||proof.runtimeId!==p.expected.runtimeId||
+          direct:true,attestationBootstrap:true,expected:initial.expected,linux:p.linux,shield:p.shield,hostSession:p.hostSession,pvm:p.pvm});
+        if(proof?.verified!==true||proof.ready!==true||proof.deploymentId!==p.deploymentId||proof.appSha256!==initial.expected.appSha256||proof.runtimeId!==initial.expected.runtimeId||
           !/^[0-9a-f]{64}$/.test(proof.spkiSha256||''))throw Error('fresh bound guest proof required');
         chosen=route;break;
       }catch(e){failures.push(String(e.message).slice(0,200));}
@@ -120,7 +137,7 @@ export class NativeClient {
         req.once('close',()=>clearTimeout(timer));req.once('error',reject);req.end();
       });
       // Never follow redirects and never retry an application request elsewhere.
-      return {...response,route:chosen,proof,leaseBlock:current.lease.blockNumber,validUntil};
+      return {...response,route:chosen,proof,expectation:current.provenance,leaseBlock:current.lease.blockNumber,validUntil};
     }finally{agent.destroy();}
   }
 }

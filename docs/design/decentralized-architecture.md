@@ -21,7 +21,7 @@ live network of independently operated machines.
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Verified multi-adapter publication and cold reads exist; sealed Sia snapshots now recover real artifacts with indexd blocked. Live writes, funding and renewal still depend on the existing service |
-| Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
+| Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Native full-ID access and owner-committed profile reproduction pass with DNS/control blocked; browser naming and production cutover remain |
 | Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
 
 ## Implemented client and session path
@@ -909,7 +909,18 @@ network namespace without external DNS, Nan, minipc or the control API; one
 directory was unavailable, and ingress forwarders rejected the API's SNI.
 See [native client operation and trust requirements](../network/native-client.md).
 This removes required Enclave DNS/CA/control lookup from that native read path.
-It does not yet derive first-user app/runtime pins from owner startup commitments,
-replace browser discovery, activate independent custody/storage writers, or prove
+It does not replace browser discovery, activate independent custody/storage writers, or prove
 organizationally independent operation. The test used existing host-supplied
 app/runtime expectations and explicit checker/RPC trust.
+
+Owner-startup deployments now have a separate native mode that derives AppID and
+RuntimeID from the public package committed by the current ledger owner. Exact
+chain/ledger/deployment/owner/app scope is checked before and after attestation;
+cached bytes are never authority for a changed owner. `native-profile.mjs`
+reconstructs the app measurement from a caller-pinned release and bundle whose
+hash matches that commitment. It uses the existing release/image verifier and
+rechecks the owner commitment before emitting a profile. Missing packages,
+substituted bundles, changed runtime identities and changed commitments refuse
+preparation or connection. This does not select the client's trusted runtime
+release, fetch the runtime/bundle artifacts, or migrate legacy production apps
+to owner-committed startup.
