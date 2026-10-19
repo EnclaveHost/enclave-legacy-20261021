@@ -798,3 +798,15 @@ with HTTP access limited in-process to the configured RPC and directory origins.
 The provider roles remain Enclave-operated; this evidence does not establish
 organizational independence or complete the remaining custody, governance,
 storage-write and first-use DNS/certificate work.
+
+The bundled agent is activated on metal0 with `enclaveNetwork.relay` removed and
+its control/privacy settings preserved. No implicit direct registry bootstrap
+was enabled. Ninety-one targeted tests passed. After the agent restart, both
+established local apps renewed their leases/proofs and formed two healthy
+circuits each; EyesOff answered verified HTTPS through both replacement exits
+and normal DNS. The adapter and dashboard also returned HTTP 200. The route
+replacement caused a brief DNS transition; guest services were not restarted.
+The top-level API route mirror remains configured. Local BYO and explicit
+registered-provider bootstrap are available in the installed agent, but no
+production app has been switched to local BYO and no independent operator is
+claimed by this rollout.
