@@ -38,3 +38,39 @@ direct hosting, and per-app `walletsFile`/`ownerPolicyFile`) are ignored.
 
 Routes are published to the relay's `/v1/network/tuna` (a historical path) as signed per-app records; DNS answers with
 both exits of an app's circuits.
+
+## Reconcile Linux app inventory without a control API
+
+The build also emits `reconcile-apps.mjs`. Run it with explicit contract pins:
+
+```sh
+node reconcile-apps.mjs --config /private/privacy-config.json \
+  --guestd-root /private/guestd-root --contract-pins /private/contracts.json \
+  --names-file /private/app-names.json --dry-run
+```
+
+Remove `--dry-run` to write expectations and reload `enclave-network-agent.service`
+(or select `--agent-unit`). `ENCLAVE_CONTRACT_PINS_FILE` can supply the pin path.
+The version-1 Base pin document uses `network/contract-pins.mjs`'s complete schema;
+missing or conflicting pins are errors, never an address-book fallback. The
+configured RPCs must have at least two distinct HTTPS origins. Two peers must
+agree on inventory and catalog bytes at the same recent confirmed block. The
+current bounded inventory supports up to 10,000 deployments and 256 leased apps.
+
+The optional names document is operator-local:
+
+```json
+{"version":1,"deployments":{"0x<64 lowercase hex digits>":["app.operator.example"]}}
+```
+
+Configured names replace the entry's names. Without that document, existing names
+are preserved; a new entry gets `<deployment-prefix>.app.enclave.host`. An operator
+using independent names should supply them explicitly. This configures ingress
+names only; it does not register DNS or issue certificates. New custom domains no
+longer synchronize implicitly from Enclave's domain API.
+
+The reconciler reads local attested guest records and checks their component bytes
+against the pinned catalog. It computes the canonical CID locally, without Kubo,
+a pinning server, or a trusted component hash cache. The privacy agent still checks
+the fresh lease, policy and actual guest proof before admitting traffic. This
+reconciler does not replace those checks or establish independent TLS/custody.

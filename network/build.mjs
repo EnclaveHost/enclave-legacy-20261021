@@ -11,6 +11,7 @@ const bundle = (entry, file) => build({entryPoints:[path.join(root,entry)], outf
 // the host's privacy agent and its circuits' ingress worker (the SNI gate each Enclave-network circuit runs; the name is
 // historical: Linux hosts run the same worker)
 await bundle('privacy-agent.mjs', 'privacy-agent.mjs');
+await bundle('reconcile-apps.mjs', 'reconcile-apps.mjs');
 await bundle('windows-circuit-worker.mjs', 'windows-circuit-worker.mjs');
 // the Enclave network (docs/design/enclave-network.md): the provider daemon and the checker, one file each
 await bundle('wg-provider/main.mjs', 'wg-provider.mjs');

@@ -724,3 +724,22 @@ establish independent custody. The reader uses existing prepaid Sia account
 balances; it cannot renew contracts, refill accounts or publish writes. It is a
 point-in-time recovery tool, not an automatic fallback for a live mutable index.
 The live S3 service and its single indexd/PostgreSQL writer remain in use.
+
+## Host inventory reconciliation without Enclave API authority
+
+Linux reconciliation now requires explicit contract pins and a fresh agreeing RPC
+snapshot for the deployment inventory and catalog versions. It does not resolve
+through the mutable address book, require the Enclave domains API before enrolling
+new apps, or run Kubo to hash a component. Operator-local names can use independent
+domains; existing configured names survive API refusal. Component bytes are hashed
+locally on each run, so a cached manifest digest cannot hide changed bytes.
+
+Tests cover new enrollment and runtime expectation updates with HTTP API access
+refused, conflicting/stale/reorganized chain answers, incomplete inventories,
+invalid pins and corrupted components. A fresh local inventory also enrolled two
+real leased apps from a confirmed Base snapshot with fetch restricted to the three
+configured RPCs and executable lookup disabled; the existing `eyesoff.ai` name was
+preserved. That test used the existing host's attested records, not an independent
+operator or new hardware attestation. The scheduled metal0 reconciler is activated
+with explicit pins. Its privacy agent, guest provisioning, public DNS and
+certificate issuance have separate remaining activation and authority work.
