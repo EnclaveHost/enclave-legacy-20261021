@@ -136,3 +136,27 @@ A deployment label without a current verified route now returns SERVFAIL rather 
 ### Direct-IP recovery ingress
 
 Providers can opt into a loopback-only `noSniRoute` for a valid ClientHello without SNI. Unknown SNI and malformed TLS remain closed. The recovery Caddy front has a public IP certificate and serves only the configured recovery/control paths; arbitrary destinations are not accepted. Provider-local routes carry `api.enclavehost.eth` and `mcp.enclavehost.eth` to the migrated control TLS service. Public native metadata is implemented in `relay/native-discovery.mjs`; no application signing key or credential is exposed there.
+
+### Attested release credentials after recovery
+
+A copied root-owned `0600` signing seed is not readable by the relay's systemd
+`DynamicUser`. This left the migrated relay answering `release_off` despite the
+release switch and deployment allowlist being correct, and prevented EyesOff
+from restarting. Preserve the seed's private source permissions. Install the
+optional `relay/systemd/release-signing-credential.conf.example` drop-in and its
+root-owned `0600` environment file as described in that example, then reload
+systemd and restart the relay. Remove any inline `SECRETS_RELEASE_SIGNING_KEY`;
+the release reader deliberately refuses simultaneous file and inline keys.
+
+`LoadCredential` supplies the source to the service. `ExecStartPre` copies it to
+a service-owned `0600` file inside a `0700` runtime directory, satisfying the
+release reader's ownership and mode checks even when systemd's credential mount
+uses group-read permissions. The source remains root-owned and is never placed
+in an environment value. Do not chown it to a transient dynamic UID or make it
+world-readable.
+
+Recovery acceptance must exercise `/v1/secrets/release-status?id=<listed-id>`
+(`listed: true`), the predictor's known-answer self-test, and a real attested
+cold launch through public HTTPS and model inference. A healthy relay process,
+existing warm guests, or a dashboard's `running` row alone cannot verify this
+path. Preserve the deployment, measurement, lease and signing-key checks.
