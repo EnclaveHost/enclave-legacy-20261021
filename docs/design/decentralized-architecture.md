@@ -810,3 +810,30 @@ The top-level API route mirror remains configured. Local BYO and explicit
 registered-provider bootstrap are available in the installed agent, but no
 production app has been switched to local BYO and no independent operator is
 claimed by this rollout.
+
+## Host route publication without the API mirror
+
+Metal0's top-level API mirror is removed and every per-app mirror flag is off.
+The running agent accepted this through SIGHUP without a restart or circuit
+rebuild. New Linux enrollment now defaults to direct directory publication;
+`mirrorNewApps: true` plus an explicit mirror origin is required to retain the
+legacy push behavior for new apps. The updated reconciler is installed in the
+scheduled service and has completed successfully.
+
+The compatibility API instead pulls public route envelopes from the signed
+directories. Its existing policy, lease, provider, signature and replay checks
+still decide whether it accepts a copy. The consumer cannot sign routes, extend
+their lifetimes or copy host diagnostics and credentials. An unavailable or
+refusing API cannot stop independent directory publication or the production
+app-zone DNS replicas, which each read their own local verified directory.
+Legacy policy state must match before the compatibility API accepts a route;
+it is not an authority for the directories.
+
+Twenty-seven targeted tests cover route pulls, signatures, withdrawals, expiry,
+refusal retry and opt-in enrollment mirroring. Production verification checks
+directory sequence renewal, fresh API route copies, all four authoritative DNS
+answers and public HTTPS after the previous mirror's data has expired. Unsigned
+diagnostic host status intentionally ages out of the legacy API; it is not
+fabricated from a route record. Providers remain Enclave-operated and DNS-01,
+runtime provisioning, custody, governance and storage writes retain separate
+remaining dependencies.
