@@ -14,8 +14,11 @@
 #include "shielded-pad-manifest.h"
 #include "shielded-mint-balance.h"
 #include "shielded-spill.h"
+#include "shielded-spill-cpu.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <sched.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -476,6 +479,18 @@ struct sh_link {
     uint32_t   spill_slots;                 /* per group */
     uint64_t   spill_wid;                   /* the next write id; never reused */
     int        spill_minters, spill_mint_max, spill_mint_busy, spill_idle_ms, spill_min_rows;
+    /* The CPU governor (shielded-spill-cpu.h), on when SHIELDED_PAD_SPILL_CPU_HEADROOM is set: minters follow
+     * the CPU the rest of the guest leaves, not the idle rule. spill_cpu_cap is its current answer (pool_mu);
+     * spill_batch the rows one spill mint makes (<= the refill batch), the most a minter runs past a cap cut. */
+    bool       spill_cpu_on, spill_cpu_running;
+    double     spill_cpu_headroom;
+    int        spill_cpu_ms, spill_cpu_cap, spill_batch;
+    pthread_t  spill_cpu_thread;
+    /* Minting's own thread CPU, so the governor does not count it as load: finished batches in
+     * spill_mint_cpu_ns, running ones from their thread's clock (pool_mu). */
+    uint64_t   spill_mint_cpu_ns;
+    struct { clockid_t clock; uint64_t t0; bool active; } spill_mt[128];
+    int        spill_mt_n;
     double     spill_last_take;             /* now_ms() of the request path's last take */
     double     spill_t0;                    /* attach time, for the "full" line */
     bool       spill_full_said;
@@ -759,6 +774,7 @@ static void stop_threads(sh_link *l) {
     pthread_cond_broadcast(&l->pool_filled);
     pthread_mutex_unlock(&l->pool_mu);
     for (int i = 0; i < l->n_threads; i++) pthread_join(l->threads[i], NULL);
+    if (l->spill_cpu_running) { pthread_join(l->spill_cpu_thread, NULL); l->spill_cpu_running = false; }
     free(l->threads); l->threads = NULL;
     l->threads_running = false; l->stop = false;
 }
@@ -1301,6 +1317,15 @@ static void spill_start(sh_link *l) {
      * free: half of them keep minting into it, so a busy stretch drains the
      * spill far slower than it consumes. */
     l->spill_mint_busy = env_int("SHIELDED_PAD_SPILL_BUSY_THREADS", l->n_threads / 2, 0, 64);
+    /* Mint on measured spare CPU instead (shielded-spill-cpu.h): the headroom in cores, unset = the idle rule. */
+    const char *hr = getenv("SHIELDED_PAD_SPILL_CPU_HEADROOM");
+    char *hr_end = NULL;
+    const double headroom = hr && *hr ? strtod(hr, &hr_end) : -1;
+    l->spill_cpu_on = hr && *hr && hr_end && !*hr_end && headroom >= 0 && headroom <= 256;
+    l->spill_cpu_headroom = l->spill_cpu_on ? headroom : 0;
+    l->spill_cpu_ms = env_int("SHIELDED_PAD_SPILL_CPU_MS", 500, 50, 60000);
+    l->spill_cpu_cap = 0;                        /* nothing until the first measurement */
+    l->spill_batch = env_int("SHIELDED_PAD_SPILL_BATCH", l->refill_batch, 1, l->refill_batch);
     l->spill_last_take = now_ms();
 }
 
@@ -1324,6 +1349,7 @@ static void spill_gauge_reset(sh_link *l) {
 /* pool_mu held: whether any group's spill has room for a minting batch. */
 static bool spill_wants_mint(const sh_link *l, int B) {
     if (!spill_usable(l) || l->spill_mint_max <= 0) return false;
+    if (l->spill_batch > 0 && l->spill_batch < B) B = l->spill_batch;
     const uint32_t unit = (uint32_t)B < l->spill_slots ? (uint32_t)B : l->spill_slots;
     for (size_t i = 0; i < l->n_groups; i++) if (spill_free(l, &l->groups[i]) >= unit) return true;
     return false;
@@ -1332,12 +1358,17 @@ static bool spill_wants_mint(const sh_link *l, int B) {
 /* pool_mu held: the group whose spill is emptiest, if a minter is free: up
  * to SHIELDED_PAD_SPILL_THREADS of them once the link has been idle
  * SHIELDED_PAD_SPILL_IDLE_MS, SHIELDED_PAD_SPILL_BUSY_THREADS while it is
- * not. Only ever when no ring needs a refill (refill_main asks rings first).
+ * not; with the CPU governor on, as many as it allows (spill_cpu_cap). Only ever when no ring needs a refill (refill_main asks rings first).
  * Always a whole batch, the refill's own amortisation. */
 static sh_group *pick_spill_group(sh_link *l, int B, int *b) {
     if (!spill_usable(l)) return NULL;
-    const bool idle = now_ms() - l->spill_last_take >= (double)l->spill_idle_ms;
-    if (l->spill_minters >= (idle ? l->spill_mint_max : l->spill_mint_busy)) return NULL;
+    if (l->spill_batch > 0 && l->spill_batch < B) B = l->spill_batch;
+    if (l->spill_cpu_on) {
+        if (l->spill_minters >= l->spill_cpu_cap) return NULL;
+    } else {
+        const bool idle = now_ms() - l->spill_last_take >= (double)l->spill_idle_ms;
+        if (l->spill_minters >= (idle ? l->spill_mint_max : l->spill_mint_busy)) return NULL;
+    }
     if (l->spill_wid + (uint64_t)B >= SH_SPILL_WID_LIMIT) return NULL;
     const uint32_t unit = (uint32_t)B < l->spill_slots ? (uint32_t)B : l->spill_slots;
     sh_group *best = NULL;
@@ -1465,6 +1496,98 @@ static int dealt_import(sh_link *l, const sh_group *g, uint32_t gi, uint64_t ind
     return SH_OK;
 }
 
+/* This thread's CPU time, ns. */
+static uint64_t thread_cpu_ns(clockid_t c) {
+    struct timespec ts;
+    return clock_gettime(c, &ts) == 0 ? (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec : 0;
+}
+
+/* pool_mu held: minting's thread CPU so far, finished batches and running ones. */
+static uint64_t spill_mint_cpu_now(const sh_link *l) {
+    uint64_t ns = l->spill_mint_cpu_ns;
+    for (int i = 0; i < l->spill_mt_n; i++)
+        if (l->spill_mt[i].active) { const uint64_t t = thread_cpu_ns(l->spill_mt[i].clock); if (t > l->spill_mt[i].t0) ns += t - l->spill_mt[i].t0; }
+    return ns;
+}
+
+/* The CPU governor (shielded-spill-cpu.h): every SHIELDED_PAD_SPILL_CPU_MS, the CPUs a refill thread may run on,
+ * their busy share in this guest less minting's own, and the cap that leaves SHIELDED_PAD_SPILL_CPU_HEADROOM cores
+ * free. A /proc/stat it cannot read turns it off for the link's life and the idle rule applies again. */
+static bool spill_cpu_sample(sh_link *l, uint8_t *mask, sh_cpu_ticks *t, char *buf, size_t cap) {
+    cpu_set_t set; CPU_ZERO(&set);
+    memset(mask, 0, SH_CPU_MASK_MAX);
+    if (l->n_threads <= 0 || pthread_getaffinity_np(l->threads[0], sizeof set, &set) != 0) return false;
+    for (int c = 0; c < SH_CPU_MASK_MAX && c < CPU_SETSIZE; c++) mask[c] = CPU_ISSET(c, &set) ? 1 : 0;
+    const int fd = open("/proc/stat", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    size_t n = 0;
+    for (;;) {
+        const ssize_t r = read(fd, buf + n, cap - 1 - n);
+        if (r <= 0) break;
+        n += (size_t)r;
+        if (n >= cap - 1) break;
+    }
+    close(fd);
+    buf[n] = 0;
+    return sh_cpu_stat_parse(buf, mask, SH_CPU_MASK_MAX, t);
+}
+
+static void *spill_cpu_main(void *arg) {
+    sh_link *l = (sh_link *)arg;
+    const size_t cap = 256 * 1024;
+    char *buf = (char *)malloc(cap);
+    uint8_t *mask = (uint8_t *)malloc(SH_CPU_MASK_MAX);
+    sh_cpu_ticks a, b;
+    bool ok = buf && mask && spill_cpu_sample(l, mask, &a, buf, cap);
+    pthread_mutex_lock(&l->pool_mu);
+    uint64_t mint_a = spill_mint_cpu_now(l);
+    if (!ok) {
+        fprintf(stderr, "[shielded] pad spill cpu governor off: /proc/stat or the refill CPUs unreadable; minting only while idle\n");
+        l->spill_cpu_on = false;
+        pthread_cond_broadcast(&l->need_refill);
+    } else {
+        fprintf(stderr, "[shielded] pad spill cpu governor: %d refill CPUs, %.1f cores headroom, every %d ms, %d rows a mint\n",
+                a.cpus, l->spill_cpu_headroom, l->spill_cpu_ms, l->spill_batch);
+    }
+    pthread_mutex_unlock(&l->pool_mu);
+    double wall_a = now_ms(), said_at = 0;
+    int said_cap = -1;
+    while (ok) {
+        /* sleep a period, waking for a stop */
+        for (double until = now_ms() + l->spill_cpu_ms; now_ms() < until; ) {
+            pthread_mutex_lock(&l->pool_mu);
+            const bool stop = l->stop;
+            pthread_mutex_unlock(&l->pool_mu);
+            if (stop) goto done;
+            struct timespec ts = { 0, 25L * 1000000L };
+            nanosleep(&ts, NULL);
+        }
+        if (!spill_cpu_sample(l, mask, &b, buf, cap)) continue;      /* a torn read: keep the last cap */
+        const double wall_b = now_ms(), dt = (wall_b - wall_a) / 1000.0;
+        pthread_mutex_lock(&l->pool_mu);
+        const uint64_t mint_b = spill_mint_cpu_now(l);
+        const uint64_t dtot = b.total > a.total ? b.total - a.total : 0, dbusy = b.busy > a.busy ? b.busy - a.busy : 0;
+        const double busy_frac = dtot ? (double)dbusy / (double)dtot : 0;
+        const double mint_cores = dt > 0 && mint_b > mint_a ? (double)(mint_b - mint_a) / 1e9 / dt : 0;
+        const int prev = l->spill_cpu_cap;
+        const int next = sh_spill_cpu_cap(b.cpus, busy_frac, mint_cores, l->spill_cpu_headroom, l->spill_mint_max, prev);
+        l->spill_cpu_cap = next;
+        if (next > prev) pthread_cond_broadcast(&l->need_refill);
+        const int minters = l->spill_minters;
+        pthread_mutex_unlock(&l->pool_mu);
+        /* what it decided, at most every 10 s and only when the cap moved since the last line */
+        if (next != said_cap && wall_b - said_at >= 10000) {
+            fprintf(stderr, "[shielded] pad spill cpu: %.1f of %d refill CPUs busy (%.1f minting) -> mint on up to %d threads (%d now)\n",
+                    busy_frac * b.cpus, b.cpus, mint_cores, next, minters);
+            said_cap = next; said_at = wall_b;
+        }
+        a = b; mint_a = mint_b; wall_a = wall_b;
+    }
+done:
+    free(buf); free(mask);
+    return NULL;
+}
+
 static void *refill_main(void *arg) {
     sh_link *l = (sh_link *)arg;
     gen_scratch s;
@@ -1478,6 +1601,15 @@ static void *refill_main(void *arg) {
     /* This thread's spill I/O buffer; without one it neither mints into nor
      * imports from the spill. */
     uint8_t *io = spill_usable(l) ? sh_spill_io_alloc(l->spill) : NULL;
+    /* this thread's slot in the minting CPU account (the governor reads its clock while it mints) */
+    pthread_mutex_lock(&l->pool_mu);
+    int mt = -1;
+    if (l->spill_mt_n < (int)(sizeof l->spill_mt / sizeof l->spill_mt[0]) &&
+        pthread_getcpuclockid(pthread_self(), &l->spill_mt[l->spill_mt_n].clock) == 0) {
+        mt = l->spill_mt_n++;
+        l->spill_mt[mt].active = false;
+    }
+    pthread_mutex_unlock(&l->pool_mu);
     for (;;) {
         pthread_mutex_lock(&l->pool_mu);
         sh_group *g = NULL; int deficit = 0;
@@ -1527,14 +1659,20 @@ static void *refill_main(void *arg) {
                 l->spill_said_onpath = l->spill_onpath;
             }
             l->spill_minters++;
+            if (mt >= 0) { l->spill_mt[mt].t0 = thread_cpu_ns(CLOCK_THREAD_CPUTIME_ID); l->spill_mt[mt].active = true; }
             pthread_cond_broadcast(&l->need_refill);         /* another minter may start too */
             pthread_mutex_unlock(&l->pool_mu);
             for (int i = 0; i < b; i++) sh_spill_mask(l->spill, wid[i], r + (size_t)i * g->K, g->K);
             int rc = generate_products(l, g, b, r, s.planes, u, s.acc);
             const bool minted = rc == SH_OK;
             if (minted) rc = sh_spill_write(l->spill, gi, slot0, b, wid, u, io);
+            const uint64_t mint_t1 = mt >= 0 ? thread_cpu_ns(CLOCK_THREAD_CPUTIME_ID) : 0;
             pthread_mutex_lock(&l->pool_mu);
             l->spill_minters--;
+            if (mt >= 0) {
+                if (mint_t1 > l->spill_mt[mt].t0) l->spill_mint_cpu_ns += mint_t1 - l->spill_mt[mt].t0;
+                l->spill_mt[mt].active = false;
+            }
             if (rc == SH_OK) {
                 spill_publish(l, g, slot0, b);
                 l->spill_written += (uint64_t)b;
@@ -1998,11 +2136,18 @@ static int start_pools(sh_link *l) {
         l->threads = (pthread_t *)calloc((size_t)l->n_threads, sizeof(pthread_t));
         if (!l->threads) return SH_ERR_NOMEM;
         l->stop = false;
+        l->spill_mt_n = 0; l->spill_mint_cpu_ns = 0; l->spill_cpu_cap = 0;
         int made = 0;
         for (int i = 0; i < l->n_threads; i++) if (sh_thread_create(&l->threads[i], refill_main, l) == 0) made++; else break;
         l->n_threads = made;                       /* join exactly what was created */
         if (!made) { free(l->threads); l->threads = NULL; l->threads_running = false; return SH_OK; }
         l->threads_running = true;
+        l->spill_cpu_running = spill_usable(l) && l->spill_cpu_on && l->spill_mint_max > 0 &&
+                               sh_thread_create(&l->spill_cpu_thread, spill_cpu_main, l) == 0;
+        if (spill_usable(l) && l->spill_cpu_on && !l->spill_cpu_running) {
+            fprintf(stderr, "[shielded] pad spill cpu governor did not start; minting only while idle\n");
+            l->spill_cpu_on = false;
+        }
 
         /* Warm the pool before the first exchange. Returning with every ring
          * empty made the first token generate 49 pads on the request path
