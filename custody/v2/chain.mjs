@@ -1,14 +1,13 @@
-// Chain reads for custody v2 (EnclaveSecretVaultV2, docs/security/secret-custody-v2-spec.md §1), with v1's agreement rule:
-// every read is pinned to the HIGHEST head any RPC reports, at least `minAgree` RPCs must return byte-identical state at
-// that block, and (custodians, relay) the block must be fresh against this machine's clock (maxAgeSec).
-import { createPublicClient, http, keccak256, toBytes, bytesToHex, hexToBytes, stringToHex } from "viem";
+// Custody reads use a fresh majority-agreed block hash and immutable vault authorities.
+import { createPublicClient, http, keccak256, toBytes, hexToBytes, stringToHex, encodeFunctionData, decodeFunctionResult } from "viem";
+import { createQuorumReader } from "./quorum.mjs";
 
 export const MACHINE = [
   { name: "identity", type: "address" }, { name: "encKey", type: "bytes32" }, { name: "endpoint", type: "string" },
   { name: "chipId", type: "bytes32" }, { name: "registryId", type: "bytes32" }, { name: "measurement", type: "bytes32" },
 ];
 const M_ARR = { type: "tuple[]", components: MACHINE };
-const HOST_OWNERSHIP_ABI = [
+export const HOST_OWNERSHIP_ABI = [
   { type: "function", name: "authority", stateMutability: "view", inputs: [{type:"bytes32"}], outputs: [{type:"address"},{type:"address"},{type:"uint64"},{type:"bytes32"}] },
 ];
 export const VAULT_V2_ABI = [
@@ -53,7 +52,7 @@ export const VAULT_V2_ABI = [
   { type: "function", name: "removeCode", stateMutability: "nonpayable",
     inputs: [{ name: "cid", type: "bytes32" }, { name: "measurement", type: "bytes32" }, { name: "approvers", type: "address[]" }, { name: "approvals", type: "bytes[]" }], outputs: [] },
 ];
-const LEDGER_ABI = [{ type: "function", name: "get", stateMutability: "view", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ type: "tuple", components: [
+export const LEDGER_ABI = [{ type: "function", name: "get", stateMutability: "view", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ type: "tuple", components: [
   { name: "id", type: "bytes32" }, { name: "owner", type: "address" }, { name: "appRef", type: "string" }, { name: "ports", type: "string" }, { name: "configCid", type: "string" },
   { name: "gpuMilli", type: "uint16" }, { name: "cpuMilli", type: "uint16" }, { name: "appPort", type: "uint32" }, { name: "isPublic", type: "bool" }, { name: "active", type: "bool" }, { name: "createdAt", type: "uint64" },
   { name: "rate", type: "uint256" }, { name: "balance6", type: "uint256" }, { name: "spent6", type: "uint256" },
@@ -80,8 +79,15 @@ async function readCommitteeAt(rd, vault, cid) {
            machines: machines.map((m, i) => ({ ...machineOut(m), enclave: enclave[i] })), commitments: b(commitments) };
 }
 
-async function readReleaseAt(client, vault, { id, endpoint }, blockNumber) {
-  const rd = (address, abi, functionName, args = []) => client.readContract({ address, abi, functionName, args, blockNumber });
+// No number-only fallback: every eth_call must name this canonical hash.
+const rdOf = (client, block) => async (address, abi, functionName, args = []) => {
+  const data=encodeFunctionData({abi,functionName,args});
+  const result=await client.request({method:'eth_call',params:[{to:address,data},{blockHash:block.blockHash,requireCanonical:true}]});
+  return decodeFunctionResult({abi,functionName,data:result});
+};
+
+async function readReleaseAt(client, vault, { id, endpoint }, block) {
+  const rd = rdOf(client,block);
   const [policy, bundle, ledgerAddr, registryAddr, beneficialOwner] = await Promise.all([
     rd(vault, VAULT_V2_ABI, "policyOf", [id]), rd(vault, VAULT_V2_ABI, "bundleOf", [id]),
     rd(vault, VAULT_V2_ABI, "deploymentLedger"), rd(vault, VAULT_V2_ABI, "hostRegistry"),
@@ -95,9 +101,7 @@ async function readReleaseAt(client, vault, { id, endpoint }, blockNumber) {
     !epId || registryAddr === ZERO ? null : rd(registryAddr, REGISTRY_V4_ABI, "get", [epId]),
     zeroCid ? null : readCommitteeAt(rd, vault, committeeId),
   ]);
-  const blk = await client.getBlock({ blockNumber });
   return {
-    blockNumber: blk.number, blockTimestamp: Number(blk.timestamp),
     policy: { owner: lc(owner), policyRev, secretRev, committeeId: lc(committeeId), paused, rules: b(rules) },
     bundle: { committeeId: lc(bundle[0]), secretRev: bundle[1], data: b(bundle[2]) },
     committee,
@@ -107,39 +111,17 @@ async function readReleaseAt(client, vault, { id, endpoint }, blockNumber) {
     endpointOperator: reg && reg.active ? lc(reg.operator) : null,
   };
 }
-const digest = (o) => JSON.stringify(o, (k, v) => (typeof v === "bigint" ? `n${v}` : v instanceof Uint8Array ? `x${bytesToHex(v)}` : v));
-
-export function createChainReaderV2({ rpcs, vault, hostOwnership = null, minAgree, confirmations = 0, clients: given = null, timeoutMs = 10_000, maxAgeSec = null, now = () => Date.now() }) {
-  const clients = given || (rpcs || []).map((url) => createPublicClient({ transport: http(url, { timeout: timeoutMs, retryCount: 1 }) }));
-  if (!clients.length) throw new Error("chain: no RPC configured");
-  if (!Number.isInteger(minAgree) || minAgree < 1 || minAgree > clients.length) throw new Error(`chain: minAgree must be 1..${clients.length} (state it explicitly)`);
-  async function agreed(fn) {
-    const heads = await Promise.allSettled(clients.map((c) => c.getBlockNumber({ cacheTime: 0 })));
-    const ok = heads.filter((h) => h.status === "fulfilled").map((h) => h.value);
-    if (ok.length < minAgree) throw err("chain_unconfirmed", `only ${ok.length} of ${clients.length} RPCs answered (need ${minAgree})`);
-    const head = ok.reduce((a, x) => (x > a ? x : a)) - BigInt(confirmations);
-    const reads = await Promise.allSettled(clients.map((c) => fn(c, head)));
-    const got = reads.filter((r) => r.status === "fulfilled").map((r) => r.value);
-    if (got.length < minAgree) {
-      const why = reads.find((r) => r.status === "rejected");
-      throw err("chain_unconfirmed", `only ${got.length} RPCs could read block ${head} (need ${minAgree})${why ? `: ${String(why.reason?.shortMessage || why.reason?.message || why.reason).split("\n")[0].slice(0, 160)}` : ""}`);
-    }
-    const d0 = digest(got[0]);
-    if (got.some((g) => digest(g) !== d0)) throw err("chain_unconfirmed", `RPCs disagree about block ${head}`);
-    return got[0];
-  }
-  const fresh = (st) => {
-    if (maxAgeSec != null && st.blockTimestamp < Math.floor(now() / 1000) - maxAgeSec)
-      throw err("chain_stale", `the newest block the RPCs agree on is ${Math.floor(now() / 1000) - st.blockTimestamp} s old (limit ${maxAgeSec} s)`);
-    return st;
-  };
-  const withBlock = (fn) => async (c, n) => { const r = await fn(c, n); const blk = await c.getBlock({ blockNumber: n }); return { ...r, blockNumber: blk.number, blockTimestamp: Number(blk.timestamp) }; };
-  const rdOf = (c, n) => (address, abi, functionName, args = []) => c.readContract({ address, abi, functionName, args, blockNumber: n });
+export function createChainReaderV2({ rpcs, vault, hostOwnership = null, chainId=null, minAgree, confirmations=0,
+  clients: given=null, timeoutMs=10000, maxAgeSec=120, maxFutureSec=10, now=()=>Date.now(), checkpoint=null }) {
+  if (!given && new Set((rpcs||[]).map(url=>new URL(url).hostname)).size !== (rpcs||[]).length)
+    throw Error('chain: distinct RPC hostnames required');
+  const clients = given || (rpcs || []).map(url=>createPublicClient({transport:http(url,{timeout:timeoutMs,retryCount:0})}));
+  const agreed=createQuorumReader({clients,minAgree,chainId,confirmations,timeoutMs,maxAgeSec,maxFutureSec,now,checkpoint});
   return {
     vault, clients,
-    readRelease: ({ id, endpoint }) => agreed((c, n) => readReleaseAt(c, vault, { id, endpoint }, n)).then(fresh),
+    readRelease: ({ id, endpoint }) => agreed((c, n) => readReleaseAt(c, vault, { id, endpoint }, n)),
     // the committee's current epoch, its machines (with on-chain Enclave flags) and commitments; plus any pending handover
-    readCommittee: ({ committeeId }) => agreed(withBlock(async (c, n) => {
+    readCommittee: ({ committeeId }) => agreed(async (c, n) => {
       const rd = rdOf(c, n);
       const cur = await readCommitteeAt(rd, vault, committeeId);
       if (!cur) return { committee: null, pending: null };
@@ -147,22 +129,22 @@ export function createChainReaderV2({ rpcs, vault, hostOwnership = null, minAgre
       const pending = Number(p[0]) ? { toEpoch: Number(p[0]), next: p[1].map((m, i) => ({ ...machineOut(m), enclave: p[2][i] })), t: Number(p[3]), W: Number(p[4]),
                                        dealers: p[5].map(Number), expires: Number(p[6]), acks: Number(await rd(vault, VAULT_V2_ABI, "ackCount", [committeeId, p[0]])) } : null;
       return { committee: cur, pending };
-    })).then(fresh),
-    readDeal: ({ committeeId, toEpoch, dealerIndex }) => agreed(withBlock(async (c, n) => {
+    }),
+    readDeal: ({ committeeId, toEpoch, dealerIndex }) => agreed(async (c, n) => {
       const [dc, sealed] = await rdOf(c, n)(vault, VAULT_V2_ABI, "dealOf", [committeeId, toEpoch, dealerIndex]);
       return { dealCommitments: b(dc), sealed: sealed.map(b) };
-    })),
-    readCodeActiveAt: ({ committeeId, measurement }) => agreed(withBlock(async (c, n) => ({ activeAt: Number(await rdOf(c, n)(vault, VAULT_V2_ABI, "codeActiveAt", [committeeId, measurement])) }))),
+    }),
+    readCodeActiveAt: ({ committeeId, measurement }) => agreed(async (c, n) => ({ activeAt: Number(await rdOf(c, n)(vault, VAULT_V2_ABI, "codeActiveAt", [committeeId, measurement])) })),
     // Membership is only supported on the wallet-authority vault release.
     // No fallback to payoutWallet or a mutable book registry. Old vaults must
     // keep their old measured membership runtime until a controlled handover.
-    readRegistryEntry: ({ registryId }) => agreed(withBlock(async (c, n) => {
+    readRegistryEntry: ({ registryId }) => agreed(async (c, n) => {
       const rd = rdOf(c, n);
       const [reg, ownership] = await Promise.all([rd(vault, VAULT_V2_ABI, "hostRegistry"), rd(vault, VAULT_V2_ABI, "hostOwnership")]);
       if (hostOwnership && lc(ownership) !== lc(hostOwnership)) throw err("host_authority_mismatch", "vault host authority differs from the measured pin");
       if (reg === ZERO || ownership === ZERO) throw err("host_authority_missing", "wallet host authority required");
       const [e, authority] = await Promise.all([rd(reg, REGISTRY_V4_ABI, "get", [registryId]), rd(ownership, HOST_OWNERSHIP_ABI, "authority", [registryId])]);
       return { entry: { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet), owner: lc(authority[0]) } };
-    })).then(fresh),
+    }),
   };
 }

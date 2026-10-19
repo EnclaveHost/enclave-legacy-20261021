@@ -156,8 +156,8 @@ POST /v2/custody/release    { v:2, id, endpoint, committeeId, epoch, policyRev, 
                             -> { v:2, encKey, count, sealed (base64 HPKE of count x 101-byte partial records) }
 ```
 
-A member's release checks are v1's (`custody/custodian.mjs decide`): its own challenge, consumed; chain state at the
-agreed highest head, with high-water marks; policy present and not paused; revisions current; ownership; a live lease
+A member's release checks include its own challenge, consumed; chain state at a
+fresh majority-supported height and canonical block hash, with high-water marks; policy present and not paused; revisions current; ownership; a live lease
 held by `endpoint`; the operator signature over the v2 `operatorMessage`; rules and runtime; the hardware evidence bound
 to the v2 `releaseBinding`. In addition:
 - `committeeId` and `epoch` are the committee's CURRENT ones, and the bundle's committee is that committee;
@@ -165,6 +165,20 @@ to the v2 `releaseBinding`. In addition:
 - the member answers with one partial per index it holds in that epoch.
 
 Errors are `{error, message}` with v1's codes.
+
+The replacement v2 reader uses three of four measured RPC peers and two block
+confirmations. The chosen height is the third-highest reported head minus two;
+it does not fall back to older blocks after disagreement. Every contract call
+uses EIP-1898 `blockHash` with `requireCanonical: true`. Full result, block hash,
+height and timestamp must agree. All read methods reject blocks older than 120
+seconds or over 10 seconds in the future. Each peer has a bounded deadline;
+a single refusal, inconsistent answer or inflated head cannot veto three
+agreeing peers. The daemon persists its accepted block checkpoint in sealed
+state before returning the result. Restoring that state retains the checkpoint;
+this is not hardware anti-rollback protection against replaying an older sealed
+file. RPC agreement still assumes an honest configured majority and clock; it
+is not a consensus light client. These are replacement-image requirements,
+not evidence that the old production image has been upgraded.
 
 ## 3. guestd and the supervisor (operator authorization)
 

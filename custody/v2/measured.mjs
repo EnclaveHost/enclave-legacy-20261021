@@ -4,8 +4,8 @@ export const MEASURED = Object.freeze({
   chainId: 8453,
   vault: "0x0000000000000000000000000000000000000000",
   hostOwnership: "0x0000000000000000000000000000000000000000",
-  rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://1rpc.io/base"],
-  minAgree: 2,
+  rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://base.public.blockpi.network/v1/rpc/public"],
+  minAgree: 3, confirmations: 2,
   maxAgeSec: 120,
   enclaveOwner: "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
   independentOwners: null, // explicit measured wallet set enables independent genesis; no host override

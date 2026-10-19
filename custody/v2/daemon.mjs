@@ -105,11 +105,14 @@ async function main() {
   log(`machine ${machine.identity} measurement ${probe.measurement.toString("hex").slice(0, 16)}... chip ${machine.chipId.slice(0, 12)}...`);
 
   if (!/^0x[0-9a-f]{40}$/.test(MEASURED.hostOwnership || "") || /^0x0{40}$/.test(MEASURED.hostOwnership)) throw new Error("measured host wallet authority is required");
-  const chain = createChainReaderV2({ hostOwnership: MEASURED.hostOwnership, rpcs: MEASURED.rpcs, vault: MEASURED.vault, minAgree: MEASURED.minAgree, maxAgeSec: MEASURED.maxAgeSec });
   // Serialize snapshots so an older asynchronous member save cannot overwrite
   // a newer DKG phase. DKG awaits persistence before it emits a phase response.
   let writes=Promise.resolve();
   const saveNow = () => { const blob=seal(key,state);const next=writes.catch(()=>{}).then(()=>hostPut(hc.hostUrl,"/state",blob));writes=next;return next; };
+  const chain = createChainReaderV2({ chainId:MEASURED.chainId, hostOwnership:MEASURED.hostOwnership,
+    rpcs:MEASURED.rpcs, vault:MEASURED.vault, minAgree:MEASURED.minAgree, maxAgeSec:MEASURED.maxAgeSec,
+    confirmations:MEASURED.confirmations,
+    checkpoint:{load:()=>state.chainCheckpoint,save:async mark=>{state.chainCheckpoint=mark;await saveNow();}} });
   const store = { load: () => state.member, save: (m) => { state.member = m; saveNow().catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
   const submit = async (fn, args) => {
     const r = await fetch(hc.hostUrl + "/submit", { method: "POST", headers: { "content-type": "application/json" },

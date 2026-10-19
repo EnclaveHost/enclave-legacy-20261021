@@ -17,8 +17,10 @@ try{
  if(argv.includes('--activate')){
    const rpcs=String(arg('--rpcs')||'').split(',').filter(Boolean);
    if(rpcs.length<2||new Set(rpcs.map(r=>new URL(r).hostname)).size!==rpcs.length||rpcs.some(r=>new URL(r).protocol!=='https:'))throw Error('two distinct explicit HTTPS RPCs required');
-   reader=createChainReaderV2({rpcs,vault:plan.vault,minAgree:2,maxAgeSec:120});
-   if((await Promise.all(reader.clients.map(c=>c.getChainId()))).some(id=>id!==plan.chainId))throw Error('wrong RPC chain');
+   reader=createChainReaderV2({rpcs,vault:plan.vault,chainId:plan.chainId,minAgree:Math.floor(rpcs.length/2)+1,maxAgeSec:120});
+   // Preflight the pinned vault/ownership surface through the same quorum.
+   // Requiring every RPC to answer here would reintroduce a single-peer veto.
+   await reader.readRegistryEntry({registryId:plan.machines[0].registryId});
  }
  const result=await coordinateIndependentGenesis(plan,{activate:argv.includes('--activate')});
  if(reader){

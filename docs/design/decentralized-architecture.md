@@ -353,6 +353,37 @@ of each encrypted bundle. Existing ciphertext is not transferable to a new
 independent public key without an authorized decrypt/re-encrypt or separately
 verified handover. None of these source tests proves live custody migration.
 
+## Custody chain availability verified before activation
+
+The old custody reader let any RPC force an unusably high target block and
+required every successful answer to agree. The replacement uses an explicit
+majority of configured peers (three of four in the measured image), selecting
+the quorum-supported height minus two confirmations. Contract reads name one
+canonical block hash using [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898),
+without a number-only fallback. Complete results and headers must match. All
+methods enforce freshness and future-time bounds, including code admission
+and handover deals. The daemon saves its high-water checkpoint in sealed state
+before returning a new result; concurrent reads cannot return an older result
+after a newer checkpoint is accepted. Sealed-file replay by a dishonest host
+is not prevented by this checkpoint alone. This remains RPC-majority trust,
+not a light-client proof of Base consensus.
+
+Live read-only tests against the existing Base custody vault first exposed
+1RPC's usage-limit refusal. The replacement measured peer list substitutes
+BlockPI's [published Base endpoint](https://blockpi.io/chain/base/), alongside
+Base, PublicNode and dRPC. A full committee read passed with all four peers and
+with each peer omitted in turn, at blocks 52,822,955–52,822,958. The observed
+committee remains epoch 1 with one machine; these checks did not alter it.
+Fault tests exercise every peer position with refusal, indefinite wait,
+inflated height, conflicting state, fork and wrong chain. They also reject
+stale/future/moving headers, split results, backward checkpoints, failed durable
+writes and number-only fallback. Real-chain DKG creation and the legacy v2
+handover/release test continue to pass with hash-addressed calls.
+
+The replacement runtime and its new RPC pins still require measured-image
+activation. This check removes a source-level RPC veto and verifies public
+endpoint compatibility; it does not establish live independent custody.
+
 ## Governance disposition
 
 The live ledger's owner can retire it, raise claim bonds, slash operator bonds,
