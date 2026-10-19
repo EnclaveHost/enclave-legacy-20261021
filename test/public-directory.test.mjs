@@ -27,12 +27,12 @@ async function rig(t){
     checks:Object.fromEntries(CHECKS.map(k=>[k,true])),issuedAt:now,expiresAt:now+600000};
   const qualification=await signQualification(checker,q);
   const keys=generateKeyPairSync('ed25519');
-  async function publication(p=policy,sequence=1){
+  async function publication(p=policy,sequence=1,withdraw=false){
     const delegation={version:2,deploymentId:id,runner,chainId:8453,deployments:lease.deployments,policyHash:recordHash(p),epoch:now,notBefore:now,expiresAt:now+3600000,
       publicKey:keys.publicKey.export({format:'der',type:'spki'}).toString('base64'),ipns:'k51'+'a'.repeat(50)};
     const authorization=await signDelegation(operator,delegation,now);
     const record={version:2,deploymentId:id,delegationHash:recordHash(delegation),sequence,issuedAt:now,expiresAt:now+60000,
-      routes:[{circuit:'f'.repeat(32),address,port:443,transport:'enclave-network'}]};
+      routes:withdraw?[]:[{circuit:'f'.repeat(32),address,port:443,transport:'enclave-network'}]};
     return {version:2,endpoint:'https://old-control.example/t/host',policy:p,bundle:{authorization,...signRoute(keys.privateKey,record)}};
   }
   return {d,opts,dir,pr,q,qualification,lease,policy,publication,advance:n=>{now+=n;}};
@@ -124,4 +124,32 @@ test('unchanged gossip does not repeat admission RPCs but reads still reject a c
   assert.equal(Object.keys((await r.d.routes()).labels).length,0);assert.ok(calls>0);
   const altered=structuredClone(snapshot);altered.publications[0].bundle.record.sequence++;
   assert.equal((await r.d.import(altered)).rejected,1);
+});
+
+test('a route read racing a newer accepted publication retries the current snapshot instead of dropping the app',async t=>{
+ const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);
+ await r.d.accept('route',await r.publication(r.policy,1));
+ let entered,release;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const original=r.d.leaseOf;let first=true;
+ r.d.leaseOf=async id=>{if(first){first=false;entered();await gate;}return original(id);};
+ const reading=r.d.routes();await started;
+ await r.d.accept('route',await r.publication(r.policy,2));release();
+ const routes=await reading;
+ assert.equal(Object.keys(routes.deployments).length,1,'the newer valid publication must remain routable');
+ assert.equal(routes.pending.length,0);
+});
+
+for(const change of ['withdrawal','policy'])test(`a concurrent ${change} cannot resurrect the previous route`,async t=>{
+ const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);
+ await r.d.accept('route',await r.publication());
+ let entered,release;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const original=r.d.checkRoute.bind(r.d);let first=true;
+ r.d.checkRoute=async(...args)=>{const route=await original(...args);if(first){first=false;entered();await gate;}return route;};
+ const reading=r.d.routes();await started;
+ if(change==='withdrawal')await r.d.accept('route',await r.publication(r.policy,2,true));
+ else await r.d.accept('policy',await signNetworkPolicy(owner,{...r.policy,nonce:1,issuedAt:1}));
+ release();const routes=await reading;
+ assert.equal(Object.keys(routes.deployments).length,0);
+ assert.equal(Object.keys(routes.labels).length,0);
+ assert.equal(routes.pending.length,change==='policy'?1:0);
 });

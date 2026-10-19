@@ -99,11 +99,28 @@ export class PublicDirectory {
     const providers=await eligibleProviders(Object.values(s.providers),{checkers:this.checkers,hostOperator:this.hostOperator,now:this.now()});
     return verifyRoute(publication.bundle,{deploymentId:id,policy,lease,memory:this.floors,networkProviders:providers,providerProbeSigners:this.checkers,now:this.now()});
   }
+  async currentRoute(id,s){
+    // Acceptance advances the replay floor before persisting public records. A
+    // read holding the previous snapshot must wait for that write, then verify
+    // the replacement. Also recheck successful reads if policy/provider state
+    // changed while RPC verification was in flight. Never serve the old result
+    // after a withdrawal, policy change or repeatedly changing snapshot.
+    const context=state=>({publication:state.publications[id]??null,policy:state.policies[id]??null,providers:state.providers});
+    for(let attempt=0;attempt<3;attempt++){
+      let route,error;
+      try{route=await this.checkRoute(s.publications[id],s);}catch(e){error=e;}
+      await this.tail;
+      const latest=await this.read();
+      if(equal(context(s),context(latest))){if(error)throw error;return route;}
+      s=latest;
+    }
+    throw Error('route state changed during verification');
+  }
   async routes(){
     const s=await this.read(),labels={},deployments={},pending=[],collisions=new Set();
-    for(const [id,p] of Object.entries(s.publications)){
+    for(const id of Object.keys(s.publications)){
       try{
-        const r=await this.checkRoute(p,s);if(!r.routes.length)continue;
+        const r=await this.currentRoute(id,s);if(!r.routes.length)continue;
         const addresses=r.routes.map(x=>x.address),label=id.slice(2,10);
         deployments[id]={transport:r.routes[0].transport,expiresAt:r.expiresAt,httpsRoutes:r.routes,discovery:{ipns:r.ipns},version:2};
         if(labels[label]||collisions.has(label)){delete labels[label];collisions.add(label);}else labels[label]={transport:r.routes[0].transport,expiresAt:r.expiresAt,addresses};
