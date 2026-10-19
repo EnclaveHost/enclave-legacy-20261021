@@ -308,3 +308,14 @@ rechecked the commitment at Base block 52829359. All four gateways now retain th
 19 unique public objects (83,046,781 bytes), each verified through its HTTP service
 after publication. This is currently Enclave-operated replication, not evidence
 of independent operation or a long-term retention guarantee.
+
+### Live write-transport and stream check
+
+On 2026-10-19 the extended client ran against the existing EyesOff deployment
+from a fresh client state in the isolated network harness: no default route or
+external DNS, Nan/minipc/control API denied, and one directory refusing. Each
+request used a fresh real SNP proof and attested TLS-key check. A bounded POST
+to the unsupported `/ping` method returned HTTP 404; a streamed GET `/ping`
+returned HTTP 200 and `pong`. No credentials, chat request or application
+mutation were sent. This validates the live transport and streamed-body path;
+incremental SSE and application-write semantics remain local fixture evidence.
