@@ -160,3 +160,17 @@ Recovery acceptance must exercise `/v1/secrets/release-status?id=<listed-id>`
 cold launch through public HTTPS and model inference. A healthy relay process,
 existing warm guests, or a dashboard's `running` row alone cannot verify this
 path. Preserve the deployment, measurement, lease and signing-key checks.
+
+DNS failover applies to address queries (A, AAAA and ANY), not CAA/CNAME/TXT.
+Without a serving route, CAA must still return the zone's authoritative NODATA
+so the CA can consult the parent CAA policy. Returning SERVFAIL for CAA creates
+a certificate/route startup cycle. Regression coverage exercises both UDP and
+TCP for cold and expired route entries while retaining address fail-closed behavior.
+
+Fence configuration updates as well as mutable state during a migration. The
+source acquired admitted EyesOff release `58a0e7bd…` after the initial snapshot;
+the target retained the prior list and could never reproduce the actual guest.
+Compare the final running host's pinned release with the source's final release
+and certificate admission sets, copy the exact manifest-pinned artifacts, and
+verify every file before restoring that admission on the target. A release being
+in the host's configuration alone is not evidence that the verifier migrated it.

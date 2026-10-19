@@ -27,6 +27,15 @@ test('read-only DNS needs no fleet or signing key, serves UDP/TCP and expires ro
  expires=Date.now()+1800;const seen=hits;while(hits<=seen)await delay(100);offline=true;await delay(Math.max(0,expires-Date.now()+100));
  for(const tcp of [false,true]){const answer=await ask(dnsPort,tcp);assert.equal(answer.readUInt16BE(6),0,'expired answers cannot survive origin failure');assert.equal(answer.readUInt16BE(2)&15,2,'verification outage must allow resolver failover');assert.equal(answer.readUInt16BE(8),0,'no cacheable negative SOA');}
  for(const tcp of [false,true])assert.equal((await ask(dnsPort,tcp,'1234abcd.app.test')).readUInt16BE(2)&15,2,'a cold replica cannot assert absence of an unknown deployment');
+ for(const tcp of [false,true])for(const name of ['abcd.app.test','1234abcd.app.test']){
+  for(const type of [257,5,16]){
+   const answer=await ask(dnsPort,tcp,name,type);
+   assert.equal(answer.readUInt16BE(2)&15,0,'CAA/CNAME/TXT absence does not depend on an address route');
+   assert.equal(answer.readUInt16BE(6),0);
+   assert.equal(answer.readUInt16BE(8),1,'NODATA carries the zone SOA so CAA can ascend to the parent');
+  }
+  for(const type of [1,28,255])assert.equal((await ask(dnsPort,tcp,name,type)).readUInt16BE(2)&15,2,'address queries still fail closed without a verified route');
+ }
  assert.doesNotMatch(log,/api\.enclave\.host|eligibility/);
 });
 test('read-only mode refuses implicit legacy route fallback and the box control namespace',async()=>{

@@ -344,6 +344,10 @@ function resolveApp(qname, qtype) {
   const sub = qname.slice(0, -(APP_ZONE.length + 1));
   const fixed = sub.includes(".") ? null : APP_STATIC.get(sub);
   if (fixed) return (qtype === T.A || qtype === T.ANY) ? HIT([rr(qname, T.A, 300, fixed)]) : NODATA(APP_ZONE);
+  // Routes govern addresses only. In particular, CAA must answer NODATA so
+  // the CA can check the parent policy before a guest has a serving route.
+  // SERVFAIL here creates a cycle: no certificate -> no route -> no certificate.
+  if (qtype !== T.A && qtype !== T.AAAA && qtype !== T.ANY) return NODATA(APP_ZONE);
   const pick = sub.includes(".") ? null : appRoutes.get(sub);
   // A replica without a current verified deployment route cannot assert that
   // the name has no address. SERVFAIL lets recursive resolvers try another
