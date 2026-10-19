@@ -210,13 +210,25 @@ export function replayGuard({ ttlSec = 2 * WINDOW_SEC + 10, max = 100_000, now =
  *              given, "deployments"
  *   ledger     () => the deployments ledger (the book's "deployments"), or null: where wallet-held delegation is read
  *   factories  extra SessionVaultFactory addresses (default v2 + v1); the book's factory is always added
+ *   authorityPins optional host pins: exact deployments/sessionVaultFactory, overriding book, ledger and factories
  *   bases      () => apiBases(...) for this host
  *   now        () => unix seconds (this host's clock)
  */
-export function createSessionApiAuth({ pc, book = () => null, ledger = null, factories = DEFAULT_FACTORIES, bases,
+export function createSessionApiAuth({ pc, book = () => null, ledger = null, factories = DEFAULT_FACTORIES, authorityPins, bases,
   now = () => Math.floor(Date.now() / 1000), cacheMs = CACHE_MS, log = () => {} } = {}) {
   if (!pc) throw new Error("createSessionApiAuth: a public client is required");
   if (typeof bases !== "function") throw new Error("createSessionApiAuth: bases() is required");
+  // Explicit host pins replace every legacy authority source. A zero factory
+  // disables session-vault credentials; it never restores the book/defaults.
+  if (authorityPins != null) {
+    const valid = a => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a);
+    if (!authorityPins || Array.isArray(authorityPins) || !valid(authorityPins.deployments) || ZERO.test(authorityPins.deployments) ||
+        !valid(authorityPins.sessionVaultFactory)) throw new Error("invalid pinned session authorities");
+    const pinnedLedger = getAddress(authorityPins.deployments), pinnedFactory = getAddress(authorityPins.sessionVaultFactory);
+    book = () => null;
+    ledger = () => pinnedLedger;
+    factories = ZERO.test(pinnedFactory) ? [] : [pinnedFactory];
+  }
   const replay = replayGuard({ now });
   const fixed = factories.filter((a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""))).map((a) => getAddress(a));
   const ms = () => Date.now();

@@ -49,7 +49,7 @@ import { createEgress } from "./egress.js";
 // baked env, overridden from the on-chain EnclaveAddressBook when
 // ADDRESS_BOOK_ADDRESS is set, and re-polled so contract redeploys reach a
 // RUNNING enclave without a new release.
-import { initAddressBook, REGISTRY_ADDRESS, DEPLOYMENTS_ADDRESS, APP_CATALOG_ADDRESS,
+import { CONTRACT_PINS, initAddressBook, REGISTRY_ADDRESS, DEPLOYMENTS_ADDRESS, APP_CATALOG_ADDRESS,
          FORWARDER_ADDRESS, PROOF_OF_TIME_ADDRESS } from "./addressbook.js";
 // Wallet sessions (SessionVault) as owner credentials, verified on chain: shared with the Windows node.
 import { createSessionApiAuth, isSessionHeader, hasScope, apiBases, envList, DEFAULT_API_HOSTS, DEFAULT_FACTORIES }
@@ -3483,9 +3483,10 @@ const chainClient = createPublicClient({ chain: base, transport: rpcTransport() 
 // apiBases(): each API front door (SESSION_API_HOSTS, default api.enclave.host) as is and with /t/<tunnel name>, and this
 // box's own public URLs (PUBLIC_URL, the attested certificate SAN). Never the Host header.
 // SESSION_API_TUNNEL_NAMES adds tunnel names beyond the one PUBLIC_URL's /t/<name> path already names.
-// Vault factories: the address book's sessionVaultFactory plus SESSIONS_FACTORIES (default v2 + v1).
+// Pinned hosts use only their exact factory and ledger. Legacy hosts add the book's factory to SESSIONS_FACTORIES.
 const SESSION_API_HOSTS = envList(process.env.SESSION_API_HOSTS);
 const sessionApi = createSessionApiAuth({
+  authorityPins: CONTRACT_PINS,
   pc: chainClient,
   book: () => (process.env.ADDRESS_BOOK_ADDRESS || "").trim() || null,
   ledger: () => DEPLOYMENTS_ADDRESS || null,

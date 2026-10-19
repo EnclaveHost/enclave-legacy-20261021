@@ -18,7 +18,7 @@ import { createPublicClient, http, fallback, getAddress } from "viem";
 import { base } from "viem/chains";
 import {loadContractPins} from './windows/node/host-admission.bundle.mjs';
 
-const CONTRACT_PINS=loadContractPins();
+export const CONTRACT_PINS=loadContractPins();
 
 export let REGISTRY_ADDRESS      = process.env.REGISTRY_ADDRESS || "";
 export let DEPLOYMENTS_ADDRESS   = process.env.DEPLOYMENTS_ADDRESS || "";

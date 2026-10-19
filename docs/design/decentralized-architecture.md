@@ -864,3 +864,13 @@ control image has not been replaced by this change. Captured contract pins inclu
 zero optional session-factory/vault entries from the current book; deployment
 review must reconcile those with explicitly selected custody/session bindings
 before activating them. This does not migrate the live single-seat custody vault.
+
+
+Host session authentication now honors the same explicit contract pins as host
+scheduling: both Linux and Windows bind the factory and delegation ledger without
+reading the mutable book. Zero factory pins disable these credentials instead of
+restoring legacy defaults. A real Anvil session verifies with book access forbidden,
+and its owner delegation is read only from the pinned ledger. This closes runtime
+fallback authority; it does not transfer existing production sessions to the new
+immutable factory. The control-image overlay now includes the complete runtime
+file set and supports both adding and replacing these files in a verified image.

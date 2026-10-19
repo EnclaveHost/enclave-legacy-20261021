@@ -27,7 +27,7 @@ import { createPublicClient, createWalletClient, http, fallback, keccak256, toBy
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 import {loadContractPins} from './host-admission.bundle.mjs';
-const CONTRACT_PINS=loadContractPins();
+export const CONTRACT_PINS=loadContractPins();
 import fs from "node:fs";
 import path from "node:path";
 import { parseWaf } from "./waf.mjs";

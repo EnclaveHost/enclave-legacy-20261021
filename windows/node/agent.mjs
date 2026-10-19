@@ -44,7 +44,7 @@ import { Payouts, DEFAULT_MIN_PAYOUT6 } from './payout.mjs';
 import { sponsoredRegister } from './sponsor.mjs';
 import { finishHvAttach, reattachMode, relayTakesV2, shouldReattach } from './hvnode-attach.mjs';
 import { tunnelHandover } from './tunnel-handover.mjs';
-import { addressBook, addresses as chainAddresses, publicClient } from './chain.mjs';
+import { CONTRACT_PINS, addressBook, addresses as chainAddresses, publicClient } from './chain.mjs';
 import { createSessionApiAuth, apiBases, envList, DEFAULT_API_HOSTS, DEFAULT_FACTORIES } from './session-api-auth.mjs';
 import { measureGflops } from './compute-measure.mjs';
 const WAF_TRACE = /^(1|true|yes)$/i.test(String(process.env.WAF_TRACE || ''));
@@ -82,6 +82,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), '[node
 // /t/<name> stripped, so the bases are each API front door (SESSION_API_HOSTS, default api.enclave.host) as is and with
 // /t/<NAME>, and PUBLIC_URL; an app's own hostnames are added for its data path (host.proxy).
 const sessionApi = createSessionApiAuth({
+  authorityPins: CONTRACT_PINS,
   pc: publicClient(), book: addressBook, ledger: () => chainAddresses.deployments || null,
   factories: envList(process.env.SESSIONS_FACTORIES).length ? envList(process.env.SESSIONS_FACTORIES) : DEFAULT_FACTORIES,
   bases: () => apiBases({ hosts: envList(process.env.SESSION_API_HOSTS).length ? envList(process.env.SESSION_API_HOSTS) : DEFAULT_API_HOSTS,

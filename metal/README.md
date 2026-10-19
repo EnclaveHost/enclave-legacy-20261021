@@ -541,3 +541,19 @@ can then be adopted without rebooting the VM, after the bounded authority cache
 expires (at most 15 seconds). A withholding or corrupt mirror cannot override a
 matching peer, and no Enclave-operated mirror is implicit. A cold boot still
 requires the current document in `policyFiles` or at an available chosen mirror.
+
+
+For an existing verified control image, `python3 metal/overlay-control-image.py
+BASE OUT COMMIT` stages the committed control runtime while preserving the kernel,
+model payload and untouched cpio entries. It verifies the base manifest digests,
+records every installed source hash, adds required parent directories, rejects
+symlink parents and hardlinked replacement targets, and removes the obsolete
+measurement. Recompute and verify the new launch measurement before activation.
+This command does not start a VM or replace the live image.
+
+Host contract pins also govern session authentication. A pinned host trusts only
+`sessionVaultFactory` and `deployments` from that document; it ignores the mutable
+book, default factories and `SESSIONS_FACTORIES`. An explicit zero factory disables
+session-vault credentials. Existing vaults do not migrate automatically to a new
+factory: their owners must authorize new sessions. Host admission ownership and
+session authentication are separate checks.
