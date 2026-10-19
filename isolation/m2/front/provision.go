@@ -179,7 +179,10 @@ func (p *provisioner) run(ctx context.Context, hostData, spki []byte, rt *runtim
 	// tenant cannot reach (the runtime gives it no access to other processes).
 	rel.Secrets = nil
 	secrets = nil
+	return p.startForwarders(ctx, id, out, pol)
+}
 
+func (p *provisioner) startForwarders(ctx context.Context, id [32]byte, out *provisioned, pol *egress.Policy) (*provisioned, error) {
 	out.fwd = &egress.Forwarder{Policy: pol, Port: p.fwdPort, Upstream: p.egress, Logf: domLogf(p.logf)}
 	if err := out.fwd.Start(ctx); err != nil {
 		return nil, err

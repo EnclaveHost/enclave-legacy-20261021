@@ -18,7 +18,7 @@ live network of independently operated machines.
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
-| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Production front still requires the signed relay release |
+| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct owner-commitment reader/front implemented and tested; production entry point, host transport and measured runtime still use signed relay release |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
@@ -92,6 +92,60 @@ and secret-free downgrade, and must not silently fall back to the legacy relay.
 Its chain RPC/bootstrap egress, runtime measurements and host supervisor protocol
 must be activated together. Existing secret deployments remain on their validated
 path until their replacement passes these gates.
+
+### Owner-committed startup package
+
+The implementation in `isolation/m2/bootstrap` authenticates a new, explicit
+startup intent from the pinned deployment ledger. The owner's ledger envelope
+contains `guestBootstrap: {version: 1, sha256: "<64 lowercase hex>"}`. The hash
+covers the **exact UTF-8 bytes** of a public startup package. The host or any
+storage provider may deliver those bytes; neither becomes an authority. There is
+no fallback to an unsigned host configuration, a legacy relay, or secret-free
+startup when verification fails. Direct intent cannot coexist with legacy
+`config` or `configCid` fields.
+
+The package contains version, chain ID, pinned ledger, deployment ID, current
+ledger owner, exact app reference, loaded AppID, RuntimeID, exact `configText`,
+and an explicit `public` or `custody-v2` secrets mode. Custody mode additionally
+contains the owner-committed v2 pointer. It includes no plaintext secret values.
+The package is limited to 128 KiB and config text to 32 KiB; duplicate JSON keys,
+unknown package fields and excessive nesting are refused. CLI publishing and
+package distribution still need wiring. A package is not self-authorizing: a
+matching owner transaction on the ledger is mandatory.
+
+The guest's reader uses at least two distinct HTTPS RPC hosts at a fixed confirmed
+block, checking chain ID, ledger schema, complete ABI response, deployment ID,
+active lease, block freshness and block hash before/after reading. An unavailable
+or disagreeing third peer does not override an agreeing pair. A per-reader high
+water mark refuses earlier state after an accepted read. This is explicitly RPC
+quorum trust, not a chain light client; RPC endpoints, ledger and TLS roots belong
+to the measured runtime, not a host-supplied configuration file.
+
+`front.runDirect` authenticates the package against the loaded code and runtime,
+obtains custody shares through the existing attested protocol, preserves the
+decrypted bundle's exact `ConfigSha256` check, and rechecks owner, lease and
+envelope immediately before app startup. A transferred owner, changed runner,
+changed configuration, expired lease or unavailable quorum invalidates startup.
+Egress derives from this authenticated owner config without implicitly adding
+`api.enclave.host`. Application listeners and resolver files retain the existing
+startup audit.
+
+Integration tests exercise direct public startup with the ticket service refusing,
+and a real cryptographic v2 quorum with both Enclave replicas refusing shares while
+three independent seats complete release. They also reject an otherwise
+owner-committed package whose config differs from the custody bundle's commitment.
+Chain/attestation services in these integration tests are synthetic; they do not
+prove hardware deployment or an independently operated production quorum.
+Cross-language ABI vectors come from viem (`scripts/guest-bootstrap-vectors.mjs`).
+Race-enabled tests and a bounded ABI-decoder fuzz run pass.
+
+**Activation remains incomplete:** production `main` still chooses the legacy
+provisioner, the supervisor rejects the new envelope namespace, and guestd does
+not yet carry startup packages. New measured pins, RPC bootstrap egress, a
+bounded package transport, CLI preparation, runtime manifests and custodian
+rule updates must be activated together. Existing deployments and release-key
+checks have not been weakened. Cold hardware recovery with the control service
+denied is still an acceptance gate.
 
 ## Governance disposition
 

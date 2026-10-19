@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"enclave.host/isolation/m2/appconfig"
+	"enclave.host/isolation/m2/bootstrap"
 	"enclave.host/isolation/m2/release"
 )
 
@@ -135,7 +136,7 @@ type Policy struct {
 	Refused     []string // the reasons config URLs were NOT allowed, for the guest's own log (no URL text: it may be secret)
 }
 
-// FromRelease is the ONLY public way to build a guest's allowlist: from a release the release client OPENED (the
+// FromRelease builds the legacy allowlist from a release the release client OPENED (the
 // config the owner set on chain, sealed to this guest by the relay), resolved in-guest, plus the pinned relay origin.
 // A Release built any other way, e.g. from config the host handed over, is refused: the allowlist must be the
 // owner's, never the host's (enclave-99).
@@ -156,14 +157,47 @@ func FromRelease(rel *release.Release, relay Origin) (*Policy, error) {
 	return derive(resolved, relay)
 }
 
+// FromBootstrap accepts only a fresh owner package authenticated by the guest's
+// measured chain reader. No platform relay origin is implicitly authorized.
+// For custody mode, secrets must come from custodySecrets, which verifies the
+// bundle's exact ConfigSha256 before returning values to the front.
+func FromBootstrap(auth *bootstrap.Authorization, secrets map[string]string) (*Policy, error) {
+	text, err := auth.ConfigText()
+	if err != nil {
+		return nil, err
+	}
+	mode, err := auth.SecretsMode()
+	if err != nil {
+		return nil, err
+	}
+	if mode == "public" && len(secrets) != 0 {
+		return nil, errors.New("public startup cannot receive secret values")
+	}
+	resolved := ""
+	if text != "" {
+		resolved, err = appconfig.Resolve(text, secrets)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return deriveOrigins(resolved, nil)
+}
+
 // derive builds the allowlist from the RESOLVED config and the relay origin the measured image pins. An explicit
 // top-level "egress" list replaces derivation; the relay origin is always present and config can neither remove
 // nor redirect it.
 func derive(resolvedConfig string, relay Origin) (*Policy, error) {
-	if _, err := ParseOrigin(relay.String()); err != nil {
-		return nil, fmt.Errorf("the pinned relay origin: %w", err)
+	return deriveOrigins(resolvedConfig, []Origin{relay})
+}
+
+func deriveOrigins(resolvedConfig string, pinned []Origin) (*Policy, error) {
+	set := map[string]bool{}
+	for _, origin := range pinned {
+		if _, err := ParseOrigin(origin.String()); err != nil {
+			return nil, fmt.Errorf("the pinned platform origin: %w", err)
+		}
+		set[origin.Host] = true
 	}
-	set := map[string]bool{relay.Host: true}
 	p := &Policy{}
 	if strings.TrimSpace(resolvedConfig) != "" {
 		var doc any
