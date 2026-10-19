@@ -7,11 +7,14 @@
 #include <string.h>
 
 #define SHIELD_BUSY_DEFAULT (-2)   /* `true`: the engine's own default (half its refill threads) */
+#define SHIELD_BUSY_CPU     (-3)   /* `false`: the CPU governor, as when the key is absent */
 
-/* "shieldPadBusyMint": mint one-time pads into the pad spill while requests run, not only while idle.
- *   absent / false / unreadable -> -1 or 0: idle-only (the caller sets 0)
- *   true                        -> SHIELD_BUSY_DEFAULT
- *   0..64                       -> that many minting threads (larger numbers clamp to 64) */
+/* "shieldPadBusyMint": how the pad spill mints while requests run.
+ *   absent / unreadable -> -1, false -> SHIELD_BUSY_CPU: on the CPU the guest leaves unused, measured
+ *                          (SHIELDED_PAD_SPILL_CPU_HEADROOM; the caller sets it). `false` used to mean idle-only,
+ *                          the stand-in for "do not take a request's CPU", which the governor does by measurement.
+ *   true                -> SHIELD_BUSY_DEFAULT: a fixed half of the refill threads
+ *   0..64               -> exactly that many minting threads; 0 = strictly idle-only (larger numbers clamp to 64) */
 static int shield_busy_mint(const char *json) {
     static const char key[] = "\"shieldPadBusyMint\"";
     if (!json) return -1;
@@ -28,7 +31,7 @@ static int shield_busy_mint(const char *json) {
             v++;
             while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
             if (strncmp(v, "true", 4) == 0) return SHIELD_BUSY_DEFAULT;
-            if (strncmp(v, "false", 5) == 0) return 0;
+            if (strncmp(v, "false", 5) == 0) return SHIELD_BUSY_CPU;
             if (*v >= '0' && *v <= '9') {
                 long n = 0;
                 while (*v >= '0' && *v <= '9') { if (n <= 64) n = n * 10 + (*v - '0'); v++; }

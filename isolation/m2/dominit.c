@@ -633,16 +633,20 @@ static pid_t spawn(char *const argv[], char *extra, int fd3, int flags) {
             }
             if (spill_fd == SHIELD_SPILL_FD) {
                 envp[ei++] = "SHIELDED_PAD_SPILL=fd:197";
-                /* Minting into the spill beside a request is the deployment's
-                 * choice: "shieldPadBusyMint" in its app config (true = the
-                 * engine's default, half its refill threads; a number = that
-                 * many). Absent or false keeps release 07ff8fae's idle-only rule.
-                 * (The 15 tok/s once blamed on busy minting was mostly attention
-                 * over the 64K pool's parked cells, fixed by KV runs.) */
+                /* Minting into the spill beside a request: by default on the
+                 * CPU the refill side leaves unused, measured in this guest
+                 * (the engine's governor, 1 core kept free, 16-row mints so a
+                 * minter stops within a short batch when load rises). The app
+                 * config's "shieldPadBusyMint" can fix it instead: true = the
+                 * engine's default half of its refill threads, a number = that
+                 * many (0 = only while idle). */
                 static char busy_env[48];
                 const int busy = shield_busy_mint(extra && strncmp(extra, "ENCLAVE_CONFIG=", 15) == 0 ? extra + 15 : NULL);
-                if (busy != SHIELD_BUSY_DEFAULT) {
-                    snprintf(busy_env, sizeof busy_env, "SHIELDED_PAD_SPILL_BUSY_THREADS=%d", busy < 0 ? 0 : busy);
+                if (busy == -1 || busy == SHIELD_BUSY_CPU) {
+                    envp[ei++] = "SHIELDED_PAD_SPILL_CPU_HEADROOM=1";
+                    envp[ei++] = "SHIELDED_PAD_SPILL_BATCH=16";
+                } else if (busy != SHIELD_BUSY_DEFAULT) {
+                    snprintf(busy_env, sizeof busy_env, "SHIELDED_PAD_SPILL_BUSY_THREADS=%d", busy);
                     envp[ei++] = busy_env;
                 }
                 /* The app shows its pad bank: the runtime answers a request
@@ -909,7 +913,8 @@ int main(void) {
     if (shield_spill_ok) {
         /* the same reading spawn() applies to the app's engine (see shieldPadBusyMint there) */
         const int busy = shield_busy_mint(cfg_env ? cfg_env + sizeof "ENCLAVE_CONFIG=" - 1 : NULL);
-        if (busy == SHIELD_BUSY_DEFAULT) printf("DOM Shield pad spill: minting while requests run too (engine default threads)\n");
+        if (busy == -1 || busy == SHIELD_BUSY_CPU) printf("DOM Shield pad spill: minting on spare CPU (measured, 1 core kept free)\n");
+        else if (busy == SHIELD_BUSY_DEFAULT) printf("DOM Shield pad spill: minting while requests run too (engine default threads)\n");
         else if (busy > 0) printf("DOM Shield pad spill: minting while requests run too (%d threads)\n", busy);
         else printf("DOM Shield pad spill: minting only while idle\n");
     }

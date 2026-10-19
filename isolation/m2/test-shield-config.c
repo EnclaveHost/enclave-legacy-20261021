@@ -7,7 +7,8 @@ int main(void) {
   t(NULL, -1, "no config");
   t("{}", -1, "absent");
   t("{\"shieldPadBusyMint\":true}", SHIELD_BUSY_DEFAULT, "true");
-  t("{\"shieldPadBusyMint\" : false}", 0, "false");
+  t("{\"shieldPadBusyMint\" : false}", SHIELD_BUSY_CPU, "false = the CPU governor");
+  t("{\"shieldPadBusyMint\": 0}", 0, "0 = strictly idle-only");
   t("{\"a\":1, \"shieldPadBusyMint\": 6}", 6, "number");
   t("{\"shieldPadBusyMint\":999}", 64, "clamped");
   t("{\"shieldPadBusyMint\":\"yes\"}", -1, "string value is unreadable");
