@@ -3,6 +3,7 @@
 //   node scripts/network/wg-qualify.mjs --key-file checker.key --wg /path/enclave-wg --relay https://api.enclave.host [--loop 240]
 //        [--rpc https://… --book 0x…]   (a community provider that passes also gets an on-chain attestation, for paid service)
 //   node scripts/network/wg-qualify.mjs --key-file k --wg w --records records.json --out results.json      (tests)
+// --directories-file PUBLIC_JSON_ARRAY avoids shell-specific JSON quoting for service launchers.
 // For every provider record: ask it for this checker's own probe peers (exit, and guard when it offers guard), run every
 // check through the real WireGuard path (enclave-wg check), sign the verdict (valid 10 minutes) and publish it. A provider
 // that cannot be checked, or fails any check, gets a verdict that says so: hosts treat it as not eligible.
@@ -25,7 +26,9 @@ const arg=(n,d)=>{const i=process.argv.indexOf('--'+n);return i>0?process.argv[i
 const account=privateKeyToAccount((await fs.readFile(arg('key-file'),'utf8')).trim());
 if(process.argv.includes('--print-address')){console.log(account.address.toLowerCase());process.exit(0);}
 const wgBinary=arg('wg'),relay=arg('relay'),log=m=>console.log(new Date().toISOString(),m);
-const directories=arg('directories')||relay?new DirectoryClient({origins:arg('directories')?JSON.parse(arg('directories')):[relay],timeoutMs:15000}):null;
+if(arg('directories-file')&&arg('directories'))throw Error('choose directories or directories-file, not both');
+const origins=arg('directories-file')?JSON.parse(await fs.readFile(arg('directories-file'),'utf8')):arg('directories')?JSON.parse(arg('directories')):relay?[relay]:null;
+const directories=arg('directories-file')||arg('directories')||relay?new DirectoryClient({origins,timeoutMs:15000}):null;
 const zero='0x'+'0'.repeat(64);
 const chain=arg('rpc')?createPublicClient({chain:base,transport:http(arg('rpc'),{timeout:15000})}):null;
 const book=arg('book','0xab214342d5A490150A4A977063A2f88E21F80907');

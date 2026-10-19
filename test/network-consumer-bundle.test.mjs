@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -19,4 +19,14 @@ test('standalone network bundles load outside the repository without npm depende
  // A missing config must be the failure, rather than a dependency/import error.
  const absent=path.join(dir,'deliberately-absent.json');
  await assert.rejects(run(process.execPath,[path.join(dir,'provider.mjs'),absent],{cwd:dir,env:{...process.env,NODE_PATH:''}}),e=>e.code===1&&e.stderr.includes('ENOENT')&&e.stderr.includes(absent)&&!e.stderr.includes('Dynamic require'));
+ const key=path.join(dir,'test-only.key');await writeFile(key,'0x'+'01'.repeat(32),{mode:0o600});
+ const {stdout}=await run(process.execPath,[path.join(dir,'checker.mjs'),'--key-file',key,'--print-address'],{cwd:dir,env:{...process.env,NODE_PATH:''}});
+ assert.equal(stdout.trim(),'0x1a642f0e3c3af545e7acbd38b07251b3990914f1');
+ const records=path.join(dir,'records.json'),directories=path.join(dir,'directories.json'),out=path.join(dir,'verdicts.json');
+ await writeFile(records,'[]');await writeFile(directories,'["http://127.0.0.1:8188"]');
+ // Empty fixtures exercise native file arguments without any probe, RPC or publication.
+ await run(process.execPath,[path.join(dir,'checker.mjs'),'--key-file',key,'--records',records,'--directories-file',directories,'--out',out],{cwd:dir});
+ await assert.rejects(run(process.execPath,[path.join(dir,'checker.mjs'),'--key-file',key,'--directories-file',directories,'--directories','[]']),e=>e.stderr.includes('choose directories or directories-file'));
+ await writeFile(directories,'null');
+ await assert.rejects(run(process.execPath,[path.join(dir,'checker.mjs'),'--key-file',key,'--directories-file',directories,'--records',records]),e=>e.stderr.includes('1..8 directory origins required'));
 });

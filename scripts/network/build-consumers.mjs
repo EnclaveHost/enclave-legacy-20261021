@@ -9,7 +9,7 @@ const output=process.argv[2];
 if(!output)throw Error('usage: node scripts/network/build-consumers.mjs OUTPUT_DIRECTORY');
 await mkdir(output,{recursive:true});
 const files={};
-for(const [name,entry] of Object.entries({'provider.mjs':'network/wg-provider/main.mjs','privacy-agent.mjs':'network/privacy-agent.mjs'})){
+for(const [name,entry] of Object.entries({'provider.mjs':'network/wg-provider/main.mjs','privacy-agent.mjs':'network/privacy-agent.mjs','checker.mjs':'scripts/network/wg-qualify.mjs'})){
  const result=await build({absWorkingDir:root,entryPoints:[entry],outfile:name,write:false,bundle:true,platform:'node',format:'esm',target:'node20',minify:true,metafile:true,
   banner:{js:'import {createRequire as bundleRequire} from "node:module"; const require=bundleRequire(import.meta.url);'}});
  const bytes=result.outputFiles[0].contents;
