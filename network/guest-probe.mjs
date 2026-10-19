@@ -1,4 +1,5 @@
 import https from 'node:https';
+import {isIP} from 'node:net';
 import {randomBytes,createHash} from 'node:crypto';
 import {SocksHttpsAgent,DirectHttpsAgent} from './socks-connect.mjs';
 import {LocalAppHttpsAgent} from './local-app-transport.mjs';
@@ -14,20 +15,29 @@ function get(hostname,address,path,agent,pin,port=443){return new Promise((resol
   if(!spki||(pin&&!pin.equals(spki))){res.destroy();reject(new Error('guest TLS key changed'));return;}
   const chunks=[];let size=0;res.on('data',b=>{size+=b.length;if(size>2097152)res.destroy(new Error('guest proof too large'));else chunks.push(b)});
   res.once('error',reject);res.once('end',()=>resolve({status:res.statusCode,spki,bytes:Buffer.concat(chunks)}));
- });req.once('timeout',()=>req.destroy(new Error('guest probe timeout')));req.once('error',reject);
+ });
+ const deadline=setTimeout(()=>req.destroy(new Error('guest probe timeout')),30000);
+ req.once('close',()=>clearTimeout(deadline));req.once('timeout',()=>req.destroy(new Error('guest probe timeout')));req.once('error',reject);
 });}
 const GUEST_BUSY=/attestation busy; retry|too many concurrent report requests/,GUEST_BUSY_RETRIES=5;
-export async function probeGuest({deploymentId,hostname,address,port=443,proxy,direct=false,expected,linux,shield,hostSession,pvm,localUpstream,openApp,domainIndependent=false,verifySnp=judge,pinnedSpkiSha256=null,startupEgress=false}){
+export async function probeGuest({deploymentId,hostname,address,port=443,proxy,direct=false,expected,linux,shield,hostSession,pvm,localUpstream,openApp,domainIndependent=false,verifySnp=judge,pinnedSpkiSha256=null,startupEgress=false,attestationBootstrap=false}){
  if(startupEgress&&(!openApp||proxy||pinnedSpkiSha256||expected.requiresConfigSocketServer!==true||expected.requiresSecretsV1!==true))throw new Error('startup egress requires a local configured secret command proof');
  if([proxy,localUpstream,openApp,direct].filter(Boolean).length!==1)throw new Error('guest probes require exactly one explicit app transport');
- if(direct&&(!pinnedSpkiSha256||domainIndependent))throw new Error('direct route probes require an attested key and SNI');
+ if(attestationBootstrap&&(!direct||!isIP(address)||pinnedSpkiSha256||domainIndependent||startupEgress||
+   !hostname||!/^0x[0-9a-f]{64}$/.test(deploymentId)||!expected||
+   !/^[0-9a-f]{64}$/.test(expected.appSha256)||!/^[0-9a-f]{64}$/.test(expected.runtimeId)||
+   !(linux||shield&&hostSession||pvm)))throw new Error('attestation bootstrap requires a literal direct route and explicit guest policy');
+ if(direct&&(!pinnedSpkiSha256&&!attestationBootstrap||domainIndependent))throw new Error('direct route probes require an attested key and SNI');
  // The locally attested key authenticates a route even before its WebPKI
  // certificate is installed. SNI remains present for shared public listeners;
  // only a dedicated native port uses domainIndependent transport.
- const routeTls={tlsOptions:{...(domainIndependent||pinnedSpkiSha256?{rejectUnauthorized:false}:{}),...(domainIndependent?{servername:''}:{})},
-   ...(pinnedSpkiSha256?{verifyPeer:connection=>{
+ let verifiedKey=pinnedSpkiSha256;
+ const routeTls={tlsOptions:{...(domainIndependent||pinnedSpkiSha256||attestationBootstrap?{rejectUnauthorized:false}:{}),...(domainIndependent?{servername:''}:{})},
+   ...((pinnedSpkiSha256||attestationBootstrap)?{verifyPeer:connection=>{
      const key=connection.getPeerX509Certificate()?.publicKey.export({format:'der',type:'spki'});
-     if(!key||createHash('sha256').update(key).digest('hex')!==pinnedSpkiSha256)throw new Error('guest TLS key changed');
+     // Bootstrap sends only a nonce proof request until hardware verifies this
+     // key. Every later connection is checked BEFORE any HTTP bytes are sent.
+     if(!key||verifiedKey&&createHash('sha256').update(key).digest('hex')!==verifiedKey)throw new Error('guest TLS key changed');
      observedPeerKeys.set(connection,key);
    }}:{})};
  const agent=(localUpstream||openApp)?new LocalAppHttpsAgent(localUpstream,deploymentId,{openApp,attestationOnly:startupEgress}):direct?new DirectHttpsAgent(routeTls):new SocksHttpsAgent(proxy,routeTls),nonce=randomBytes(32);
@@ -76,6 +86,7 @@ export async function probeGuest({deploymentId,hostname,address,port=443,proxy,d
     if(verdict.runtimeId!==expected.runtimeId)throw new Error('pVM guest proof refused: another runtime');
     verified=true;
   }else throw new Error('no independently trusted guest verification policy');
+  verifiedKey=createHash('sha256').update(response.spki).digest('hex');
   const ready=await get(hostname,address,'/.well-known/enclave-ready',agent,response.spki,port);
   if(ready.status!==200&&!(startupEgress&&ready.status===503))throw new Error('guest readiness HTTP '+ready.status);
   return {ready:ready.status===200,verified,deploymentId,appSha256:expected.appSha256,runtimeId:expected.runtimeId,spkiSha256:createHash('sha256').update(response.spki).digest('hex')};

@@ -899,3 +899,17 @@ Fresh agreeing Base reads also verified the immutable session factory and custod
 bindings and bytecode. Their explicit candidate pin profile is prepared, but
 existing owner sessions and the single-seat production custody vault have not
 migrated. Production runtime activation remains pending.
+
+The native GET/HEAD client now resolves full deployment IDs from signed public
+directories, checks leases through explicitly pinned RPC/contract policy, and
+authenticates fresh guest hardware evidence before application traffic. It uses
+literal ingress IPs with routing-only SNI and pins the attested TLS key before
+sending readiness or application bytes. A cold-client EyesOff ping passed in a
+network namespace without external DNS, Nan, minipc or the control API; one
+directory was unavailable, and ingress forwarders rejected the API's SNI.
+See [native client operation and trust requirements](../network/native-client.md).
+This removes required Enclave DNS/CA/control lookup from that native read path.
+It does not yet derive first-user app/runtime pins from owner startup commitments,
+replace browser discovery, activate independent custody/storage writers, or prove
+organizationally independent operation. The test used existing host-supplied
+app/runtime expectations and explicit checker/RPC trust.
