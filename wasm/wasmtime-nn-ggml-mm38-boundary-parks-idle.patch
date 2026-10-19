@@ -1,0 +1,77 @@
+mm38 boundary parks survive the idle heal, on top of mm37 (wasmtime-nn-ggml-mm37-end-parks.patch: wasmtime 2936ad79).
+Same tree, cargo cache and command (~/Projects/enclave-runtime-park/build-in-ns.sh; a no-change build reproduced
+2936ad79 again on 2026-10-19) -> wasmtime 2efa336b, Shield release 58a0e7bd (= d7cf9d7a + rt/wasmtime).
+
+The idle heal (the last session ends and every park has aged past its TTL) used to drop every park and clear the
+pool. Boundary parks are the deployment's standing prompt prefix, parked once by its boot warm-up; after a quiet night
+(PREFIX_TTL_S, 6 h) the first request to end - eyesoff's /warmup model probe on a page load - wiped them, and the
+sign-in re-read the whole ~6.5K-token prefix. KV runs (llamacpp-kv-runs.patch) already stop high-standing cells from
+taxing every decode step, so the heal now drops only the stale turn parks and leaves boundary parks in place; the pool
+clears outright only when no boundary park stands. Rig (Qwen3.5-0.8B MTP, PREFIX_TTL_S=30): /warmup after the idle
+wait found every variant covered (1.66 s) where 2936ad79 re-prefilled (6.3 s, "covered 0 (parks [])").
+
+diff --git a/crates/wasi-nn/src/backend/ggml.rs b/crates/wasi-nn/src/backend/ggml.rs
+index ca4e315..0fd05e4 100644
+--- a/crates/wasi-nn/src/backend/ggml.rs
++++ b/crates/wasi-nn/src/backend/ggml.rs
+@@ -507,7 +507,9 @@ fn park_ttl() -> Duration {
+ /// follows. Turn parks come and go with conversations; these are the
+ /// deployment's standing prefix and live on their own slots and clock.
+ /// ENCLAVE_GGML_PREFIX_SLOTS (2 when the prefix cache is armed, 0 = off),
+-/// ENCLAVE_GGML_PREFIX_TTL_S (6 h): past it an idle pool may clear them.
++/// ENCLAVE_GGML_PREFIX_TTL_S (6 h): until every park has idled past its TTL,
++/// an idle pool keeps its stale turn parks too. Boundary parks themselves
++/// never expire (mm38, see the idle heal in Drop): only capacity evicts them.
+ fn prefix_slots() -> usize {
+     static V: OnceLock<usize> = OnceLock::new();
+     *V.get_or_init(|| {
+@@ -2570,6 +2572,17 @@ impl Drop for GgmlExecutionContext {
+         // every park has aged past PARK_TTL with no session alive, the parks
+         // stand down and the pool clears — long-idle heals exactly as before
+         // the feature, and a busy burst keeps its parks.
++        //
++        // mm38: except the BOUNDARY parks. They are the deployment's standing
++        // prompt prefix, parked once by its boot warm-up, and nothing parks
++        // them again until a caller pays the whole prefill: a quiet night
++        // (2026-10-19, eyesoff) let them age past PREFIX_TTL, the first
++        // request to end afterwards wiped them, and the next sign-in re-read
++        // 6.5K tokens. The heal they blocked is no longer worth that: KV runs
++        // (libllama, wasm/llamacpp-kv-runs.patch) attend only a ubatch's own
++        // cell runs, so cells left standing high in the pool no longer tax
++        // every decode step. The stale turn parks still go; the pool clears
++        // only once no boundary park stands (all evicted for room).
+         if slots.len() + parked.len() == self.server.total_seqs as usize {
+             if parked.is_empty() {
+                 unsafe { ell_reset(self.server.raw) };
+@@ -2578,12 +2591,26 @@ impl Drop for GgmlExecutionContext {
+                 p.at.elapsed() > (if p.boundary { prefix_ttl() } else { park_ttl() })
+                     && p.pin.load(Ordering::Acquire) == 0
+             }) {
+-                for p in parked.drain(..) {
+-                    unsafe { ell_seq_remove(self.server.raw, p.seq_id) };
+-                    slots.push(p.seq_id);
++                if parked.iter().any(|p| p.boundary) {
++                    let mut alias = self.server.alias.lock().unwrap();
++                    parked.retain(|p| {
++                        if p.boundary {
++                            return true;
++                        }
++                        unsafe { ell_seq_remove(self.server.raw, p.seq_id) };
++                        self.server.sh_remove(p.seq_id);
++                        alias.remove(&p.seq_id);
++                        slots.push(p.seq_id);
++                        false
++                    });
++                } else {
++                    for p in parked.drain(..) {
++                        unsafe { ell_seq_remove(self.server.raw, p.seq_id) };
++                        slots.push(p.seq_id);
++                    }
++                    unsafe { ell_reset(self.server.raw) };
++                    self.server.sh_clear();
+                 }
+-                unsafe { ell_reset(self.server.raw) };
+-                self.server.sh_clear();
+             }
+         }
+         drop(slots);
