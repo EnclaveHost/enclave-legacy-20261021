@@ -381,10 +381,17 @@ None of this is hardware evidence.
 
 ## Remaining activation gates
 
-1. **Image provenance.** The local owner-permits image was built from
-   uncommitted sources on top of a local control-image base. A committed source
-   revision must be rebuilt, independently reproduced and reviewed before any
-   operator uses it.
+1. **Image provenance.** Two clean-checkout builds of commit
+   `78acfcc6d9753eace7bc8dbc423f5d432291a8b6` now produce byte-identical kernel,
+   initramfs, command line and manifest on the coordinator's machine. The
+   initramfs SHA-256 is
+   `ced2e0841639ece47280251d530e49033c14d41af848bcdcc28e51cd1b59709e`;
+   the SNP launch measurement is
+   `c3f7f01dabb3597ef47b0f48008e75beadb12ffbb612f60edff338b3c046a74aeb78866b7c385a76ca894f44afea99f0`.
+   Both use the same hash-pinned local control-image base, kernel and OVMF.
+   This establishes repeatability on one builder, not independent reproduction
+   of the base or review by a separate operator. The prior uncommitted build
+   is superseded. This image has not been activated on hardware.
 2. **Legacy tunnel images.** `/v2/custody/code-approve` is now on the relay's
    custody route list. `/v2/custody/independent-genesis` is not, so independent
    formation needs direct transport (the default).
