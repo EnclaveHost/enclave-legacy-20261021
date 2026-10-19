@@ -12,7 +12,7 @@ export function directCustodyIngress({endpoint,mgmtPort}) {
   }
   @public_protocol {
     method POST
-    path /v2/custody/evidence /v2/custody/challenge /v2/custody/release /v2/custody/join /v2/custody/approve /v2/custody/independent-genesis
+    path /v2/custody/evidence /v2/custody/challenge /v2/custody/release /v2/custody/join /v2/custody/approve /v2/custody/independent-genesis /v2/custody/code-approve
   }
   handle @public_info {
     reverse_proxy 127.0.0.1:${mgmtPort}

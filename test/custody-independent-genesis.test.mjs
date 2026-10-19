@@ -97,13 +97,14 @@ test('public coordinator resumes a signed transcript and requests activation seq
   if(body.action==='activate'){active++;maxActive=Math.max(active,maxActive);await new Promise(res=>setTimeout(res,1));active--;activations++;return {committeeId:body.results[0].committeeId,epoch:1};}
   throw Error('unexpected route');
  };
- const prepared=await coordinateIndependentGenesis(r.plan,{post});assert.equal(activations,0);
- await assert.rejects(coordinateIndependentGenesis(r.plan,{activate:true,post:async(url,body)=>{
+ const get=async url=>{const m=r.plan.machines.find(m=>url===m.endpoint+'/v2/custody/info');assert.ok(m);throw Error('offline peer');};
+ const prepared=await coordinateIndependentGenesis(r.plan,{post,get});assert.equal(activations,0);assert.equal(prepared.transaction,null);
+ await assert.rejects(coordinateIndependentGenesis(r.plan,{activate:true,get,post:async(url,body)=>{
    const value=await post(url,body);
    return body.action==='finish'&&value.id===1?{...value,signature:'0x'+'00'.repeat(65)}:value;
  }}),/founder signature/);
  assert.equal(activations,0);
- const activated=await coordinateIndependentGenesis(r.plan,{post,activate:true});
+ const activated=await coordinateIndependentGenesis(r.plan,{post,get,activate:true});
  assert.equal(activated.committeeId,prepared.committeeId);assert.equal(activations,3);assert.equal(maxActive,1);
 });
 

@@ -62,6 +62,9 @@ export const REGISTRY_V4_ABI = [{ type: "function", name: "get", stateMutability
   { name: "endpoint", type: "string" }, { name: "repo", type: "string" }, { name: "measurement", type: "bytes32" }, { name: "operator", type: "address" },
   { name: "registeredAt", type: "uint64" }, { name: "lastSeen", type: "uint64" }, { name: "active", type: "bool" },
   { name: "cpuPricePerSec6", type: "uint64" }, { name: "gpuPricePerSec6", type: "uint64" }, { name: "proofKey", type: "address" }, { name: "payoutWallet", type: "address" }] }] }];
+export const ERC1271_ABI = [{ type: "function", name: "isValidSignature", stateMutability: "view", inputs: [{ name: "hash", type: "bytes32" }, { name: "signature", type: "bytes" }], outputs: [{ type: "bytes4" }] }];
+const ERC1271_MAGIC = "0x1626ba7e";
+const MAX_AUTH_HOSTS = 160, MAX_AUTH_CHECKS = 512;
 const key = (s) => stringToHex(s, { size: 32 });
 export const BOOK_KEYS = { deployments: key("deployments"), registry: key("registry") };
 export const endpointIdOf = (endpoint) => keccak256(toBytes(endpoint));
@@ -117,6 +120,16 @@ export function createChainReaderV2({ rpcs, vault, hostOwnership = null, chainId
     throw Error('chain: distinct RPC hostnames required');
   const clients = given || (rpcs || []).map(url=>createPublicClient({transport:http(url,{timeout:timeoutMs,retryCount:0})}));
   const agreed=createQuorumReader({clients,minAgree,chainId,confirmations,timeoutMs,maxAgeSec,maxFutureSec,now,checkpoint});
+  async function hostAuthorities(rd) {
+    const [registry, ownership] = await Promise.all([rd(vault, VAULT_V2_ABI, "hostRegistry"), rd(vault, VAULT_V2_ABI, "hostOwnership")]);
+    if (hostOwnership && lc(ownership) !== lc(hostOwnership)) throw err("host_authority_mismatch", "vault host authority differs from the measured pin");
+    if (registry === ZERO || ownership === ZERO) throw err("host_authority_missing", "wallet host authority required");
+    return { registry, ownership };
+  }
+  async function entryAt(rd, { registry, ownership }, registryId) {
+    const [e, authority] = await Promise.all([rd(registry, REGISTRY_V4_ABI, "get", [registryId]), rd(ownership, HOST_OWNERSHIP_ABI, "authority", [registryId])]);
+    return { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet), owner: lc(authority[0]) };
+  }
   return {
     vault, clients,
     readRelease: ({ id, endpoint }) => agreed((c, n) => readReleaseAt(c, vault, { id, endpoint }, n)),
@@ -135,16 +148,46 @@ export function createChainReaderV2({ rpcs, vault, hostOwnership = null, chainId
       return { dealCommitments: b(dc), sealed: sealed.map(b) };
     }),
     readCodeActiveAt: ({ committeeId, measurement }) => agreed(async (c, n) => ({ activeAt: Number(await rdOf(c, n)(vault, VAULT_V2_ABI, "codeActiveAt", [committeeId, measurement])) })),
+    // A contract-wallet owner's ERC-1271 answer at the agreed block. A revert fails that RPC's read; it never votes "valid".
+    readIsValidSignature: ({ account, hash, signature }) => agreed(async (c, n) => {
+      const code = await c.request({ method: "eth_getCode", params: [account, { blockHash: n.blockHash, requireCanonical: true }] });
+      if (!code || code === "0x") return { valid: false };
+      return { valid: lc(await rdOf(c, n)(account, ERC1271_ABI, "isValidSignature", [hash, signature])) === ERC1271_MAGIC };
+    }),
     // Membership is only supported on the wallet-authority vault release.
     // No fallback to payoutWallet or a mutable book registry. Old vaults must
     // keep their old measured membership runtime until a controlled handover.
     readRegistryEntry: ({ registryId }) => agreed(async (c, n) => {
-      const rd = rdOf(c, n);
-      const [reg, ownership] = await Promise.all([rd(vault, VAULT_V2_ABI, "hostRegistry"), rd(vault, VAULT_V2_ABI, "hostOwnership")]);
-      if (hostOwnership && lc(ownership) !== lc(hostOwnership)) throw err("host_authority_mismatch", "vault host authority differs from the measured pin");
-      if (reg === ZERO || ownership === ZERO) throw err("host_authority_missing", "wallet host authority required");
-      const [e, authority] = await Promise.all([rd(reg, REGISTRY_V4_ABI, "get", [registryId]), rd(ownership, HOST_OWNERSHIP_ABI, "authority", [registryId])]);
-      return { entry: { endpoint: e.endpoint, active: e.active, operator: lc(e.operator), payoutWallet: lc(e.payoutWallet), owner: lc(authority[0]) } };
+      const rd = rdOf(c, n), hosts = await hostAuthorities(rd);
+      return { entry: await entryAt(rd, hosts, registryId) };
     }),
+    // ONE agreed block for an authorization decision (governance.mjs): the committee, the registry entry (operator and
+    // accepted owner) of every seat and of every extra host, code activation and ERC-1271 answers. Owner consent,
+    // operator binding and owner distinctness are then judged together; separate reads could mix an owner authorized
+    // at one block with a different owner or operator at another. A check names an account, or a host whose owner AT
+    // THIS BLOCK is asked. A wallet that reverts or has no code answers false here; the RPC majority still decides.
+    readAuthorization: ({ committeeId = null, registryIds = [], measurements = [], checks = [] }) => {
+      if (registryIds.length > MAX_AUTH_HOSTS || measurements.length > 64 || checks.length > MAX_AUTH_CHECKS) return Promise.reject(err("bad_request", "authorization read too large", 400));
+      return agreed(async (c, n) => {
+        const rd = rdOf(c, n), hosts = await hostAuthorities(rd);
+        const committee = committeeId ? await readCommitteeAt(rd, vault, committeeId) : null;
+        const ids = [...new Set([...(committee ? committee.machines.map((m) => m.registryId) : []), ...registryIds.map(lc)])];
+        const entries = {};
+        for (const id of ids) entries[id] = await entryAt(rd, hosts, id);
+        const codeActiveAt = {};
+        if (committee) for (const m of new Set(measurements.map(lc))) codeActiveAt[m] = Number(await rd(vault, VAULT_V2_ABI, "codeActiveAt", [committeeId, m]));
+        const valid = [];
+        for (const ch of checks) {
+          const account = ch.account ? lc(ch.account) : entries[lc(ch.registryId)]?.owner;
+          let ok = false;
+          if (account && account !== ZERO) {
+            const code = await c.request({ method: "eth_getCode", params: [account, { blockHash: n.blockHash, requireCanonical: true }] });
+            if (code && code !== "0x") { try { ok = lc(await rd(account, ERC1271_ABI, "isValidSignature", [ch.hash, ch.signature])) === ERC1271_MAGIC; } catch { ok = false; } }
+          }
+          valid.push(ok);
+        }
+        return { committee, entries, codeActiveAt, valid, enclaveOwner: lc(await rd(vault, VAULT_V2_ABI, "enclaveOwner")) };
+      });
+    },
   };
 }

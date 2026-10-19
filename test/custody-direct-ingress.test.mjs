@@ -45,7 +45,7 @@ test('operator HTTPS ingress forwards public custody ciphertext but never privat
     }
     assert.ok(ready,'direct TLS ingress becomes ready');seen.length=0;
     const body=JSON.stringify({recipientKey:Buffer.from(keys.publicKey).toString('hex'),nonce:'test'});
-    for(const route of ['evidence','challenge','release','join','approve','independent-genesis']){
+    for(const route of ['evidence','challenge','release','join','approve','independent-genesis','code-approve']){
       const response=await request(port,'/v2/custody/'+route,'POST',body);assert.equal(response.status,200);
       const value=hpke.open(keys.privateKey,info,aad,Buffer.from(JSON.parse(response.body).sealed,'base64'));
       assert.equal(Buffer.from(value).toString(),'recipient-only test value');

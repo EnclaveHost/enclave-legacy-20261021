@@ -37,6 +37,10 @@ export function dkgHelper(path) {
   });
 }
 
+// The sealed DKG session a plan names: chain, vault, salt, ordered machine records and code set.
+export const independentSession = ({chainId,vault,salt,machines,codeSet}) =>
+  digest('enclave-custody independent DKG v1',chainId,String(vault).toLowerCase(),salt,machines.map(D.machineHash),codeSet);
+
 export function createIndependentGenesis({ plan, identity, encPrivateKey, store, invoke, verifyRoster }) {
   // Freeze exact scope; caller must verify every peer's fresh quote, accepted
   // host ownership and local admission policy. There is no permissive default.
@@ -51,7 +55,7 @@ export function createIndependentGenesis({ plan, identity, encPrivateKey, store,
   if(machines.some(m=>m.enclave||!codeSet.includes(m.measurement)))throw Error('independent genesis requires admitted non-Enclave machines');
   const at=machines.findIndex(m=>m.identity.toLowerCase()===identity.address.toLowerCase()),id=at+1,n=machines.length,t=Math.ceil(2*n/3);
   if(at<0||hx(hpke.publicKeyOf(encPrivateKey))!==machines[at].encKey.slice(2).toLowerCase())throw Error('genesis identity/key mismatch');
-  const session=digest('enclave-custody independent DKG v1',chainId,vault.toLowerCase(),salt,machines.map(D.machineHash),codeSet);
+  const session=independentSession(plan);
   let st=store.load()||{session,phase:0};
   if(st.session!==session)throw Error('sealed DKG state belongs to another session');
   const save=async next=>{await store.save(next);st=next;};
@@ -128,11 +132,19 @@ export function createIndependentGenesis({ plan, identity, encPrivateKey, store,
   }
   async function completeResult(){
     if(st.result)return st.result;
+    if(!st.share)throw Error('DKG share was already handed to the committee');
     const signature=await D.signDigest(identity,D.independentGenesisDigest({chainId,vault,committeeId:st.committeeId,commitments:st.commitments,machines,codeSet}));
     await save({...st,result:{id,committeeId:st.committeeId,commitments:st.commitments,signature}});return st.result;
   }
   // HTTP handlers can overlap. Serialize transitions through the sealed state.
   let tail=Promise.resolve();
   const serial=fn=>(...args)=>{const next=tail.then(()=>fn(...args));tail=next.catch(()=>{});return next;};
-  return {session,start:serial(start),agree:serial(agree),exchange:serial(exchange),finish:serial(finish)};
+  // After the member engine holds the share for the on-chain committee, erase this copy: later handovers erase epoch
+  // shares, and a retained genesis share would outlive them. The public result stays for idempotent replies.
+  async function forgetShare(){
+    if(st.phase!==3||!st.result)throw Error('independent DKG has not finished');
+    if(st.share){const {share,...rest}=st;await save({...rest,adopted:true});}
+    return st.result;
+  }
+  return {session,start:serial(start),agree:serial(agree),exchange:serial(exchange),finish:serial(finish),forgetShare:serial(forgetShare)};
 }

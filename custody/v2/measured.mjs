@@ -10,6 +10,8 @@ export const MEASURED = Object.freeze({
   maxAgeSec: 120,
   enclaveOwner: "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
   independentOwners: null, // explicit measured wallet set enables independent genesis; no host override
+  // "owner-permits": any distinct non-Enclave accepted owners may form (all sign the plan) and admit (t seat owners sign)
+  independentAdmission: null,
   // the capacity audit's witnesses and receipt domain (availability/witness.mjs; the EnclaveVerificationFees contract)
   capacityContract: "0x87c7266543ff5839b2c20226bd9b3cd511a23641",
   witnesses: { "0xd80bf435467df887f1031743c2a2125a130fe225": "enclave-bootstrap" },

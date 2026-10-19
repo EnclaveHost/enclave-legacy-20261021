@@ -26,9 +26,10 @@ import { cachedCollateral, httpCollateral } from "../../verifier/consumer.mjs";
 import { verifyQuote, parseSnpReport } from "../../relay/snp-verify.mjs";
 import { MEASURED } from "./measured.mjs";
 import { receiptCapacityCheck } from "./capacity.mjs";
-import { independentOwners, ownerAdmissionCheck } from "./admission.mjs";
-import { createIndependentGenesis, dkgHelper } from "./independent-genesis.mjs";
-import * as D from "./digests.mjs";
+import { ownerAdmissionCheck } from "./admission.mjs";
+import { dkgHelper } from "./independent-genesis.mjs";
+import { independentPolicy, ownerPermitAdmission } from "./governance.mjs";
+import { createIndependentService } from "./independent-runtime.mjs";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const FW = "/sys/firmware/qemu_fw_cfg/by_name/opt/org.enclave.custody/raw";
@@ -132,57 +133,26 @@ async function main() {
     if (!v.ok) return { ok: false, reason: v.reasons.slice(-1)[0] };
     return { ok: true, measurement: p.measurement.toString("hex"), chipId: p.chipId.toString("hex") };
   };
-  const owners=MEASURED.independentOwners ? independentOwners(MEASURED.independentOwners,MEASURED.enclaveOwner) : null;
+  // The measured independent policy: an explicit owner list, or owner permits (any distinct non-Enclave owners that sign);
+  // with neither, the legacy Enclave-founded admission (capacity receipts) applies.
+  const policy = independentPolicy(MEASURED);
+  const admissionCheck = policy?.mode === "owner-list" ? ownerAdmissionCheck(policy.owners)
+    : policy?.mode === "owner-permits" ? ownerPermitAdmission({ enclaveOwner: MEASURED.enclaveOwner })
+    : null;
   const member = createMember({ chainId: MEASURED.chainId, vault: MEASURED.vault, identity, encPrivateKey, machine, chain, store, submit, fetchJson,
                                 attestSelf: async (b) => tsmReport(b, hc.vcek), verifyPeerQuote, enclaveOwner: MEASURED.enclaveOwner, log,
                                 // a non-Enclave candidate proves capacity with the audit witness's receipt for its chip (§5 item 2)
-                                admissionCheck: owners ? ownerAdmissionCheck(owners) : null,
+                                admissionCheck,
                                 capacityCheck: receiptCapacityCheck({ chainId: MEASURED.chainId, contract: MEASURED.capacityContract, witnesses: MEASURED.witnesses }),
                                 // this machine's own receipts, which its host fetches from the witness (unverified here: every member checks them)
                                 capacityReceipts: async () => { const r = await fetch(hc.hostUrl + "/receipts"); return r.ok ? (await r.json()).slice(0, 8) : []; } });
   const custodian = createCustodianV2({ chainId: MEASURED.chainId, vault: MEASURED.vault, encPrivateKey, shares: member.shares, chain,
                                         verifiers: productionVerifiers({ collateral: cachedCollateral({ dir: "/tmp/amd-collateral", upstream: httpCollateral({ timeoutMs: 8000 }) }) }), log });
 
-  let dkg=null;
-  async function independent(body) {
-    if(!owners)throw Error('independent genesis not enabled in this measured image');
-    if(!dkg){
-      const plan=state.independentPlan||body.plan;
-      if(!plan||!await member.verifyGenesisRoster(plan,owners))throw Error('independent roster not verified');
-      // One sealed session per machine; replacing its salt/transcript requires
-      // an explicit new identity, not a host-controlled reset endpoint.
-      const candidate=createIndependentGenesis({plan,identity,encPrivateKey,invoke:dkgHelper('/opt/custodian/dkg'),
-        verifyRoster:p=>member.verifyGenesisRoster(p,owners),
-        store:{load:()=>state.independentDkg,save:async s=>{state.independentDkg=s;await saveNow();}}});
-      state.independentPlan=plan;await saveNow();dkg=candidate;
-    }
-    if(body.action==='start')return dkg.start();
-    if(body.action==='agree')return dkg.agree(body.round1);
-    if(body.action==='exchange')return dkg.exchange(body.acks);
-    if(body.action==='finish')return dkg.finish(body.messages);
-    if(body.action==='activate'){
-      const s=state.independentDkg,plan=state.independentPlan;
-      if(s?.phase!==3||!s.result)throw Error('independent DKG has not finished');
-      if(!await member.verifyGenesisRoster(plan,owners))throw Error('independent roster changed');
-      if(!Array.isArray(body.results)||body.results.length!==plan.machines.length)throw Error('all founder signatures required');
-      const results=[...body.results].sort((a,b)=>a.id-b.id);
-      for(let i=0;i<results.length;i++){
-        const r=results[i];
-        if(r.id!==i+1||r.committeeId!==s.committeeId||r.commitments!==s.commitments||
-           await D.recoverDigest(D.independentGenesisDigest({...plan,committeeId:r.committeeId,commitments:r.commitments}),r.signature)!==plan.machines[i].identity.toLowerCase())throw Error('founder agreement mismatch');
-      }
-      const current=await chain.readCommittee({committeeId:s.committeeId});
-      if(!current.committee){
-        const hostSigs=[];
-        for(const m of plan.machines){const ev=await fetchJson(`${m.endpoint}/v2/custody/info`);hostSigs.push(ev.hostSig);}
-        await submit('createIndependentCommittee',[plan.salt,plan.machines,s.commitments,plan.codeSet,results.map(r=>r.signature),hostSigs]);
-      }
-      const adopted=await member.adoptIndependentGenesis(s);await saveNow();return adopted;
-    }
-    throw Error('unknown independent genesis action');
-  }
-  let independentTail=Promise.resolve();
-  const runIndependent=body=>{const next=independentTail.then(()=>independent(body));independentTail=next.catch(()=>{});return next;};
+  const runIndependent = createIndependentService({ policy, member, chain, identity, encPrivateKey, invoke: dkgHelper("/opt/custodian/dkg"),
+    state, persist: saveNow, fetchJson, submit, log });
+  // the committee this custodian serves: the host's choice, else the one it adopted (an independent genesis sets none)
+  const servedCommittee = () => hc.committeeId || member.committees()[0] || null;
 
   // 3. HTTP (the tunnel agent forwards the relay's /t/<name>/... here)
   const rate = rateLimiter();
@@ -192,7 +162,8 @@ async function main() {
     const client = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "-").split(",")[0].trim().slice(0, 64);
     try {
       if (req.method === "GET" && (u.pathname === "/health" || u.pathname === "/")) return json(res, 200, { ok: true, role: "custodian-v2" });
-      if (req.method === "GET" && u.pathname === "/v2/custody/info") return json(res, 200, { ...member.info(hc.committeeId), chainId: MEASURED.chainId, vault: MEASURED.vault });
+      if (req.method === "GET" && u.pathname === "/v2/custody/info") return json(res, 200, { ...member.info(servedCommittee()), chainId: MEASURED.chainId, vault: MEASURED.vault,
+                                                                                         independentAdmission: policy?.mode || null });
       if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed", message: "POST only." });
       if (!rate(client)) return json(res, 429, { error: "rate_limited", message: "Too many requests; retry shortly." });
       const chunks = []; let n = 0;
@@ -202,10 +173,12 @@ async function main() {
         case "/v2/custody/challenge": return json(res, 200, custodian.challenge({ client }));
         case "/v2/custody/release": return json(res, 200, await custodian.release(body));
         case "/v2/custody/evidence": return json(res, 200, await member.evidence(String(body.nonce || "")));
-        case "/v2/custody/join": return json(res, 200, await member.join(body, hc.committeeId));
+        case "/v2/custody/join": return json(res, 200, await member.join(body, servedCommittee()));
         case "/v2/custody/approve": return json(res, 200, await member.approve({ ...body, next: body.next || [] }));
         case "/v2/custody/host-binding": return json(res, 200, await member.setHostSig(String(body.sig || "")));
         case "/v2/custody/independent-genesis": return json(res, 200, await runIndependent(body));
+        case "/v2/custody/code-approve": return json(res, 200, await member.approveCode({ committeeId: String(body.committeeId || servedCommittee() || ""),
+                                                                                         measurement: String(body.measurement || ""), add: body.add, permit: body.permit }));
         default: return json(res, 404, { error: "not_found", message: "Unknown custody route." });
       }
     } catch (e) {
@@ -227,7 +200,8 @@ async function main() {
     log(`GENESIS ${g.committeeId}: set committeeId in the host config`);
   }
   const loop = async () => {
-    const cid = hc.committeeId || Object.keys(member._state().epochs || {}).map((k) => k.split(":")[0])[0];
+    try { await runIndependent.adoptIfCreated(); } catch (e) { log(`[independent] ${e.message}`); }
+    const cid = servedCommittee();
     if (cid) { try { const r = await member.tick(cid); if (r.state !== "steady" && r.state !== "idle") log(`[engine] ${JSON.stringify(r)}`); } catch (e) { log(`[engine] ${e.message}`); } }
     setTimeout(loop, 60_000);
   };
