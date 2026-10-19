@@ -102,6 +102,8 @@ type Request struct {
 	// it for a deployment the relay lists for the release; any other deployment on a -release guestd is built from the
 	// legacy tree (-legacy-isolation), unchanged. Accepted only with -release.
 	Release bool `json:"release"`
+	// Bootstrap is base64 of exact public owner-committed startup bytes.
+	Bootstrap string `json:"bootstrap"`
 	// Ticket is a release ticket (base64, 32 bytes) for the deployment this guest serves: accepted only for a release
 	// guest, and handed only to it (release.go). The config and secrets it releases never cross this host.
 	Ticket string `json:"ticket"`
@@ -145,15 +147,17 @@ type vm struct {
 	leaseUntil                                           time.Time
 	splices                                              map[*splice]struct{} // open data-plane connections
 	reclaimed                                            bool                 // its reclaim has finished: it holds no reservation (pool.go)
-	ticket                                               chan [32]byte        // its one release ticket slot; nil = it takes none (release.go)
-	release                                              bool                 // a release guest (its egress is admitted); false = none, or legacy
-	legacy                                               bool                 // built and started by the legacy launcher (-legacy-isolation)
-	releases                                             []string             // the release(s) of the tree that built it (treeReleases), as recorded
-	awaitingTicket                                       bool                 // its guest is connected and waiting for the ticket
-	ticketTaken                                          bool                 // its guest took its one ticket: no second is handed
-	custodyPending                                       string               // the binding its guest waits to have authorized (custody.go)
-	custodyV                                             int                  // that request's version: 1, or 2 (custody v2, names a vault)
-	custodyVault                                         string               // v2: the vault the request names ("0x" + 40 lowercase hex)
+	bootstrap                                            []byte               // untrusted public package, never secrets
+	directBootstrap                                      bool
+	ticket                                               chan [32]byte // its one release ticket slot; nil = it takes none (release.go)
+	release                                              bool          // a release guest (its egress is admitted); false = none, or legacy
+	legacy                                               bool          // built and started by the legacy launcher (-legacy-isolation)
+	releases                                             []string      // the release(s) of the tree that built it (treeReleases), as recorded
+	awaitingTicket                                       bool          // its guest is connected and waiting for the ticket
+	ticketTaken                                          bool          // its guest took its one ticket: no second is handed
+	custodyPending                                       string        // the binding its guest waits to have authorized (custody.go)
+	custodyV                                             int           // that request's version: 1, or 2 (custody v2, names a vault)
+	custodyVault                                         string        // v2: the vault the request names ("0x" + 40 lowercase hex)
 	custodyAuth                                          chan custodyAuthMsg
 	custodyServed                                        int
 }
@@ -177,7 +181,8 @@ type server struct {
 	Budget            poolBudget // the guest pool's budget; the zero value admits no guest (pool.go)
 	IDPrefix          string     // two lowercase letters for this guestd's instance ids and guest units; "" = "gd" (-instance-prefix)
 	// Release: deliver attested-release tickets and serve egress to deployment guests (release.go, -release).
-	Release bool
+	Release         bool
+	DirectBootstrap bool // dedicated measured bootstrap tree; no relay ticket path
 	// Legacy builds and starts the deployment guests that are NOT release guests on a -release guestd: the previous
 	// tree's image, unchanged (d1's rollout option (i)). nil = such a deployment is refused.
 	Legacy Launcher
@@ -267,7 +272,10 @@ func (v *vm) public() map[string]any {
 		m["inferenceModel"] = v.InferenceModel
 		m["gpuCardBytes"] = v.GPUCardBytes
 	}
-	if v.release {
+	if v.directBootstrap {
+		m["directBootstrap"] = true
+	}
+	if v.release && !v.directBootstrap {
 		m["release"] = true // a release guest: its config and secrets come sealed from the relay (release.go)
 	}
 	if v.legacy {
@@ -341,7 +349,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			// release: config and secrets reach a DEPLOYMENT guest only through the attested release, sealed to it, with
 			// egress to its own allowlist (release.go); nothing of them crosses this host, so config/secrets stay false
 			"supports": map[string]bool{"gpu": s.ShieldEnabled, "secrets": false, "egress": false, "config": false,
-				"ports": false, "protectedPorts": true, "configCid": false, "release": s.Release,
+				"ports": false, "protectedPorts": true, "configCid": false, "release": s.Release && !s.DirectBootstrap, "directBootstrap": s.Release && s.DirectBootstrap,
 				// legacyImage: a deployment that is not a release guest can still run here (on the previous image)
 				"legacyImage": s.Release && s.Legacy != nil}})
 	case r.Method == http.MethodPost && r.URL.Path == "/vms":
@@ -494,6 +502,10 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		Vcpus:    pol.Vcpus, MemMiB: mem, CPUPct: pol.CPUPercent, Created: s.Now(),
 		lc: contract.NewLifecycle(contract.Starting), leaseUntil: s.Now().Add(s.LeaseTTL), cid: cid}
 	v.legacy = legacy
+	if req.Bootstrap != "" {
+		v.bootstrap, _ = decodeBootstrap(req.Bootstrap) // releaseChoice validated before reservation
+		v.directBootstrap, v.release = true, true
+	}
 	if s.Release && req.Release {
 		v.release = true
 		v.ticket = make(chan [32]byte, 1)

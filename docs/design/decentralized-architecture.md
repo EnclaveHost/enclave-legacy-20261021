@@ -18,7 +18,7 @@ live network of independently operated machines.
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
-| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct owner-commitment reader/front implemented and tested; production entry point, host transport and measured runtime still use signed relay release |
+| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct measured entry point and bounded guestd transport built and tested; production remains on legacy startup pending supervisor/package wiring and hardware activation |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
@@ -139,13 +139,39 @@ prove hardware deployment or an independently operated production quorum.
 Cross-language ABI vectors come from viem (`scripts/guest-bootstrap-vectors.mjs`).
 Race-enabled tests and a bounded ABI-decoder fuzz run pass.
 
-**Activation remains incomplete:** production `main` still chooses the legacy
-provisioner, the supervisor rejects the new envelope namespace, and guestd does
-not yet carry startup packages. New measured pins, RPC bootstrap egress, a
-bounded package transport, CLI preparation, runtime manifests and custodian
-rule updates must be activated together. Existing deployments and release-key
-checks have not been weakened. Cold hardware recovery with the control service
-denied is still an acceptance gate.
+The actual `main` entry point now calls `runStartup`. A `bootstrapdirect` build
+selects direct startup at compile time; the default build preserves legacy
+release startup. Neither a host flag nor a failed ticket switches a guest between
+these modes. The direct path reads a bounded deployment-bound frame on vsock
+9446, uses the measured Base ledger and three distinct HTTPS RPC origins, and
+never loads relay signing keys. Bootstrap RPC origins are not added to tenant
+egress. Its central custom-domain watcher is disabled; independent custom-domain
+authorization is still outstanding.
+
+Guestd's dedicated `-direct-bootstrap -release` mode requires an explicit
+CPU template with the direct marker and verifies its complete release manifest
+against exactly one pinned release ID. An optional Shield template must carry the
+same mode marker. The host accepts base64 of the exact public package at create,
+refuses mixed ticket/legacy startup, routes it only to the matching starting CID,
+and retains direct mode and egress admission when adopting a running guest.
+The package is never included in the public VM response or persisted restart
+record. This transport supplies bytes, not authorization; the guest still checks
+the owner's chain commitment before use.
+
+`ISOLATION_DIRECT_BOOTSTRAP=1 sh isolation/m4/domain-release.sh <new-dir>` builds
+this separate release. Two local builds produced the same 18-file manifest and
+release ID `51a7f6e8cef02398d5d7de273bd35e189736398022efe1f528dd07819d683ead`.
+Live read-only checks with the measured TLS roots and RPC pins agreed on the
+production ledger at Base block 52,820,654, including each of the three possible
+single-provider omissions. This proves the present RPC path, not guest hardware
+startup or tolerance of two compromised RPC providers.
+
+**Activation remains incomplete:** the production guests still run legacy
+release images. The supervisor still rejects the new envelope namespace; CLI
+package preparation, durable package distribution, runtime admission and owner
+custody-rule updates remain to be connected. Cold hardware recovery with the
+control service denied is still an acceptance gate. Existing deployments and
+release-key checks have not been weakened.
 
 ## Governance disposition
 

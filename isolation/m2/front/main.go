@@ -54,6 +54,7 @@ import (
 	"unsafe"
 
 	"enclave.host/isolation/contract"
+	"enclave.host/isolation/m2/bootstrap"
 	"enclave.host/isolation/m2/domtls"
 	"enclave.host/isolation/m2/release"
 	"enclave.host/isolation/m2/vsock"
@@ -264,26 +265,18 @@ func main() {
 	if *initFD > 0 {
 		initPipe := os.NewFile(uintptr(*initFD), "init-pipe")
 		err := f.releaseForInit(initPipe, hd, hdErr, func() (string, error) {
-			roots, err := release.RelayRoots()
-			if err != nil {
-				return "", err
-			}
-			keys, err := release.PinnedRelayKeys()
-			if err != nil {
-				return "", err
-			}
 			p := &provisioner{
 				ticket:      func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, release.TicketPort) },
 				egress:      func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, EgressPort) },
 				report:      f.report,
 				custodyAuth: func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, release.CustodyAuthPort) },
 				appFromCode: appFromCode,
-				relayHost:   release.RelayHost, roots: roots, keys: keys,
-				etc: "/etc", fwdPort: 443,
+				relayHost:   release.RelayHost,
+				etc:         "/etc", fwdPort: 443,
 				audit: func(want []netip.AddrPort) error { return auditListeners("/proc/net", want) },
 				logf:  func(format string, a ...any) { fmt.Printf(format+"\n", a...) },
 			}
-			prov, err := p.run(context.Background(), hd, spki, rt, appSha)
+			prov, err := p.runStartup(context.Background(), func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, bootstrap.PackagePort) }, hd, spki, rt, appSha)
 			if err != nil {
 				return "", err
 			}
@@ -295,7 +288,7 @@ func main() {
 			die("release: %v", err)
 		}
 	}
-	if *initFD > 0 && f.certs.name != "" && len(hd) == 32 && !isZero(hd) {
+	if !directBootstrap && *initFD > 0 && f.certs.name != "" && len(hd) == 32 && !isZero(hd) {
 		go f.certs.watchDomains(context.Background(), "0x"+hex.EncodeToString(hd))
 	}
 	tl := tls.NewListener(l, &tls.Config{GetCertificate: f.certs.getCertificate, MinVersion: tls.VersionTLS13,

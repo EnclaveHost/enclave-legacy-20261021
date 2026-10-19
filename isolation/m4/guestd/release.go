@@ -314,6 +314,14 @@ func (s *server) postTicket(w http.ResponseWriter, r *http.Request, id string) {
 // deployment's app without a release. A lab guest (no deployment id) has no HOST_DATA and runs this tree's image with
 // no release.
 func (s *server) releaseChoice(req *Request, hostData string) (ticket *[32]byte, legacy bool, err error) {
+	if req.Bootstrap != "" || s.DirectBootstrap && hostData != "" {
+		if !s.Release || !s.DirectBootstrap || hostData == "" || req.Release || req.Ticket != "" {
+			return nil, false, errors.New("direct bootstrap requires its dedicated tree and deployment, without relay release or ticket")
+		}
+		_, err := decodeBootstrap(req.Bootstrap)
+		return nil, false, err
+	}
+
 	switch {
 	case req.Release && !s.Release:
 		return nil, false, errors.New("a release guest: this guestd does not deliver releases (-release is off)")

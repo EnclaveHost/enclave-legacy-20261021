@@ -39,12 +39,18 @@ if [ "${ISOLATION_LAB_FRONT:-}" = 1 ]; then
   tags="-tags=releaselab"
   echo "app-image-template.sh: building a LAB front (lab relay, lab CA, lab release key): not a production image" >&2
 fi
+if [ "${ISOLATION_DIRECT_BOOTSTRAP:-}" = 1 ]; then
+  [ "${ISOLATION_LAB_FRONT:-}" != 1 ] || { echo "direct bootstrap and legacy lab pins cannot be combined" >&2; exit 2; }
+  tags="-tags=bootstrapdirect"
+  echo "app-image-template.sh: building owner-committed direct bootstrap front" >&2
+fi
 (cd "$m2" && GOFLAGS= CGO_ENABLED=0 go build $tags -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o "$t/front" ./front)
 mkdir -p "$t/proc" "$t/sys" "$t/dev" "$t/tmp"
 "$here/runtime-set.sh" compose "$t/rt"
 # Capability is part of the pinned release, checked by the predictor before
 # admitting a V3 port bundle to this front. Older releases carry no marker.
 printf '1\n' > "$t/rt/protected-ports.enabled"
+if [ "${ISOLATION_DIRECT_BOOTSTRAP:-}" = 1 ]; then printf '1\n' > "$t/rt/direct-bootstrap.enabled"; fi
 # The guest kernel's module tree is named after the GUEST kernel, not the host's: see ../m1/domain.env.
 . "$here/../m1/domain.env"
 M=/lib/modules/$GUEST_KREL/kernel

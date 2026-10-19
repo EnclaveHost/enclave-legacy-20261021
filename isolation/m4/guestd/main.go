@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"enclave.host/isolation/contract"
+	"enclave.host/isolation/m2/bootstrap"
 	"enclave.host/isolation/m2/egress"
 	"enclave.host/isolation/m2/release"
 	"enclave.host/isolation/m2/vsock"
@@ -328,6 +329,8 @@ func main() {
 	isoRelease := flag.String("isolation-release", "", "the domain release(s) the -isolation tree was installed from, comma-separated: a 64-hex id, or @<release.json> (its sha256 IS the id). Named to the judge for every guest this tree builds and recorded with it; the judge's table (m2/judge.mjs LEGACY_WX_RELEASES) decides what that release may state. REQUIRED when the tree predates per-release W^X")
 	legacyIsoRelease := flag.String("legacy-isolation-release", "", "the same, for the -legacy-isolation tree (REQUIRED with it when that tree predates per-release W^X)")
 	unrecordedRel := flag.String("unrecorded-releases", "", "the release(s) named when ADOPTING an instance whose record names none (written by a guestd before per-release records): the pre-chain releases this host ran; empty = none named, and such a pre-chain guest is not adopted")
+	directOn := flag.Bool("direct-bootstrap", false, "serve owner-committed packages on vsock 9446; requires -release and a dedicated bootstrapdirect measured tree")
+	bootstrapPort := flag.Uint("bootstrap-port", bootstrap.PackagePort, "vsock port for bounded owner startup packages")
 	releaseOn := flag.Bool("release", false, "deliver attested-release tickets (vsock host port 9444) and serve deployment guests' egress (9443) (release.go); off = neither, and /health says supports.release=false")
 	adoptCheck := flag.Bool("adopt-check", false, "verify adoption of every existing guest without sweeping, stopping guests, or serving")
 	adoptRuntimes := flag.String("adopt-runtimes", "", "explicit historical release=runtime.json pins, comma-separated; verified again on adoption")
@@ -417,6 +420,20 @@ func main() {
 	if *cpuTemplate != "" {
 		l.env = append(l.env, "APP_IMAGE_TEMPLATE="+*cpuTemplate)
 	}
+	if *directOn {
+		if !*releaseOn || *legacyIso != "" || !filepath.IsAbs(*cpuTemplate) {
+			log.Fatal("direct bootstrap requires -release, an explicit CPU template and no legacy tree")
+		}
+		for _, template := range []string{*cpuTemplate, *shieldTemplate} {
+			if template == "" {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(template, "rt/direct-bootstrap.enabled"))
+			if err != nil || string(b) != "1\n" {
+				log.Fatal("direct bootstrap template lacks its measured mode marker")
+			}
+		}
+	}
 	if *shieldTemplate != "" || *shieldRelease != "" {
 		ids, e := parseReleaseIDs(*shieldRelease)
 		if e != nil || len(ids) != 1 || !filepath.IsAbs(*shieldTemplate) {
@@ -467,6 +484,15 @@ func main() {
 	}
 	if s.TreeReleases, err = parseReleaseIDs(*isoRelease); err != nil {
 		log.Fatalf("-isolation-release: %v", err)
+	}
+	if *directOn {
+		if len(s.TreeReleases) != 1 {
+			log.Fatal("direct bootstrap requires exactly one pinned CPU release")
+		}
+		out, err := exec.Command("python3", filepath.Join(*iso, "m4/release-manifest.py"), "verify", filepath.Dir(*cpuTemplate), "--expect", s.TreeReleases[0]).CombinedOutput()
+		if err != nil {
+			log.Fatalf("direct bootstrap release does not verify: %s", out)
+		}
 	}
 	if s.LegacyTreeReleases, err = parseReleaseIDs(*legacyIsoRelease); err != nil {
 		log.Fatalf("-legacy-isolation-release: %v", err)
@@ -596,13 +622,22 @@ func main() {
 			}
 			log.Printf("non-release deployment guests are built from %s", *legacyIso)
 		}
-		tl, err := vsock.Listen(uint32(*ticketPort))
-		if err != nil {
-			log.Fatalf("release tickets: %v", err)
+		if *directOn {
+			s.DirectBootstrap = true
+			bl, err := vsock.Listen(uint32(*bootstrapPort))
+			if err != nil {
+				log.Fatalf("bootstrap packages: %v", err)
+			}
+			go func() { log.Fatal(s.serveBootstrap(context.Background(), bl, vsockCID)) }()
+		} else {
+			tl, err := vsock.Listen(uint32(*ticketPort))
+			if err != nil {
+				log.Fatalf("release tickets: %v", err)
+			}
+			go func() {
+				log.Fatal(s.serveTickets(context.Background(), tl, vsockCID, log.New(os.Stderr, "release: ", log.LstdFlags)))
+			}()
 		}
-		go func() {
-			log.Fatal(s.serveTickets(context.Background(), tl, vsockCID, log.New(os.Stderr, "release: ", log.LstdFlags)))
-		}()
 		cl, err := vsock.Listen(uint32(*custodyAuthPort))
 		if err != nil {
 			log.Fatalf("custody authorization: %v", err)
@@ -619,7 +654,11 @@ func main() {
 			CIDOf:  vsockCID, Admit: s.admitCID, Log: log.New(os.Stderr, "egress: ", log.LstdFlags),
 		}
 		go func() { log.Fatal(es.Serve(context.Background(), el)) }()
-		log.Printf("attested release ON: tickets on vsock %d, egress on vsock %d (guests guestd launched only)", *ticketPort, *egressPortFlag)
+		if *directOn {
+			log.Printf("direct bootstrap ON: packages on vsock %d, egress on vsock %d", *bootstrapPort, *egressPortFlag)
+		} else {
+			log.Printf("attested release ON: tickets on vsock %d, egress on vsock %d (guests guestd launched only)", *ticketPort, *egressPortFlag)
+		}
 	}
 	if *authKey != "" {
 		k, err := loadKey(*authKey)
