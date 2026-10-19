@@ -49,6 +49,12 @@ class ControlOverlay(unittest.TestCase):
         upgraded=self.root/'upgraded';mod.overlay(out,upgraded,COMMIT,REPO)
         again=self.read(upgraded)
         self.assertEqual(after['app/windows/node/session-api-auth.mjs'][1],again['app/windows/node/session-api-auth.mjs'][1])
+    def test_only_identical_unmodified_regular_duplicates_are_collapsed(self):
+        self.base_image([('unchanged-file',0o100600,b'keep these exact bytes',1)])
+        out=self.root/'out';m=mod.overlay(self.base,out,COMMIT,REPO);self.read(out)
+        self.assertEqual(m['controlOverlay']['collapsedIdenticalDuplicates'],{'unchanged-file':1})
+        self.base_image([('unchanged-file',0o100600,b'different bytes',1)])
+        with self.assertRaisesRegex(ValueError,'duplicate cpio entry'):mod.overlay(self.base,self.root/'bad',COMMIT,REPO)
     def test_plain_names_also_support_repeated_overlay(self):
         self.base_image(prefix='');out=self.root/'out';mod.overlay(self.base,out,COMMIT,REPO);self.read(out)
         mod.overlay(out,self.root/'twice',COMMIT,REPO);self.read(self.root/'twice')

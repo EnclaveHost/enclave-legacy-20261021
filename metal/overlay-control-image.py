@@ -52,13 +52,18 @@ def entries(f):
         if key == 'TRAILER!!!':
             return
 
-def body(f, size, target=None):
-    remaining = size + (-size % 4)
+def body(f, size, target=None, digest=None):
+    remaining = size
     while remaining:
         chunk = exact(f, min(remaining, 1024*1024))
         if target is not None:
             target.write(chunk)
+        if digest is not None:
+            digest.update(chunk)
         remaining -= len(chunk)
+    padding = exact(f, -size % 4)
+    if target is not None:
+        target.write(padding)
 
 def encode(name, fields, data=b''):
     fields = list(fields)
@@ -87,23 +92,31 @@ def overlay(base, out, commit, repo):
     m['controlOverlay'] = {'baseInitramfsSha256': base_sha, 'commit': commit,
         'builder': 'metal/overlay-control-image.py', 'builderSha256': file_sha(Path(__file__)),
         'files': [{'path': '/'+k, 'source': paths[k], 'sha256': sha(v)} for k,v in replacements.items()]}
-    replacements['opt/metal/manifest.json'] = (json.dumps(m, indent=2)+'\n').encode()
+    replacements['opt/metal/manifest.json'] = b''  # filled after namespace validation
     # Validate the whole namespace before emitting output. A symlink in a parent
     # must not redirect newly installed trusted runtime files elsewhere.
-    metadata = {}
+    metadata, digests, duplicates = {}, {}, {}
     prefix = ''
     maxino = 0
     with gzip.open(base/'initramfs.cpio.gz', 'rb') as f:
         for key, name, fields, header in entries(f):
+            digest = hashlib.sha256()
+            body(f, fields[6], digest=digest)
             if key in metadata:
-                raise ValueError('duplicate cpio entry: '+key)
-            metadata[key] = fields
+                # Earlier overlay builders appended identical helper entries on
+                # every run. Collapse only unchanged, singly-linked regular files
+                # with identical content and metadata. Conflicting paths refuse.
+                if key in replacements or not stat.S_ISREG(fields[1]) or fields[4] != 1 or \
+                        fields[1:11] != metadata[key][1:11] or digest.hexdigest() != digests[key]:
+                    raise ValueError('duplicate cpio entry: '+key)
+                duplicates[key] = duplicates.get(key, 0) + 1
+                continue
+            metadata[key], digests[key] = fields, digest.hexdigest()
             maxino = max(maxino, fields[0])
             if key == 'app/supervisor.js':
                 prefix = name[:-len(key)]
             if key in replacements and (not stat.S_ISREG(fields[1]) or fields[4] != 1):
                 raise ValueError('nonregular or hardlinked replacement: '+key)
-            body(f, fields[6])
     if not REQUIRED <= metadata.keys():
         raise ValueError('base image missing required entries')
     directories = set()
@@ -116,11 +129,18 @@ def overlay(base, out, commit, repo):
                 raise ValueError('runtime parent is not a directory: '+p)
             if p not in metadata:
                 directories.add(p)
+    m['controlOverlay']['collapsedIdenticalDuplicates'] = duplicates
+    replacements['opt/metal/manifest.json'] = (json.dumps(m, indent=2)+'\n').encode()
     out.mkdir(parents=True)
     try:
         with gzip.open(base/'initramfs.cpio.gz', 'rb') as f, (out/'initramfs.cpio.gz').open('wb') as target:
             with gzip.GzipFile(filename='', mode='wb', fileobj=target, mtime=0, compresslevel=9) as z:
+                emitted = set()
                 for key, name, fields, header in entries(f):
+                    if key in emitted:
+                        body(f, fields[6])
+                        continue
+                    emitted.add(key)
                     if key == 'TRAILER!!!':
                         for k in sorted(directories, key=lambda k: (k.count('/'), k)):
                             maxino += 1
