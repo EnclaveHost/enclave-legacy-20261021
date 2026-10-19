@@ -45,6 +45,7 @@ import { createPublicClient, createWalletClient, http as viemHttp, fallback,
 import { base } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
+import {publishPackageReplicas,verifyPackageReplicas,validateStoragePlan} from "../sdk/bootstrap/storage.mjs";
 import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
 import {loadContractPins} from "../network/contract-pins.mjs";
 import {bootstrapIntent,preparePackage,verifyPackage,fetchPackage,readBoundedResponse,parseUniqueJSON,MAX_PACKAGE_BYTES} from "../sdk/bootstrap/package.mjs";
@@ -3021,8 +3022,8 @@ async function cmdCustodyHere(rest) {
 async function cmdBootstrap(rest) {
   CHAIN_ONLY=true;
   if(!CONTRACT_PINS)throw new Error("bootstrap requires --contract-pins");
-  const sub=rest.shift(), f=flags(rest,{val:["--file","--config-file","--custody-file","--app-id","--runtime-id","--out","--upload","--audience","--gateways"],bool:["--public"]});
-  if(!["prepare","publish","activate"].includes(sub)||!f._[0])throw new Error("usage: enclave bootstrap prepare <id> --config-file FILE --app-id HEX --runtime-id HEX --public|--custody-file FILE --out FILE | publish <id> --file FILE --upload HTTPS/add-json --audience ID | activate <id> --file FILE --gateways HTTPS/ipfs,…");
+  const sub=rest.shift(), f=flags(rest,{val:["--file","--config-file","--custody-file","--app-id","--runtime-id","--out","--upload","--audience","--gateways","--storage-plan"],bool:["--public"]});
+  if(!["prepare","publish","activate"].includes(sub)||!f._[0])throw new Error("usage: enclave bootstrap prepare <id> --config-file FILE --app-id HEX --runtime-id HEX --public|--custody-file FILE --out FILE | publish <id> --file FILE --storage-plan FILE (or --upload HTTPS/add-json --audience ID) | activate <id> --file FILE --storage-plan FILE (or --gateways HTTPS/ipfs,…)");
   const id=f._[0].toLowerCase();if(!isB32(id))throw new Error("bootstrap requires a full deployment id");
   const {rev,abi}=await depAbi();if(rev!==16)throw new Error("bootstrap requires the measured schema-16 ledger");
   const d=await read(DEFAULTS.DEPLOYMENTS_ADDRESS,abi,"get",[id]);
@@ -3042,7 +3043,14 @@ async function cmdBootstrap(rest) {
   const bytes=limited(f.file),intent={version:1,sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
   pkg=verifyPackage(bytes,intent,scope);
   if(sessionConfigured()&&!walletChosen())throw new Error("bootstrap publication/activation uses a direct wallet; pass --wallet or --unsigned --from");
+  const storagePlan=f["storage-plan"]?validateStoragePlan(parseUniqueJSON(limited(f["storage-plan"]).toString('utf8'))):null;
+  if(storagePlan&&(f.upload||f.audience||f.gateways))throw new Error("storage-plan cannot be combined with upload, audience or gateways overrides");
   const account=loadKey();
+  if(sub==="publish"&&storagePlan) {
+    const storage=await publishPackageReplicas(bytes,scope,storagePlan,account);
+    const out={id,cid:pkg.cid,sha256:pkg.sha256,published:true,committed:false,storage};
+    return opt.json?jout(out):say(JSON.stringify(out,null,2));
+  }
   if(sub==="publish") {
     if(!f.upload||!f.audience)throw new Error("publish requires explicit --upload and --audience");
     const headers=await directUploadHeaders({audience:f.audience,url:f.upload,address:account.address,bytes,signMessage:a=>account.signMessage(a)});
@@ -3054,7 +3062,8 @@ async function cmdBootstrap(rest) {
   }
   if(account.address.toLowerCase()!==d.owner.toLowerCase())throw new Error("activation must be signed by the ledger owner");
   const gateways=String(f.gateways||env.GUEST_BOOTSTRAP_GATEWAYS||"https://ipfs.io/ipfs,https://dweb.link/ipfs").split(',').map(x=>x.trim()).filter(Boolean);
-  await fetchPackage(intent,scope,{gateways}); // read back verified bytes before committing
+  const storage=storagePlan?await verifyPackageReplicas(bytes,scope,storagePlan):null;
+  if(!storagePlan)await fetchPackage(intent,scope,{gateways}); // read back verified bytes before committing
   const cur=d.configCid?parseUniqueJSON(d.configCid):{};
   if(!cur||typeof cur!=="object"||Array.isArray(cur))throw new Error("invalid existing envelope");
   delete cur.config;delete cur.configCid;
@@ -3062,7 +3071,7 @@ async function cmdBootstrap(rest) {
   const envelope=JSON.stringify(cur);if(Buffer.byteLength(envelope)>4096)throw new Error("startup envelope exceeds ledger limit");
   if(!(await confirm(`commit startup package ${pkg.sha256} for ${id}, replacing its config and requiring the direct SNP runtime?`)))return say("aborted");
   await sendTx(account,{address:DEFAULTS.DEPLOYMENTS_ADDRESS,abi,functionName:"setConfig",args:[id,envelope]});
-  const out={id,cid:pkg.cid,sha256:pkg.sha256,committed:true,fundingChanged:false,readinessVerified:false};return opt.json?jout(out):say(JSON.stringify(out,null,2));
+  const out={id,cid:pkg.cid,sha256:pkg.sha256,committed:true,fundingChanged:false,readinessVerified:false,...(storage?{storage}:{})};return opt.json?jout(out):say(JSON.stringify(out,null,2));
 }
 
 async function cmdConfig(rest) {
@@ -4103,8 +4112,12 @@ deployments
          --public|--custody-file FILE --out FILE
                              create an exact public startup package from the pinned
                              ledger; never put plaintext secrets in this file
+  bootstrap publish <id> --file FILE --storage-plan FILE
+                             upload and verify the required number of adapter copies
   bootstrap publish <id> --file FILE --upload HTTPS/add-json --audience ID
                              publish those bytes with a direct wallet signature
+  bootstrap activate <id> --file FILE --storage-plan FILE
+                             recheck replicated availability before commitment
   bootstrap activate <id> --file FILE --gateways HTTPS/ipfs,…
                              verify readback, then commit its hash as ledger owner;
                              requires --contract-pins and a direct SNP runtime

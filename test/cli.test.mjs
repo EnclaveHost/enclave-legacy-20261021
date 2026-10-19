@@ -1393,8 +1393,10 @@ test('bootstrap publication and activation verify exact bytes before committing 
  fs.writeFileSync(preload,`import fs from 'node:fs';
 const real=globalThis.fetch;
 globalThis.fetch=async (url,opts={})=>{
- if(!String(url).startsWith('https://independent.example/'))return real(url,opts);
+ if(!['independent.example','independent2.example','independent3.example'].includes(new URL(url).hostname))return real(url,opts);
  fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({url,method:opts.method||'GET',headers:opts.headers,body:opts.body?Buffer.from(opts.body).toString():null,redirect:opts.redirect})+'\\n');
+ if(process.env.BOOTSTRAP_TEST_DOWN==='one'&&String(url).startsWith('https://independent.example/'))return new Response('',{status:503});
+ if(process.env.BOOTSTRAP_TEST_DOWN==='two'&&!String(url).startsWith('https://independent3.example/'))return new Response('',{status:503});
  if(process.env.BOOTSTRAP_TEST_RESPONSE==='oversize')return new Response('x'.repeat(4097));
  if(process.env.BOOTSTRAP_TEST_RESPONSE==='corrupt')return new Response('{}');
  return new Response(opts.method==='POST'?JSON.stringify({cid:${JSON.stringify(pkg.cid)}}):fs.readFileSync(${JSON.stringify(file)}));
@@ -1416,6 +1418,19 @@ globalThis.fetch=async (url,opts={})=>{
   S.txs.length=0;
   const unsigned=await run([...activate,'--unsigned','--from',OWNER],{env});assert.equal(unsigned.code,0,unsigned.err);
   const prepared=JSON.parse(unsigned.out);assert.equal(prepared.unsigned.to.toLowerCase(),DEPLOYMENTS);assert.equal(prepared.committed,undefined);assert.equal(S.txs.length,0);
+  const planFile=path.join(confDir,'replicated-storage.json');
+  fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({
+   upload:`https://independent${n===1?'':n}.example/add-json`,gateway:`https://independent${n===1?'':n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+  for(const sub of ['publish','activate']){
+   S.txs.length=0;
+   const args=['bootstrap',sub,ID,'--file',file,'--storage-plan',planFile,...common];
+   const good=await run(args,{env:{...env,BOOTSTRAP_TEST_DOWN:'one'}});assert.equal(good.code,0,good.err);
+   assert.equal(JSON.parse(good.out).storage.verifiedCopies,2);assert.equal(S.txs.length,sub==='activate'?1:0);
+   S.txs.length=0;
+   const bad=await run(args,{env:{...env,BOOTSTRAP_TEST_DOWN:'two'}});assert.notEqual(bad.code,0);assert.match(bad.err,/storage availability requirement/);assert.equal(S.txs.length,0);
+  }
+  const mixed=await run([...publish,'--storage-plan',planFile],{env});assert.notEqual(mixed.code,0);assert.match(mixed.err,/cannot be combined/);
+  assert.equal(S.apiCalls.length,0);
   for(const args of [activate,publish]){
    const bad=await run(args,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'corrupt'}});assert.notEqual(bad.code,0);assert.equal(S.txs.length,0);
   }

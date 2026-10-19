@@ -20,7 +20,7 @@ live network of independently operated machines.
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
-| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
+| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | New startup packages support verified multi-adapter publication and cold reads; production Sia and other artifacts still depend on one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
 | Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
 
@@ -272,6 +272,63 @@ images. Durable package replication, production runtime admission and owner
 custody-rule updates remain to be activated. End-to-end cold recovery with
 independent storage and custody remains an acceptance gate. Existing
 deployments and release-key checks have not been weakened.
+
+## Startup package storage without one required backend
+
+`bootstrap publish` and `bootstrap activate` accept `--storage-plan FILE`.
+A version-1 plan names two to eight adapters, each with a distinct deployment
+ID and hostname, and requires at least two verified copies. For example:
+
+```json
+{
+  "version": 1,
+  "minimumCopies": 2,
+  "replicas": [
+    {"upload":"https://storage-a.example/add-json","audience":"0x1111111111111111111111111111111111111111111111111111111111111111","gateway":"https://storage-a.example/ipfs"},
+    {"upload":"https://storage-b.example/add-json","audience":"0x2222222222222222222222222222222222222222222222222222222222222222","gateway":"https://storage-b.example/ipfs"},
+    {"upload":"https://storage-c.example/add-json","audience":"0x3333333333333333333333333333333333333333333333333333333333333333","gateway":"https://storage-c.example/ipfs"}
+  ]
+}
+```
+
+Each adapter receives its own deployment-bound wallet signature and may use its
+own S3-compatible backend and credentials. Publication uploads the exact bytes,
+checks the returned CID, then reads them back from that adapter's gateway and
+verifies the owner package hash. Responses are bounded; redirects are refused;
+a failed, corrupt or unavailable adapter does not count. Requests run concurrently
+with a bounded per-adapter deadline. Two of three verified copies permit success
+when one refuses. An upload acknowledgement alone is insufficient.
+
+Activation repeats the readback against the plan before preparing/submitting the
+owner's chain commitment. Falling below the required copies prevents activation;
+it does not erase already stored copies or stop an existing host. The explicit
+single-adapter flags remain supported for older workflows but do not establish
+replicated publication. A plan cannot be mixed with those endpoint overrides.
+
+Hosts can select the same file with `GUEST_BOOTSTRAP_STORAGE_PLAN_FILE`. It is
+operator configuration, not an arbitrary URL injected by a tenant. The supervisor
+reads a bounded, validated file, fetches concurrently from those gateways and
+accepts any exact owner-committed package. It does not require the upload quorum
+to remain available to boot from one surviving copy. Malformed plans and conflicting
+gateway settings fail closed. No central provider API is needed for this explicit
+configuration; automatic discovery remains separate work.
+
+Validation runs three real Rust adapter processes, three separate disk-backed
+MinIO S3 stores and certificate-verified loopback TLS fronts. With the first S3
+backend stopped but its adapter still reachable, a new package publishes to the
+other two. Restarting both surviving stores and adapters clears their process
+memory; each independently serves the old and new package. A fresh package fetch
+recovers the exact committed bytes, and losing another store refuses new activation
+below the two-copy requirement. SDK/CLI tests also reject false upload claims,
+corruption, duplicate service identities and insufficient copies; supervisor tests
+exercise cold fetches with two endpoints refusing and the third serving.
+
+These are local protocol and recovery tests, not SNP attestation or independently
+operated production storage. Distinct hostnames/deployment IDs do not prove different
+owners or backing stores. Readback proves current availability, not a future
+retention guarantee. Large WASM/runtime artifacts and existing production data
+have not migrated through this path; minipc's live Sia/indexd/PostgreSQL dependency
+remains until their independent retention and recovery are activated and verified.
 
 ## Independent custody formation
 

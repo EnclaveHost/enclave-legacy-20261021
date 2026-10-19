@@ -19,7 +19,8 @@
 // >>> The ONLY thing left to implement for your CVM is spawn/stop/measure below.
 
 import express from "express";
-import {bootstrapIntent,fetchPackage,verifyPackage} from "./sdk/bootstrap/package.mjs";
+import {validateStoragePlan} from "./sdk/bootstrap/storage.mjs";
+import {bootstrapIntent,fetchPackage,verifyPackage,parseUniqueJSON} from "./sdk/bootstrap/package.mjs";
 import { planCheckpoints } from "./windows/node/verification-checkpoints.mjs";
 import {hostAdmissionFromEnv,hostAdmissionConfigured} from './windows/node/host-admission.bundle.mjs';
 import cors from "cors";
@@ -33,7 +34,7 @@ import { gunzipSync } from "node:zlib";
 import { execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 const pexec = promisify(execFile);
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, statfsSync, readdirSync, unlinkSync, statSync } from "node:fs";
+import { openSync, readSync, closeSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, statfsSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { WebSocketServer, createWebSocketStream } from "ws";
@@ -2485,7 +2486,19 @@ function isolationReleaseGuest(manager, listed) {
 }
 // Any host may fetch the raw CID implied by the owner's committed hash.
 const bootstrapBytes = new Map();
-const bootstrapGateways = () => String(process.env.GUEST_BOOTSTRAP_GATEWAYS || "https://ipfs.io/ipfs,https://dweb.link/ipfs").split(",").map(x=>x.trim()).filter(Boolean);
+const bootstrapGateways = () => {
+  const file=process.env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE;
+  if(file){
+    if(process.env.GUEST_BOOTSTRAP_GATEWAYS)throw Error("choose a storage plan or explicit bootstrap gateways, not both");
+    const fd=openSync(file,"r");let data;
+    try {const bytes=Buffer.alloc(16385);let size=0;
+      while(size<bytes.length){const n=readSync(fd,bytes,size,bytes.length-size,null);if(!n)break;size+=n;}
+      if(size>16384)throw Error("bootstrap storage plan too large");data=bytes.subarray(0,size).toString("utf8");
+    } finally {closeSync(fd);}
+    return validateStoragePlan(parseUniqueJSON(data)).replicas.map(r=>r.gateway);
+  }
+  return String(process.env.GUEST_BOOTSTRAP_GATEWAYS || "https://ipfs.io/ipfs,https://dweb.link/ipfs").split(",").map(x=>x.trim()).filter(Boolean);
+};
 async function directPackageFor(d, manager) {
   const intent = bootstrapIntent(d.configCid);
   if (!intent) return null;

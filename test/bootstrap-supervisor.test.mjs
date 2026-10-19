@@ -56,3 +56,18 @@ test('direct custody pump signs only the committed vault and never requests a ti
  const wrong=await run('RELEASE_SELFTEST',{...cfg,script:[{status:'starting',awaitingCustodyAuth:{v:2,vault:'0x'+'77'.repeat(20),binding}},{status:'running'}]},{REGISTRY_PRIVATE_KEY:'0x'+'01'.repeat(32)});
  assert.equal(wrong.posts.length,0);assert.ok(wrong.logs.some(x=>x.includes('differs from owner')));
 });
+
+test('a fresh supervisor reads operator-selected storage replicas without a central discovery service',async t=>{
+ const fs=await import('node:fs'),os=await import('node:os'),path=await import('node:path');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bootstrap-plan-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'storage.json');
+ const plan={version:1,minimumCopies:2,replicas:['refusing.example','independent.example','offline.example'].map((host,i)=>({upload:`https://${host}/add-json`,gateway:`https://${host}/ipfs`,audience:'0x'+String(i+1).repeat(64)}))};
+ fs.writeFileSync(file,JSON.stringify(plan));
+ const config={bootstrapLaunchSpec:{row,rec,health,appId:manifest.appId,bytes:pkg.bytes.toString('base64')}};
+ const out=await run('RELEASE_SELFTEST',config,{GUEST_BOOTSTRAP_GATEWAYS:'',GUEST_BOOTSTRAP_STORAGE_PLAN_FILE:file});
+ assert.equal(out.error,null);assert.equal(out.posted.length,1);assert.equal(out.calls.length,3);
+ assert(out.calls.every(url=>plan.replicas.some(r=>url.startsWith(r.gateway+'/'))));
+ fs.writeFileSync(file,JSON.stringify({...plan,minimumCopies:1}));
+ const invalid=await run('RELEASE_SELFTEST',config,{GUEST_BOOTSTRAP_GATEWAYS:'',GUEST_BOOTSTRAP_STORAGE_PLAN_FILE:file});
+ assert.match(invalid.error,/minimum of 2/);assert.equal(invalid.posted.length,0);assert.equal(invalid.calls.length,0);
+});
