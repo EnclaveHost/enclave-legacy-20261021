@@ -47,6 +47,7 @@ type instanceRecord struct {
 	Release                                                                                 bool // a release guest: egress stays admitted after adoption (release.go)
 	// Legacy: built from the legacy tree (-legacy-isolation). Adoption re-verifies against the RECORDED measurement, so
 	// it needs neither tree; this keeps the instance's public view (legacyImage) true across a guestd restart.
+	BootstrapSha256 string
 	DirectBootstrap bool
 	Legacy          bool
 	// Releases: the release(s) of the tree that built the guest (server.go treeReleases), named to the judge again on
@@ -63,7 +64,7 @@ func (s *server) persistRunning(v *vm) {
 	s.mu.Lock()
 	rec := instanceRecord{GPUCardBytes: v.GPUCardBytes, InferenceModel: v.InferenceModel, ID: v.ID, Name: v.Name, AppID: v.AppID, Measurement: v.Measurement, RecordSha256: v.RecordSha256,
 		HostData: v.HostData, TransportKeySha256: v.TransportKeySha256, Unit: v.unit, Verdict: v.Verdict, CID: v.cid,
-		Vcpus: v.Vcpus, MemMiB: v.MemMiB, CPUPct: v.CPUPct, Created: v.Created, Release: v.release, Legacy: v.legacy, DirectBootstrap: v.directBootstrap,
+		Vcpus: v.Vcpus, MemMiB: v.MemMiB, CPUPct: v.CPUPct, Created: v.Created, Release: v.release, Legacy: v.legacy, DirectBootstrap: v.directBootstrap, BootstrapSha256: v.bootstrapSha256,
 		Releases: append([]string{}, v.releases...), RuntimeID: s.vmRuntime(v)}
 	dir := v.workdir
 	s.mu.Unlock()
@@ -170,7 +171,7 @@ func (s *server) adoptOne(ctx context.Context, dir string) string {
 	v := &vm{GPUCardBytes: rec.GPUCardBytes, InferenceModel: rec.InferenceModel, ID: rec.ID, Name: rec.Name, AppID: rec.AppID, Measurement: rec.Measurement, Status: "running", Verdict: verdict,
 		RecordSha256: rec.RecordSha256, RuntimeID: rid, TransportKeySha256: keySha, HostData: rec.HostData, HostPort: port,
 		Vcpus: rec.Vcpus, MemMiB: rec.MemMiB, CPUPct: rec.CPUPct, Created: rec.Created, unit: rec.Unit, cid: rec.CID,
-		workdir: dir, stopFwd: stop, lc: lc, leaseUntil: s.Now().Add(s.LeaseTTL), release: rec.Release, legacy: rec.Legacy, directBootstrap: rec.DirectBootstrap, releases: rel}
+		workdir: dir, stopFwd: stop, lc: lc, leaseUntil: s.Now().Add(s.LeaseTTL), release: rec.Release, legacy: rec.Legacy, directBootstrap: rec.DirectBootstrap, bootstrapSha256: rec.BootstrapSha256, releases: rel}
 	s.mu.Lock()
 	for _, o := range s.vms {
 		if o.Name == v.Name {

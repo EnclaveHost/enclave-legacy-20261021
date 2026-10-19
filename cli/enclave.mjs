@@ -47,6 +47,7 @@ import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
 import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
 import {loadContractPins} from "../network/contract-pins.mjs";
+import {bootstrapIntent,preparePackage,verifyPackage,fetchPackage,readBoundedResponse,parseUniqueJSON,MAX_PACKAGE_BYTES} from "../sdk/bootstrap/package.mjs";
 
 const VERSION = "1.6.0";
 
@@ -1975,9 +1976,15 @@ async function cmdDeploy(rest) {
   const f = flags(rest, {
     val: ["--gpu", "--cpu", "--fund", "--fund-eth", "--port", "--ports", "--config-cid", "--waf", "--config",
           "--secrets", "--secrets-file", "--max-rate", "--isolation", ...(sess ? ["--env"] : [])],
-    bool: ["--private", "--public", "--no-wait", "--gpu-optional", "--chain-only"],
+    bool: ["--private", "--public", "--no-wait", "--gpu-optional", "--chain-only", "--prepare-only"],
   });
   if (!f._[0]) throw new Error("usage: enclave deploy <app> [--gpu 0..1] [--cpu 0..1] --fund <usd> [flags]");
+  if (f["prepare-only"]) {
+    if (!CHAIN_ONLY || f.fund || f["fund-eth"] || f.config || f.waf || f["config-cid"])
+      throw new Error("--prepare-only requires --chain-only and no funding/config; prepare the owner package next");
+    f.isolation = "snp-guest-per-app";
+  }
+
   if (CHAIN_ONLY) {
     if (!CONTRACT_PINS) throw new Error("--chain-only requires --contract-pins (or ENCLAVE_CONTRACT_PINS_FILE)");
     if (f.cpu === undefined || f.gpu === undefined || f["max-rate"] === undefined)
@@ -2128,6 +2135,7 @@ async function cmdDeploy(rest) {
     if (mins.cpuMilliNoGpu > cpuMilli)
       say(`! --gpu-optional will not fire at --cpu ${cpuMilli / 1000}: without a card this app's weights live in node RAM, so a CPU-only enclave needs --cpu ${mins.cpuMilliNoGpu / 1000} (${mins.cpuMilliNoGpu / 10}% of a node) and will refuse the claim below that. Raise --cpu to buy the fallback, or leave it and this stays GPU-only.`);
   }
+  if (f["prepare-only"]) envParts.guestBootstrap = {version:1,sha256:"f".repeat(64)}; // unavailable commitment prevents any guest starting before activation
   let envelope = Object.keys(envParts).length ? JSON.stringify(envParts) : "";
   if (Buffer.byteLength(envelope) > 4096 && envParts.config) {
     if (CHAIN_ONLY) throw new Error("--chain-only currently requires an inline config envelope of at most 4096 bytes; no implicit upload service is used");
@@ -2238,13 +2246,13 @@ async function cmdDeploy(rest) {
   }
   const fundUsd = f.fund !== undefined ? numFlag(f.fund, "--fund") : 0;
   const fundEth = f["fund-eth"] !== undefined ? numFlag(f["fund-eth"], "--fund-eth") : 0;
-  if (!fundUsd && !fundEth)
+  if (!fundUsd && !fundEth && !f["prepare-only"])
     throw new Error(`nothing to fund it with: add --fund <usd> (rate is ${usd6(rate * 3600n)}/h; runners skip unfunded work)`);
   if (sess) return deployViaSession(sess, { f, ref, gpuMilli, cpuMilli, appPort, portsCsv, isPublic, envelope, maxRate6, fundUsd, rate });
   const eth = await pub().getBalance({ address: account.address });
   if (eth === 0n) throw new Error(`${account.address} has no Base ETH for transaction gas; bridge a little first`);
   const buys = fundUsd ? dur(fundUsd * 1e6 / Number(rate)) : `(ETH at the live rate)`;
-  if (!(await confirm(`deploy ${f._[0]}: gpu ${gpuMilli / 10}% cpu ${cpuMilli / 10}% ${CHAIN_ONLY ? "capped at" : "at"} ${usd6(rate * 3600n)}/h, `
+  if (!(await confirm(f["prepare-only"] ? `create an unfunded deployment for ${f._[0]} with startup disabled until its owner package is committed?` : `deploy ${f._[0]}: gpu ${gpuMilli / 10}% cpu ${cpuMilli / 10}% ${CHAIN_ONLY ? "capped at" : "at"} ${usd6(rate * 3600n)}/h, `
                     + `fund ${fundUsd ? "$" + fundUsd.toFixed(2) : fundEth + " ETH"} ≈ ${buys}?`))) return say("aborted");
 
   // 1. create — the id is minted on-chain, read back from the Created event
@@ -2260,6 +2268,12 @@ async function cmdDeploy(rest) {
   if (!log) throw new Error("create succeeded but no Created event in the receipt; inspect tx " + rcpt.transactionHash);
   const id = log.topics[1];
   say(`created ${id}`);
+  if (f["prepare-only"]) {
+    const out={id,status:"awaiting-startup-package",funded:false,ledger:DEFAULTS.DEPLOYMENTS_ADDRESS};
+    if(opt.json)return jout(out);
+    return say(`created unfunded record with unavailable startup commitment; run enclave bootstrap prepare ${id}, publish, activate, then fund`);
+  }
+
   // Echo back the asset the user actually chose (don't flip ETH -> USDC).
   const fundHint = `enclave fund ${id} ${fundUsd ? `--usdc ${fundUsd}` : `--eth ${fundEth}`}`;
 
@@ -3002,6 +3016,55 @@ async function cmdCustodyHere(rest) {
 // namespace you didn't pass, so editing the config never silently wipes the
 // waf and vice versa; `clear config` falls the app back to the version's
 // approval-covered config.
+// Owner package workflow: explicit pins and direct wallet signatures only.
+// No session issuer, upload-token issuer, release API or address book is used.
+async function cmdBootstrap(rest) {
+  CHAIN_ONLY=true;
+  if(!CONTRACT_PINS)throw new Error("bootstrap requires --contract-pins");
+  const sub=rest.shift(), f=flags(rest,{val:["--file","--config-file","--custody-file","--app-id","--runtime-id","--out","--upload","--audience","--gateways"],bool:["--public"]});
+  if(!["prepare","publish","activate"].includes(sub)||!f._[0])throw new Error("usage: enclave bootstrap prepare <id> --config-file FILE --app-id HEX --runtime-id HEX --public|--custody-file FILE --out FILE | publish <id> --file FILE --upload HTTPS/add-json --audience ID | activate <id> --file FILE --gateways HTTPS/ipfs,…");
+  const id=f._[0].toLowerCase();if(!isB32(id))throw new Error("bootstrap requires a full deployment id");
+  const {rev,abi}=await depAbi();if(rev!==16)throw new Error("bootstrap requires the measured schema-16 ledger");
+  const d=await read(DEFAULTS.DEPLOYMENTS_ADDRESS,abi,"get",[id]);
+  if(!d?.owner||/^0x0{40}$/i.test(d.owner))throw new Error("deployment not found");
+  const scope={chainId:DEFAULTS.chainId,ledger:DEFAULTS.DEPLOYMENTS_ADDRESS,deployment:id,owner:d.owner,appRef:d.appRef};
+  const limited=(file)=>{if(!file||fs.statSync(file).size>MAX_PACKAGE_BYTES)throw new Error("startup input missing or oversized");return fs.readFileSync(file);};
+  let pkg;
+  if(sub==="prepare") {
+    if(!f.out||!f["config-file"]||!f["app-id"]||!f["runtime-id"]||Boolean(f.public)===Boolean(f["custody-file"]))throw new Error("prepare needs config-file, app-id, runtime-id, out and exactly one of public/custody-file");
+    const configText=new TextDecoder('utf-8',{fatal:true}).decode(limited(f["config-file"]));
+    pkg=preparePackage({version:1,...scope,appId:f["app-id"],runtimeId:f["runtime-id"],configText,
+      secretsMode:f.public?"public":"custody-v2",...(f["custody-file"]?{custody:parseUniqueJSON(limited(f["custody-file"]).toString('utf8'))}:{})});
+    fs.writeFileSync(f.out,pkg.bytes,{flag:"wx",mode:0o600});
+    const out={id,file:path.resolve(f.out),cid:pkg.cid,sha256:pkg.sha256,bytes:pkg.bytes.length,committed:false};
+    return opt.json?jout(out):say(JSON.stringify(out,null,2));
+  }
+  const bytes=limited(f.file),intent={version:1,sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+  pkg=verifyPackage(bytes,intent,scope);
+  if(sessionConfigured()&&!walletChosen())throw new Error("bootstrap publication/activation uses a direct wallet; pass --wallet or --unsigned --from");
+  const account=loadKey();
+  if(sub==="publish") {
+    if(!f.upload||!f.audience)throw new Error("publish requires explicit --upload and --audience");
+    const headers=await directUploadHeaders({audience:f.audience,url:f.upload,address:account.address,bytes,signMessage:a=>account.signMessage(a)});
+    const res=await fetch(f.upload,{method:"POST",redirect:"error",signal:AbortSignal.timeout(60000),headers:{'content-type':'application/json',...headers},body:bytes});
+    if(!res.ok)throw new Error(`startup upload failed (HTTP ${res.status})`);
+    const response=parseUniqueJSON(new TextDecoder('utf-8',{fatal:true}).decode(await readBoundedResponse(res,4096)));
+    if(response?.cid!==pkg.cid)throw new Error("upload did not return the exact raw package CID");
+    const out={id,cid:pkg.cid,sha256:pkg.sha256,published:true,committed:false};return opt.json?jout(out):say(JSON.stringify(out,null,2));
+  }
+  if(account.address.toLowerCase()!==d.owner.toLowerCase())throw new Error("activation must be signed by the ledger owner");
+  const gateways=String(f.gateways||env.GUEST_BOOTSTRAP_GATEWAYS||"https://ipfs.io/ipfs,https://dweb.link/ipfs").split(',').map(x=>x.trim()).filter(Boolean);
+  await fetchPackage(intent,scope,{gateways}); // read back verified bytes before committing
+  const cur=d.configCid?parseUniqueJSON(d.configCid):{};
+  if(!cur||typeof cur!=="object"||Array.isArray(cur))throw new Error("invalid existing envelope");
+  delete cur.config;delete cur.configCid;
+  cur.guestBootstrap=intent;cur.isolation={...(cur.isolation||{}),require:"snp-guest-per-app"};
+  const envelope=JSON.stringify(cur);if(Buffer.byteLength(envelope)>4096)throw new Error("startup envelope exceeds ledger limit");
+  if(!(await confirm(`commit startup package ${pkg.sha256} for ${id}, replacing its config and requiring the direct SNP runtime?`)))return say("aborted");
+  await sendTx(account,{address:DEFAULTS.DEPLOYMENTS_ADDRESS,abi,functionName:"setConfig",args:[id,envelope]});
+  const out={id,cid:pkg.cid,sha256:pkg.sha256,committed:true,fundingChanged:false,readinessVerified:false};return opt.json?jout(out):say(JSON.stringify(out,null,2));
+}
+
 async function cmdConfig(rest) {
   const sub = rest.shift();
   const usage = "usage: enclave config show <id>\n"
@@ -3025,8 +3088,13 @@ async function cmdConfig(rest) {
   let cur = {};
   if (raw.startsWith("{")) { try { cur = JSON.parse(raw); } catch {} }
   if (!cur || Array.isArray(cur) || typeof cur !== "object") cur = {};
+  const startup = Object.hasOwn(cur,"guestBootstrap") ? bootstrapIntent(raw) : null;
 
   if (sub === "show" || sub === "get") {
+    if (startup) {
+      if (opt.json) return jout({id,envelope:raw,waf:cur.waf??null,guestBootstrap:startup,config:null,configSource:"owner-startup-package"});
+      return say(`deployment ${short(id)} config is committed in startup package ${startup.sha256}; use bootstrap prepare, publish and activate to replace it`);
+    }
     // the effective ENCLAVE_CONFIG: the deployment's override, else the
     // version's approved config (read from its catalog record)
     let verCfg = null;
@@ -3054,6 +3122,8 @@ async function cmdConfig(rest) {
   } else if (d.owner.toLowerCase() !== account.address.toLowerCase())
     throw new Error(`${short(id)} is owned by ${d.owner}, not this key`);
   const next = { ...cur };
+  if (startup && (sub === "set" ? f._[1] !== undefined || f.file !== undefined : (f._[1] || "config").toLowerCase() !== "waf"))
+    throw new Error("owner-committed config requires bootstrap prepare, publish and activate; only waf edits use config set/clear");
   if (sub === "set") {
     const cfgArg = f._[1] !== undefined ? f._[1] : (f.file !== undefined ? fs.readFileSync(f.file, "utf8") : undefined);
     if (cfgArg === undefined && f.waf === undefined)
@@ -3117,7 +3187,7 @@ async function cmdConfig(rest) {
   // the deploy --config fail-closed rule: a `config` namespace no runner
   // accepts makes the deployment unclaimable at its NEXT claim; configEdit
   // only decides whether a LIVE app applies the edit in place or later
-  let av = null; try { av = await api("GET", "/availability"); } catch {}
+  let av = null; if (!startup) { try { av = await api("GET", "/availability"); } catch {} }
   if ("config" in next && !("config" in cur)) {
     if (av && av.aggregate && av.configOverride !== true)
       throw new Error("the live fleet doesn't support per-deployment config overrides yet (availability.configOverride is not true) - the deployment would be unclaimable at its next relaunch");
@@ -3991,6 +4061,8 @@ identity
 
 deployments
   deploy <app> --fund <usd>  create + fund + wait until live; prints the URL
+    --prepare-only           with --chain-only, create unfunded with startup disabled;
+                             prepare, publish and activate an owner package next.
     --chain-only             submit directly to pinned contracts without an API;
                              requires --contract-pins, --cpu, --gpu, --max-rate.
                              Wallet-only, inline config, no relay-held secrets;
@@ -4027,6 +4099,15 @@ deployments
                              place: waf live, config via an in-place app restart
   config clear <id> [config|waf|all]   drop the override (default config: the app
                              falls back to the version's approved config)
+  bootstrap prepare <id> --config-file FILE --app-id HEX --runtime-id HEX
+         --public|--custody-file FILE --out FILE
+                             create an exact public startup package from the pinned
+                             ledger; never put plaintext secrets in this file
+  bootstrap publish <id> --file FILE --upload HTTPS/add-json --audience ID
+                             publish those bytes with a direct wallet signature
+  bootstrap activate <id> --file FILE --gateways HTTPS/ipfs,…
+                             verify readback, then commit its hash as ledger owner;
+                             requires --contract-pins and a direct SNP runtime
   ls                         your deployments: live, queued and unfunded
   status <id>                one deployment: state, lease, balance, URL
   logs <id> [-f] [--tail N]  the app's stdout/stderr (-f polls)
@@ -4531,7 +4612,7 @@ const COMMANDS = {
   resize: (rest) => cmdUpgrade(rest, { resize: true }),
   "rate-cap": cmdRateCap, cap: cmdRateCap,
   refund: cmdRefund, cancel: cmdRefund, transfer: cmdTransfer,
-  secrets: cmdSecrets, config: cmdConfig, custody: cmdCustodyHere,
+  secrets: cmdSecrets, config: cmdConfig, custody: cmdCustodyHere, bootstrap: cmdBootstrap,
   publish: cmdPublish, apps: cmdApps,
   pricing: cmdPricing, availability: cmdAvailability, gpu: cmdGpu, account: cmdAccount,
   encvol: cmdEncvol, host: cmdHost, session: cmdSession,
@@ -4592,6 +4673,7 @@ if (!COMMANDS[cmd]) die(`unknown command "${cmd}"; run: enclave help`);
 const OFFLINE = cmd === "key" || cmd === "login" || cmd === "logout" || cmd === "session";
 try {
   configureContractPins();
+  if (cmd === "bootstrap" && !CONTRACT_PINS) throw new Error("bootstrap requires --contract-pins");
   if (cmd === "deploy" && args.includes("--chain-only") && !CONTRACT_PINS)
     throw new Error("--chain-only requires --contract-pins (or ENCLAVE_CONTRACT_PINS_FILE)");
   if (!OFFLINE) await resolveAddressBook();

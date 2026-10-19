@@ -185,7 +185,7 @@ const OVERLAY_SRC = arg('supervisor-overlay', '');
 let supervisorOverlay = null;
 if (OVERLAY_SRC) {
   const src = path.resolve(OVERLAY_SRC);
-  const files = ['supervisor.js', 'isolation/m4/guestd/supervisor-transport.mjs',
+  const files = ['supervisor.js', 'sdk/bootstrap/package.mjs', 'isolation/m4/guestd/supervisor-transport.mjs',
                  'isolation/m4/guestd/control-client.mjs', 'isolation/m4/guestd/supervisor-splice.mjs',
                  // the guest-certificate relay and the judge it verifies each guest with (and the judge's imports)
                  'isolation/m4/guestd/supervisor-guestcert.mjs', 'isolation/m2/judge.mjs',

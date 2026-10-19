@@ -18,7 +18,7 @@ live network of independently operated machines.
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
-| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct measured entry point and bounded guestd transport built and tested; production remains on legacy startup pending supervisor/package wiring and hardware activation |
+| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct measured entry point, guestd transport, supervisor and CLI package workflow tested; production remains on legacy startup pending hardware activation |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
@@ -110,7 +110,7 @@ and an explicit `public` or `custody-v2` secrets mode. Custody mode additionally
 contains the owner-committed v2 pointer. It includes no plaintext secret values.
 The package is limited to 128 KiB and config text to 32 KiB; duplicate JSON keys,
 unknown package fields and excessive nesting are refused. CLI publishing and
-package distribution still need wiring. A package is not self-authorizing: a
+supervisor distribution use exact raw CIDs. A package is not self-authorizing: a
 matching owner transaction on the ledger is mandatory.
 
 The guest's reader uses at least two distinct HTTPS RPC hosts at a fixed confirmed
@@ -158,6 +158,62 @@ The package is never included in the public VM response or persisted restart
 record. This transport supplies bytes, not authorization; the guest still checks
 the owner's chain commitment before use.
 
+The supervisor resolves the exact package through operator-selected HTTPS
+gateways (`GUEST_BOOTSTRAP_GATEWAYS`, up to eight; default ipfs.io and dweb.link).
+It verifies size, hash and deployment/owner/app/runtime scope before claiming,
+and rechecks the ledger before creating a guest. The claim path uses committed
+config for resource and volume checks. Direct startup skips relay release lists,
+secret-existence probes and domain probes. Custody authorization uses only the
+vault committed by the owner. Neither a failed gateway nor an unsupported manager
+falls back to legacy startup. Verified immutable bytes may be cached in memory;
+scope is checked again on each use.
+
+On restart, guestd preserves the package hash with the VM record. The supervisor
+adopts a guest only when direct mode, package hash, loaded AppID, RuntimeID and
+derivation match. A changed package replaces the guest rather than adopting old
+configuration under the new commitment. Guestd does not persist package bytes.
+
+### CLI package workflow
+
+Use a reviewed authority manifest with `--contract-pins pins.json` throughout.
+For a new deployment, `deploy <app:version> --chain-only --prepare-only --cpu …
+--gpu … --max-rate …` creates an unfunded record with an unavailable startup hash
+and an SNP requirement. It does not briefly run with a default configuration,
+even on a host that waives compute charges.
+
+1. `bootstrap prepare <full-id> --config-file config.json --app-id <64hex>
+   --runtime-id <64hex> --public --out startup.json` creates a public package
+   using the current ledger owner and app reference. For secrets, use
+   `--custody-file pointer.json` instead of `--public`. The file contains a v2
+   custody pointer, never plaintext secret values. The output is created
+   exclusively and refuses to overwrite an existing file.
+2. `bootstrap publish <full-id> --file startup.json --upload https://<adapter>/add-json
+   --audience <adapter-deployment-id> --wallet` signs an endpoint-, body- and
+   deployment-bound upload request. A consenting adapter can accept it without
+   an Enclave upload-token issuer. The returned CID must match the exact bytes.
+3. `bootstrap activate <full-id> --file startup.json --gateways https://<gateway>/ipfs
+   --wallet` verifies gateway readback before submitting the owner hash to the
+   ledger. This preserves placement and other envelope namespaces while replacing
+   legacy config fields. Activation can also emit an unsigned transaction with
+   `--unsigned --from <owner>`; publication requires a message-capable signer.
+4. Fund the prepared deployment only after checking that the chosen host supports
+   its direct runtime and that the public package is durably available. Activation
+   does not fund the record or claim readiness.
+
+`config show` identifies an owner startup commitment without pretending that the
+catalog default is its effective config. `config set/clear` refuses app-config
+edits to such records; prepare and activate a replacement package instead.
+WAF-only envelope edits preserve the commitment, but still require support from
+the chosen runtime. Package publication and activation currently use a direct
+wallet; deployment ownership by a session vault needs a separate supported
+activation flow.
+
+Tests use the actual CLI transaction builder and supervisor launch/spawn paths,
+with independent storage responses and all central API calls refused or asserted
+absent. Corrupt/oversized responses cannot lead to a commitment. These are local
+integration tests, not evidence of independent production storage or hardware
+startup.
+
 `ISOLATION_DIRECT_BOOTSTRAP=1 sh isolation/m4/domain-release.sh <new-dir>` builds
 this separate release. Two local builds produced the same 18-file manifest and
 release ID `51a7f6e8cef02398d5d7de273bd35e189736398022efe1f528dd07819d683ead`.
@@ -167,9 +223,8 @@ single-provider omissions. This proves the present RPC path, not guest hardware
 startup or tolerance of two compromised RPC providers.
 
 **Activation remains incomplete:** the production guests still run legacy
-release images. The supervisor still rejects the new envelope namespace; CLI
-package preparation, durable package distribution, runtime admission and owner
-custody-rule updates remain to be connected. Cold hardware recovery with the
+release images. Durable package replication, runtime admission and owner
+custody-rule updates remain to be activated. Cold hardware recovery with the
 control service denied is still an acceptance gate. Existing deployments and
 release-key checks have not been weakened.
 

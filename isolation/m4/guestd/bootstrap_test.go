@@ -93,7 +93,7 @@ func TestBootstrapDeliveredOnlyToStartingInstance(t *testing.T) {
 		t.Fatalf("adopted %v dropped %v", adopted, dropped)
 	}
 	adoptedVM := s2.vms[x.ID]
-	if !adoptedVM.directBootstrap || !s2.admitCID(adoptedVM.cid) || len(adoptedVM.bootstrap) != 0 || adoptedVM.ticket != nil {
+	if adoptedVM.bootstrapSha256 != x.bootstrapSha256 || len(adoptedVM.bootstrapSha256) != 64 || !adoptedVM.directBootstrap || !s2.admitCID(adoptedVM.cid) || len(adoptedVM.bootstrap) != 0 || adoptedVM.ticket != nil {
 		t.Fatal("restart lost mode or retained startup material")
 	}
 }

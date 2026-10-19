@@ -11,7 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {preparePackage} from '../sdk/bootstrap/package.mjs';
 import { encodeFunctionData, keccak256, toHex } from "viem";
 import { decodeFunctionData, encodeFunctionResult, parseTransaction, verifyMessage, recoverMessageAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -1337,4 +1338,87 @@ test('chain-only refuses incomplete intent and relay secrets before spending', a
     const r = await run(['deploy','hello-world:1','--chain-only','--contract-pins',writeAuthorityPins(),'--fund','2',...extra]);
     assert.notEqual(r.code, 0); assert.match(r.err, why); assert.equal(S.txs.length, 0); assert.equal(S.apiCalls.length, 0);
   }
+});
+
+test('chain-only preparation creates a disabled unfunded record without central API calls',async()=>{
+ const prev=S.depRev;S.depRev=16n;S.txs.length=0;S.apiCalls.length=0;
+ try{
+  const r=await run(['deploy','hello-world:1','--chain-only','--prepare-only','--contract-pins',writeAuthorityPins(),'--cpu','0.1','--gpu','0','--max-rate','1','--json']);
+  assert.equal(r.code,0,r.err);assert.equal(S.apiCalls.length,0);
+  const c=S.txs.find(x=>x.functionName==='create');assert.ok(c);
+  assert.equal(JSON.parse(c.args[6]).guestBootstrap.sha256,'f'.repeat(64));
+  assert.equal(S.txs.some(x=>/fund/i.test(x.functionName)),false);assert.match(r.out,/awaiting-startup-package/);
+ }finally{S.depRev=prev;}
+});
+test('bootstrap prepare preserves exact config bytes and refuses overwrite without API or transactions',async()=>{
+ const prev=S.depRev;S.depRev=16n;S.txs.length=0;S.apiCalls.length=0;
+ const cfg=path.join(confDir,'bootstrap-config.json'),out=path.join(confDir,'owner-startup.json');fs.writeFileSync(cfg,'{ "public": true }');
+ try{
+  const args=['bootstrap','prepare',ID,'--contract-pins',writeAuthorityPins(),'--config-file',cfg,'--app-id','44'.repeat(32),'--runtime-id','55'.repeat(32),'--public','--out',out,'--json'];
+  const r=await run(args);assert.equal(r.code,0,r.err);assert.equal(JSON.parse(fs.readFileSync(out)).configText,'{ "public": true }');
+  assert.equal(S.apiCalls.length,0);assert.equal(S.txs.length,0);assert.match(r.out,/"committed": false/);
+  const again=await run(args);assert.notEqual(again.code,0);assert.match(again.err,/EEXIST/);
+ }finally{S.depRev=prev;fs.rmSync(out,{force:true});}
+});
+
+test('owner startup packages prevent legacy config edits and preserve WAF-only changes',async()=>{
+ const prev=S.depRev,old=S.envelope;S.depRev=16n;
+ const guestBootstrap={version:1,sha256:'ab'.repeat(32)};
+ try{
+  S.envelope=JSON.stringify({guestBootstrap,waf:{rps:10}});
+  for(const args of [['set',ID,'{}'],['clear',ID,'config'],['clear',ID,'all']]){
+   S.txs.length=0;S.apiCalls.length=0;
+   const r=await run(['config',...args,'--wallet','--contract-pins',writeAuthorityPins()]);
+   assert.notEqual(r.code,0);assert.match(r.err,/bootstrap prepare/);assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);
+  }
+  const show=await run(['config','show',ID,'--json']);assert.equal(show.code,0,show.err);
+  assert.equal(JSON.parse(show.out).configSource,'owner-startup-package');
+  for(const args of [['set',ID,'--waf','{"rps":20}'],['clear',ID,'waf']]){
+   S.txs.length=0;S.apiCalls.length=0;
+   const r=await run(['config',...args,'--wallet','--contract-pins',writeAuthorityPins()]);assert.equal(r.code,0,r.err);
+   const e=JSON.parse(S.txs.find(x=>x.functionName==='setConfig').args[1]);assert.deepEqual(e.guestBootstrap,guestBootstrap);
+   assert.equal(e.config,undefined);assert.equal(S.apiCalls.length,0);
+  }
+ }finally{S.depRev=prev;S.envelope=old;}
+});
+
+test('bootstrap publication and activation verify exact bytes before committing without central API calls',async()=>{
+ const prev=S.depRev,old=S.envelope;S.depRev=16n;
+ const pkg=preparePackage({version:1,chainId:8453,ledger:DEPLOYMENTS,deployment:ID,owner:OWNER,
+  appRef:`catalog://${APP_ID}/0`,appId:'44'.repeat(32),runtimeId:'55'.repeat(32),configText:'{ "value": 1 }',secretsMode:'public'});
+ const file=path.join(confDir,'workflow-package.json'),preload=path.join(confDir,'bootstrap-fetch.mjs'),calls=path.join(confDir,'bootstrap-fetch.jsonl');
+ fs.writeFileSync(file,pkg.bytes);
+ // Keep the real JSON-RPC HTTP double. Only the explicitly chosen storage
+ // endpoints are simulated, including corrupt bodies and unbounded replies.
+ fs.writeFileSync(preload,`import fs from 'node:fs';
+const real=globalThis.fetch;
+globalThis.fetch=async (url,opts={})=>{
+ if(!String(url).startsWith('https://independent.example/'))return real(url,opts);
+ fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({url,method:opts.method||'GET',headers:opts.headers,body:opts.body?Buffer.from(opts.body).toString():null,redirect:opts.redirect})+'\\n');
+ if(process.env.BOOTSTRAP_TEST_RESPONSE==='oversize')return new Response('x'.repeat(4097));
+ if(process.env.BOOTSTRAP_TEST_RESPONSE==='corrupt')return new Response('{}');
+ return new Response(opts.method==='POST'?JSON.stringify({cid:${JSON.stringify(pkg.cid)}}):fs.readFileSync(${JSON.stringify(file)}));
+};`);
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`},common=['--wallet','--contract-pins',writeAuthorityPins(),'--json'];
+ try{
+  S.envelope=JSON.stringify({config:{old:true},waf:{rps:10},placement:{hostId:'0x'+'66'.repeat(32)}});S.apiCalls.length=0;S.txs.length=0;
+  const publish=['bootstrap','publish',ID,'--file',file,'--upload','https://independent.example/add-json','--audience',ID,...common];
+  const r=await run(publish,{env});assert.equal(r.code,0,r.err);assert.equal(S.txs.length,0);
+  const request=JSON.parse(fs.readFileSync(calls,'utf8').trim().split('\n')[0]);
+  assert.equal(request.body,pkg.bytes.toString());assert.match(request.headers['x-upload-signature'],/^0x[0-9a-f]{130}$/);
+  assert.equal(request.headers['x-upload-token'],undefined);assert.equal(request.redirect,'error');
+  const activate=['bootstrap','activate',ID,'--file',file,'--gateways','https://independent.example/ipfs',...common];
+  const activated=await run(activate,{env});assert.equal(activated.code,0,activated.err);
+  const envelope=JSON.parse(S.txs.find(x=>x.functionName==='setConfig').args[1]);
+  assert.deepEqual(envelope.guestBootstrap,pkg.intent);assert.equal(envelope.config,undefined);assert.deepEqual(envelope.waf,{rps:10});
+  assert.equal(envelope.placement.hostId,'0x'+'66'.repeat(32));assert.equal(envelope.isolation.require,'snp-guest-per-app');
+  assert.equal(JSON.parse(activated.out).readinessVerified,false);assert.equal(S.apiCalls.length,0);
+  S.txs.length=0;
+  const unsigned=await run([...activate,'--unsigned','--from',OWNER],{env});assert.equal(unsigned.code,0,unsigned.err);
+  const prepared=JSON.parse(unsigned.out);assert.equal(prepared.unsigned.to.toLowerCase(),DEPLOYMENTS);assert.equal(prepared.committed,undefined);assert.equal(S.txs.length,0);
+  for(const args of [activate,publish]){
+   const bad=await run(args,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'corrupt'}});assert.notEqual(bad.code,0);assert.equal(S.txs.length,0);
+  }
+  const large=await run(publish,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'oversize'}});assert.notEqual(large.code,0);assert.match(large.err,/size limit/);
+ }finally{S.depRev=prev;S.envelope=old;}
 });

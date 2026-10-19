@@ -36,6 +36,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -148,6 +149,7 @@ type vm struct {
 	splices                                              map[*splice]struct{} // open data-plane connections
 	reclaimed                                            bool                 // its reclaim has finished: it holds no reservation (pool.go)
 	bootstrap                                            []byte               // untrusted public package, never secrets
+	bootstrapSha256                                      string
 	directBootstrap                                      bool
 	ticket                                               chan [32]byte // its one release ticket slot; nil = it takes none (release.go)
 	release                                              bool          // a release guest (its egress is admitted); false = none, or legacy
@@ -274,6 +276,7 @@ func (v *vm) public() map[string]any {
 	}
 	if v.directBootstrap {
 		m["directBootstrap"] = true
+		m["bootstrapSha256"] = v.bootstrapSha256
 	}
 	if v.release && !v.directBootstrap {
 		m["release"] = true // a release guest: its config and secrets come sealed from the relay (release.go)
@@ -505,6 +508,8 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	if req.Bootstrap != "" {
 		v.bootstrap, _ = decodeBootstrap(req.Bootstrap) // releaseChoice validated before reservation
 		v.directBootstrap, v.release = true, true
+		h := sha256.Sum256(v.bootstrap)
+		v.bootstrapSha256 = hex.EncodeToString(h[:])
 	}
 	if s.Release && req.Release {
 		v.release = true
