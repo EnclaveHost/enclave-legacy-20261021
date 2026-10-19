@@ -39,6 +39,7 @@ import {guardedFetch} from './guarded-fetch.mjs';
 import {delegatedIPNS} from './discovery-http.mjs';
 import {validateAppNames} from './app-ingress.mjs';
 import {DirectoryClient} from './directory-client.mjs';
+import {createProviderBootstrap,providerRegistryReader,createNetworkFetch} from './provider-bootstrap.mjs';
 
 // Settings of the retired TUNA transport (and of the TUNA-era direct hosting it carried) that an older configuration may
 // still hold. They are ignored, never acted on: no NKN wallet, provider inventory, control guard or currency conversion runs.
@@ -226,24 +227,23 @@ export async function runPrivacy(configFile){
   setInterval(()=>void fs.stat(configFile).then(st=>{if(st.mtimeMs!==configStamp){configStamp=st.mtimeMs;return reloadApps();}}).catch(e=>log('config watch: '+e.message)),30000).unref();
   const starting=windows&&cfg.shield?.manager?startingShieldTransport(cfg.shield.manager,id=>apps.find(a=>a.deploymentId===id)?.expected):null;
   if(apps.some(a=>a.startupEgress)&&!starting)throw new Error('startup egress needs the local Shield manager');
-  // The Enclave network, before the lease reader: with enclaveNetwork.control the host's own chain reads and relay calls
-  // leave through two guarded Enclave-network circuits (docs/design/enclave-network.md).
-  let leaseReaderLate;
+  // Provider registry bootstrap precedes control circuits. App authorization
+  // reads use those circuits once available, never the bootstrap reader.
   const directFetch=globalThis.fetch;
-  // through the control circuits when they are up; otherwise (or if they fail) directly, with a fresh deadline (the
-  // caller's signal may already have expired on the failed attempt)
-  const networkFetch=async(url,init={})=>{if(wgControl){try{await wgControl.proxies();return await guardedFetch(wgControl.proxies,{timeoutMs:15000,maxBytes:4194304,publicRecords:true})(url,init);}catch(e){if(cfg.enclaveNetwork?.controlRequired)throw e;}}
-    return directFetch(url,{...init,signal:AbortSignal.timeout(15000)});};
+  const bootstrap=createProviderBootstrap({chain:cfg.chain,network:cfg.enclaveNetwork,fetch:directFetch});
+  const leaseReader=new LeaseReader({...cfg.chain,...(cfg.enclaveNetwork.paid?{includeConnectivity:'auto',includeHostPayout:true}:{}),
+    ...(cfg.enclaveNetwork.control===true?{proxy:async()=>{if(!wgControl)throw Error('control transport not started');return wgControl.proxies();}}:{})});
+  const providerReader=providerRegistryReader({bootstrap,liveReader:leaseReader,control:()=>wgControl,controlEnabled:cfg.enclaveNetwork.control===true});
+  // Prefer control circuits, then the explicitly selected bootstrap. Legacy
+  // optional-control hosts retain their existing direct public-record fallback.
+  const networkFetch=createNetworkFetch({bootstrap,control:()=>wgControl,controlRequired:cfg.enclaveNetwork.controlRequired,fetch:directFetch});
   const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,authorityPins:cfg.chain?.authorityPins,
-    leaseReader:{registryEntries:(...a)=>leaseReaderLate?leaseReaderLate.registryEntries(...a):Promise.reject(new Error('lease reader not ready yet')),
-      bookAddress:(...a)=>leaseReaderLate?leaseReaderLate.bookAddress(...a):Promise.reject(new Error('lease reader not ready yet')),
-      agreed:(...a)=>leaseReaderLate?leaseReaderLate.agreed(...a):Promise.reject(new Error('lease reader not ready yet'))},directory:cfg.directory,log,fetch:networkFetch,
+    leaseReader,providerReader,directory:cfg.directory,log,fetch:networkFetch,
     authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
   networkHost=network;
   if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,
     probeUrls:(cfg.enclaveNetwork.directories||[cfg.enclaveNetwork.relay]).map(origin=>new URL('/v1/network/providers',origin).href),log});await wgControl.start();}
   // paid providers (enclaveNetwork.paid): the lease must carry the on-chain connectivity authorization
-  const leaseReader=new LeaseReader({...cfg.chain,...(cfg.enclaveNetwork.paid?{includeConnectivity:'auto',includeHostPayout:true}:{}),...(wgControl?{proxy:wgControl.proxies}:{})});leaseReaderLate=leaseReader;
   paid=cfg.enclaveNetwork.paid?await createPaidNetwork({config:cfg.enclaveNetwork.paid,directory:path.join(cfg.directory,'paid'),leaseReader,providers:network.providers,fetchFn:networkFetch,log}):null;
   agent=new PrivacyAgent({apps,runner:cfg.runner,account,leaseReader,directory:cfg.directory,dns:cfg.dns,network,paid,log,
     // the route publisher attaches the host's direct-hosting qualification to a direct route (v5)

@@ -4,12 +4,19 @@ import https from 'node:https';
 import http from 'node:http';
 import {once} from 'node:events';
 
-export async function connectSOCKS(proxy,host,port,{signal=AbortSignal.timeout(10000)}={}) {
+export function socksProxyAddress(proxy){
+  if(typeof proxy!=='string'||!proxy)throw new Error('invalid SOCKS proxy');
   let u;try{u=new URL('socks5://'+proxy);}catch{throw new Error('invalid SOCKS proxy');}
   const ip=u.hostname.replace(/^\[|\]$/g,'');
-  if(!net.isIP(ip)||!u.port||u.pathname||!Number.isInteger(port)||port<1||port>65535)throw new Error('literal SOCKS proxy and destination port required');
+  if(!net.isIP(ip)||!u.port||Number(u.port)<1||u.pathname||u.search||u.hash)throw new Error('literal SOCKS proxy required');
   const auth=!!(u.username||u.password);
   if(auth&&(ip!=='127.0.0.1'||!/^([a-f0-9]{32})$/.test(u.username)||!/^([a-f0-9]{32})$/.test(u.password)))throw new Error('invalid local proxy credentials');
+  return {u,ip,auth};
+}
+
+export async function connectSOCKS(proxy,host,port,{signal=AbortSignal.timeout(10000)}={}) {
+  const {u,ip,auth}=socksProxyAddress(proxy);
+  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('destination port required');
   if(typeof host!=='string'||!host.length||Buffer.byteLength(host)>255||/[\x00-\x20\x7f]/.test(host))throw new Error('invalid SOCKS destination');
   const socket=net.connect({host:ip,port:Number(u.port)});
   const abort=()=>socket.destroy(new Error('SOCKS connection aborted'));

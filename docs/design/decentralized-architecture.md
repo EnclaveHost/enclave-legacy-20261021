@@ -769,3 +769,32 @@ independent-host refusal test: providers/checkers remain Enclave-operated, the
 legacy API mirror is still configured, and guest provisioning and certificates
 still have separate control dependencies. Other running agent builds require
 individual activation and verification.
+
+## Provider bootstrap and local BYO configuration
+
+A network host can now use explicit signed-record directories without configuring
+an Enclave relay. A separate bootstrap reader verifies registered provider
+operators against the pinned registry before control circuits exist, resolving
+the startup dependency between provider discovery and control-proxied chain
+reads. Guarded hosts must choose an explicit direct or SOCKS bootstrap path;
+direct bootstrap is incompatible with `controlRequired`. App admission and
+contract-owner signature verification retain the live control-proxied reader.
+No bootstrap observation extends a lease. Operators select their own directories,
+checkers and bootstrap services; no Enclave endpoint is built into this path.
+
+BYO WireGuard credentials can be supplied in a bounded, operator-local private
+file, authenticated by the existing owner-signed policy's salted configuration
+digest. This path does not ask the relay to release credentials and cannot fall
+back to it when the local file is missing or invalid. The existing endpoint and
+full-tunnel checks still apply. The operator is responsible for secure local
+delivery and file permissions; this is not enclave secret custody.
+
+Tests exercise registered-provider cold discovery with a refusing directory,
+forged records, a disagreeing RPC and a changed live registry operator, plus
+private-bootstrap refusal without direct fallback and owner-signed local BYO
+admission. A read-only production preflight found four qualified providers and
+three active local leases at Base block 52,826,755 without a relay configured,
+with HTTP access limited in-process to the configured RPC and directory origins.
+The provider roles remain Enclave-operated; this evidence does not establish
+organizational independence or complete the remaining custody, governance,
+storage-write and first-use DNS/certificate work.

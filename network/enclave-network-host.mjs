@@ -35,8 +35,13 @@ export function hostEgressOffer(h){
  return {apps:h.apps==='all'?'all':[...h.apps],own:[...(h.own||[])]};
 }
 
-export async function createNetworkHost({config:c,account,runner,rpc,addressBook,authorityPins,leaseReader,directory,authorize,forward,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
- if(!c?.relay||!/^https:\/\//.test(c.relay)&&!/^http:\/\/127\.0\.0\.1/.test(c.relay))throw new Error('Enclave network: relay https URL required');
+export async function createNetworkHost({config:c,account,runner,rpc,addressBook,authorityPins,leaseReader,providerReader=leaseReader,directory,authorize,forward,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
+ if(!c||typeof c!=='object')throw new Error('Enclave network configuration required');
+ if(c.relay!==undefined){
+  const u=new URL(c.relay);
+  if((u.protocol!=='https:'&&!(u.protocol==='http:'&&u.hostname==='127.0.0.1'))||u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enclave network: relay HTTPS origin required');
+ }
+ if(c.byoConfigDirectory!==undefined&&!path.isAbsolute(c.byoConfigDirectory))throw new Error('Enclave network: absolute BYO config directory required');
  if(!Array.isArray(c.checkers)||!c.checkers.length)throw new Error('Enclave network: trusted checker addresses required');
  if(c.apps!=='all'&&!Array.isArray(c.apps))throw new Error('Enclave network: apps must be "all" or a list');
  const pins=authorityPins===undefined?null:validateNetworkAuthorities(authorityPins);
@@ -44,8 +49,8 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  if(pins&&typeof leaseReader?.agreed!=='function')throw Error('Enclave network: pinned authority requires a quorum reader');
  const probeUrls=egressProbeUrls(c.egressProbeUrls,rpc);
  const onNetwork=id=>c.apps==='all'||c.apps.includes(id);
- const relay=async(p,init)=>{const r=await fetch(c.relay+p,{...init,signal:AbortSignal.timeout(10000)});if(r.status===404)return null;const b=await r.json().catch(()=>null);if(!r.ok)throw new Error(`relay ${p.split('/').slice(0,4).join('/')}: ${b?.error||r.status}`);return b;};
- const directories=new DirectoryClient({origins:c.directories||[c.relay],fetch});
+ const relay=async(p,init)=>{if(!c.relay)throw new Error('BYO requires an operator-local config directory or an explicit relay');const r=await fetch(new URL(p,c.relay),{...init,signal:AbortSignal.timeout(10000)});if(r.status===404)return null;const b=await r.json().catch(()=>null);if(!r.ok)throw new Error(`relay ${p.split('/').slice(0,4).join('/')}: ${b?.error||r.status}`);return b;};
+ const directories=new DirectoryClient({origins:c.directories||(c.relay?[c.relay]:[]),fetch});
  const clients=(rpc||[]).map(url=>createPublicClient({chain:base,transport:http(url,{timeout:10000})}));
  // Pinned mode verifies contract owners at the same fresh agreeing chain block.
  const verify=async(owner,message,signature)=>verifyOwnerSignature({clients,reader:pins?leaseReader:undefined,owner,message,signature,addressBook,sessionVaultFactory:pins?.sessionVaultFactory});
@@ -72,19 +77,34 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  async function providers(){
   if(now()-directory_.at<30000)return directory_.list;
   // a community provider must be the operator of its registry host (the registry the address book publishes, unless configured)
-  const hostOperator=async hostId=>{const registry=pins?.registry||c.registry||(registryAddress||=await leaseReader.bookAddress?.('registry'));if(!registry)return null;
-   const [h]=await leaseReader.registryEntries(registry,[hostId]);return h?.active?h.operator:null;};
+  const hostOperator=async hostId=>{const registry=pins?.registry||c.registry||(registryAddress||=await providerReader.bookAddress?.('registry'));if(!registry)return null;
+   const [h]=await providerReader.registryEntries(registry,[hostId]);return h?.active?h.operator:null;};
   const d=await directories.providers({hostOperator,now:now()});
   directory_={at:now(),list:await eligibleProviders(d?.providers||[],{checkers:c.checkers,now:now(),hostOperator,log})};
   return directory_.list;
  }
- // The owner's BYO WireGuard config, released by the relay only to the deployment's current runner, and used only if
- // it is exactly the version the owner's current policy commits to.
+ // An operator-local BYO document, or the legacy relay release to the current
+ // runner. Either source must match the owner's signed policy commitment.
  async function byoConfig(app){
   const policy=app.policy;if(policy.mode!=='byo-wireguard')throw new Error('not a BYO app');
-  const request={version:1,deploymentId:app.deploymentId,runner,issuedAt:now(),nonce:randomBytes(16).toString('hex')};
-  const body=await relay(`/v1/network/byo/${app.deploymentId}/release`,{method:'POST',headers:{'content-type':'application/json'},
-   body:JSON.stringify({request,signature:await account.signMessage({message:byoReleaseMessage(request)})})});
+  let body;
+  if(c.byoConfigDirectory){
+   if(!/^0x[0-9a-f]{64}$/.test(app.deploymentId))throw Error('exact BYO deployment id required');
+   const file=await fs.open(path.join(c.byoConfigDirectory,app.deploymentId+'.json'),fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0)|(fs.constants.O_NONBLOCK||0));
+   try{
+    const st=await file.stat();
+    if(!st.isFile()||st.size>16384||(process.platform!=='win32'&&((st.mode&0o077)!==0||st.uid!==process.getuid())))throw Error('BYO config must be a private regular file up to 16 KiB owned by this operator');
+    const bytes=Buffer.alloc(16385);let size=0;
+    while(size<bytes.length){const {bytesRead}=await file.read(bytes,size,bytes.length-size,null);if(!bytesRead)break;size+=bytesRead;}
+    if(size>16384)throw Error('BYO config exceeds 16 KiB');
+    try{body=JSON.parse(bytes.subarray(0,size).toString('utf8'));}catch{throw Error('invalid BYO config document');}
+   }finally{await file.close();}
+  }else{
+   if(!c.relay)throw new Error('BYO requires an operator-local config directory or an explicit relay');
+   const request={version:1,deploymentId:app.deploymentId,runner,issuedAt:now(),nonce:randomBytes(16).toString('hex')};
+   body=await relay(`/v1/network/byo/${app.deploymentId}/release`,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({request,signature:await account.signMessage({message:byoReleaseMessage(request)})})});
+  }
   if(!body?.config||!/^[0-9a-f]{64}$/.test(body.salt||''))throw new Error('no BYO WireGuard config on record');
   const {config}=parseWireGuardConfig(body.config);
   if(await wireGuardConfigDigest(body.salt,config)!==policy.byo.configDigest)throw new Error('the stored BYO config is not the one the current policy names');

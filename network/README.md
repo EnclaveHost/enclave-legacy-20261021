@@ -89,3 +89,57 @@ distinct hostnames alone do not prove independent ownership.
 Control-circuit probes use the configured signed-record directories, or the
 explicitly configured relay when no directories are supplied. The transport has
 no built-in Enclave API probe URL.
+
+### Provider bootstrap without Enclave's relay
+
+`enclaveNetwork.directories` can supply the discovery origins without any `relay`
+setting. Every provider record and qualification is still verified locally.
+Checkers are operator-selected wallet addresses; select independently operated
+checkers and directories. Additional Enclave-operated replicas alone do not
+establish organizational independence.
+
+Registered providers require a fresh chain quorum to verify their registry host
+operator before the first control circuit can be built. For a host using
+`control: true`, choose an explicit bootstrap transport:
+
+```json
+{"bootstrap":{"mode":"proxy","proxies":["127.0.0.1:9050"]}}
+```
+
+This uses an operator-supplied SOCKS service for initial directory and registry
+reads and recovery when control circuits are unavailable. The service must be
+available independently of the circuits being created. Names resolve through the
+proxy. One or two literal IP/port endpoints are accepted, with the same optional
+loopback credentials as other guarded connections. A refused proxy cannot cause a
+direct fallback. Set `controlRequired: true` to require private control transport.
+
+An operator who permits its address to be visible during bootstrap may instead
+choose `{"bootstrap":{"mode":"direct"}}`. This is refused when
+`controlRequired: true`. With control disabled, chain reads already use the direct
+transport. A guarded host with no explicit bootstrap retains legacy platform
+provider discovery, but cannot authenticate registered providers before circuits
+exist. There is no implicit new direct chain path.
+
+Once circuits are available, provider registry verification uses the live
+control-proxied reader. App leases and owner-policy contract signatures always use
+that live reader on a guarded host; bootstrap cannot authorize app admission or
+extend a lease during a control outage.
+
+### BYO WireGuard without a relay release service
+
+Set `enclaveNetwork.byoConfigDirectory` to an absolute operator-local directory.
+The owner delivers `<deployment-id>.json` there through a channel they choose:
+
+```json
+{"config":"[Interface]\n...WireGuard configuration...","salt":"<64 lowercase hex digits>"}
+```
+
+Use mode 0600 on Unix, owned by the agent user; restrict the directory to that
+operator. On Windows, restrict its ACL to the operator. Documents are limited to
+16 KiB and must be regular files (Unix symlink opens are refused). Configuration
+contents are never published to the public directories. The host verifies the
+salted normalized configuration digest against the current owner-signed network
+policy before building the tunnel, with the existing public-endpoint/full-tunnel
+checks. Missing, changed or malformed local files fail closed: selecting a local
+directory disables relay release fallback. Without that setting, legacy BYO
+release remains available only through an explicitly configured relay.
