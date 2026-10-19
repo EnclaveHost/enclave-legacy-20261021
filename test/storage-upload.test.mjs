@@ -17,3 +17,17 @@ test('refuses ambiguous service and transport scope before asking the wallet',as
  for(const url of ['http://adapter.example/add-json','https://a:b@adapter.example/add-json','https://adapter.example/add-json?a=b','https://adapter.example/add-json#x','https://adapter.example/other'])await assert.rejects(directUploadHeaders({...opts,url}));
  await assert.rejects(directUploadHeaders({...opts,audience:'0x00'}));assert.equal(calls,0);
 });
+
+test('streaming upload authorization matches buffered authorization without hashing another full copy',async()=>{
+ const {directUploadDigestHeaders}=await import('../sdk/storage/upload-auth.mjs');
+ const opts={audience,url:'https://adapter.example/add-wasm',address:account.address,signMessage:args=>account.signMessage(args),now:()=>1792345700000};
+ const bytes=new TextEncoder().encode('large stream content');
+ const expected=await directUploadHeaders({...opts,bytes});
+ const actual=await directUploadDigestHeaders({...opts,hash:expected['x-upload-sha256'],size:bytes.length});
+ assert.deepEqual(actual,expected);
+ let calls=0;
+ for(const bad of [{hash:'bad',size:3},{hash:'ab'.repeat(32),size:-1},{hash:'ab'.repeat(32),size:1.5}]){
+  await assert.rejects(()=>directUploadDigestHeaders({...opts,...bad,signMessage:()=>{calls++;}}));
+ }
+ assert.equal(calls,0);
+});

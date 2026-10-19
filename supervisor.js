@@ -19,6 +19,7 @@
 // >>> The ONLY thing left to implement for your CVM is spawn/stop/measure below.
 
 import express from "express";
+import {createArtifactGatewayProbe} from "./sdk/storage/gateways.mjs";
 import {validateStoragePlan} from "./sdk/bootstrap/storage.mjs";
 import {bootstrapIntent,fetchPackage,verifyPackage,parseUniqueJSON} from "./sdk/bootstrap/package.mjs";
 import { planCheckpoints } from "./windows/node/verification-checkpoints.mjs";
@@ -9338,24 +9339,12 @@ function prefetchProbeDue(entry, nowMs) {
   return entry.stage === "prefetch" && !!entry.cid && (entry.probeClears || 0) < 3
       && nowMs - (entry.probedAt || 0) >= 60_000;
 }
-// One cheap ranged read against the SAME gateway the manager prefetches from
-// (same env, same default — wasm_manager.py's IPFS_GATEWAY). 200/206 = the
-// bytes are addressable again; the full prefetch+verify still runs on the
-// claim path, so a lying gateway only buys itself another verified failure.
-// A network-level failure (down, unreachable) marks the gateway bad for a
-// minute — one probe may stall its 10s, but a queue of held ids must not each
-// pay that stall on every sweep pass.
-const IPFS_GATEWAY = (process.env.IPFS_GATEWAY || "https://ipfs.enclave.host").replace(/\/+$/, "");
-let _gatewayDownUntil = 0;
-async function gatewayServes(cid) {
-  if (Date.now() < _gatewayDownUntil) return false;
-  try {
-    const r = await fetch(`${IPFS_GATEWAY}/ipfs/${cid}`, { headers: { range: "bytes=0-0" },
-                          signal: AbortSignal.timeout(10_000) });
-    try { await r.body?.cancel(); } catch {}
-    return r.status === 200 || r.status === 206;
-  } catch { _gatewayDownUntil = Date.now() + 60_000; return false; }
-}
+// Probe every explicitly selected artifact replica. A failed endpoint only
+// backs off itself; a successful probe still requires full CID verification.
+const gatewayServes=createArtifactGatewayProbe({gateways:()=>
+  process.env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE
+    ? bootstrapGateways().map(url=>new URL(url).origin)
+    : process.env.IPFS_GATEWAY || "https://ipfs.enclave.host"});
 
 // Release with retries, in the background. A failed release strands the lease
 // until it expires (~leaseSec of dead air for the user) — observed live when

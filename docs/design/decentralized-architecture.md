@@ -330,6 +330,58 @@ retention guarantee. Large WASM/runtime artifacts and existing production data
 have not migrated through this path; minipc's live Sia/indexd/PostgreSQL dependency
 remains until their independent retention and recovery are activated and verified.
 
+## Replicated app publication and artifact retrieval
+
+`enclave --wallet --contract-pins pins.json publish app.wasm --slug my-app
+--storage-plan storage.json` uses the same operator-selected adapter plan as startup
+packages. It does not request a token from Enclave's API. Each adapter gets a
+wallet signature bound to that adapter deployment, upload path, exact SHA-256,
+byte count and expiry. WASM uses `/add-wasm`; a large default config uses
+`/add-json`. `--config-file FILE` reads configs up to 1 MiB without shell argument
+limits. The catalog version is submitted only after both WASM and any external
+config have the required number of verified copies. JSON output includes their
+separate availability reports.
+
+The client computes the expected file CID before uploading: CIDv1, SHA-256,
+256 KiB raw leaves and a balanced UnixFS tree with 174 links per node. It checks
+the uploader's CID against that local result. Upload bodies stream in bounded
+chunks instead of giving fetch a separate whole-file Buffer for every adapter.
+The CLI still holds the original input file in memory; this is not a fully
+streaming local-file pipeline. Input sizes are capped at the adapter limits.
+Readback requests bounded byte ranges and verifies every byte against the local
+full-file hash, rejecting truncation, corrupt bodies, incorrect ranges/totals or
+an ignored range that would exceed the window. The default deadline bounds each
+adapter's complete upload/readback attempt; very large or slow transfers can fail
+that availability requirement rather than publish an unverified version.
+
+Guestd's existing `-gateway` option accepts an explicit JSON array of gateway
+origins. Operators configure these to the same stores, for example
+`-gateway '["https://storage-a.example","https://storage-b.example","https://storage-c.example"]'`.
+The supervisor's advisory recovery probe now supports that array through
+`IPFS_GATEWAY`, or derives origins from `GUEST_BOOTSTRAP_STORAGE_PLAN_FILE`.
+It probes replicas concurrently and backs off failed origins individually.
+One unavailable origin cannot mark the whole group unavailable. A successful
+probe still requires guestd's full CID verification before serving.
+
+Validation compares the local importer with a fresh offline Kubo at empty,
+single-byte, chunk-boundary and 174/175-chunk tree-boundary sizes. Three real
+Rust adapters and separate disk-backed MinIO stores accept a 50 MiB component
+with a large custom section, exercising multipart upload and a two-level UnixFS
+tree. A new CID still publishes when one S3 backend stops. After both surviving
+stores and adapters restart, every byte of the old and new artifacts is verified.
+Guestd's actual Python CAR fetcher also reconstructs the new file through the
+surviving TLS gateways with no cached output. This is artifact recovery, not a
+new guest boot or application execution. CLI tests confirm that insufficient
+WASM copies or insufficient config copies prevent the catalog transaction and
+that no token-issuer API call occurs.
+
+The production adapter and existing retained artifacts have not been migrated to
+multiple independent backing stores. Base runtime/kernel images need an equivalent
+retention/publication path; the current validating pin routes accept WASM, JSON
+and images. No claim is made that these tests fix the previous production Sia CAR
+truncation or CONNECT failures. Production Sia/indexd/PostgreSQL, operator
+independence and durable retention remain explicit completion gaps.
+
 ## Independent custody formation
 
 The previous v2 committee could only be created by an Enclave-owned founder;

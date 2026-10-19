@@ -1437,3 +1437,41 @@ globalThis.fetch=async (url,opts={})=>{
   const large=await run(publish,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'oversize'}});assert.notEqual(large.code,0);assert.match(large.err,/size limit/);
  }finally{S.depRev=prev;S.envelope=old;}
 });
+
+test('replicated app publication bypasses the token issuer and commits only after WASM and config readback',async()=>{
+ const prev=S.catRev;S.catRev=7n;
+ const planFile=path.join(confDir,'artifact-storage.json'),preload=path.join(confDir,'artifact-fetch.mjs');
+ fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({upload:`https://artifact${n}.example/add-json`,gateway:`https://artifact${n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+ const identityModule=pathToFileURL(path.join(REPO,'sdk/storage/unixfs.mjs')).href;
+ fs.writeFileSync(preload,`import {artifactIdentity} from ${JSON.stringify(identityModule)};
+const real=globalThis.fetch,stores=new Map();
+globalThis.fetch=async(url,opts={})=>{
+ const u=new URL(url);if(!['artifact1.example','artifact2.example','artifact3.example'].includes(u.hostname))return real(url,opts);
+ if(u.hostname==='artifact1.example'||process.env.ARTIFACT_TEST_DOWN==='two'&&u.hostname==='artifact2.example')return new Response('',{status:503});
+ if(opts.method==='POST'){
+  const chunks=[];for await(const chunk of opts.body)chunks.push(Buffer.from(chunk));const bytes=Buffer.concat(chunks),cid=artifactIdentity(bytes).cid;
+  if(process.env.ARTIFACT_TEST_CONFIG_FAIL==='1'&&u.pathname==='/add-json')return new Response('',{status:503});
+  if(!stores.has(u.hostname))stores.set(u.hostname,new Map());stores.get(u.hostname).set(cid,bytes);
+  return new Response(JSON.stringify({cid}));
+ }
+ const bytes=stores.get(u.hostname)?.get(u.pathname.split('/').at(-1));if(!bytes)return new Response('',{status:404});
+ const [start,end]=opts.headers.range.slice(6).split('-').map(Number);
+ return new Response(bytes.subarray(start,end+1),{status:206,headers:{'content-range':'bytes '+start+'-'+end+'/'+bytes.length}});
+};`);
+ const configFile=path.join(confDir,'large-published-config.json');fs.writeFileSync(configFile,JSON.stringify({payload:'x'.repeat(300000)}));
+ const args=['publish',component(),'--slug','hello-world','--config-file',configFile,'--storage-plan',planFile,'--contract-pins',writeAuthorityPins(),'--wallet','--json'];
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`};
+ try{
+  S.txs.length=0;S.apiCalls.length=0;
+  const good=await run(args,{env});assert.equal(good.code,0,good.err);
+  const result=JSON.parse(good.out);assert.equal(result.storage.wasm.verifiedCopies,2);assert.equal(result.storage.config.verifiedCopies,2);
+  const tx=S.txs.find(t=>t.functionName==='publishVersionCfg');assert(tx);assert.equal(tx.args[4],result.cid);
+  assert.equal(tx.args.at(-2),result.storage.config.cid);assert.equal(S.apiCalls.length,0);
+  assert.equal(result.storage.config.bytes,300014);
+  S.txs.length=0;const mixed=await run([...args,'--config','{}'],{env});assert.notEqual(mixed.code,0);assert.match(mixed.err,/choose --config/);assert.equal(S.txs.length,0);
+  for(const failEnv of [{ARTIFACT_TEST_DOWN:'two'},{ARTIFACT_TEST_CONFIG_FAIL:'1'}]){
+   S.txs.length=0;S.apiCalls.length=0;const bad=await run(args,{env:{...env,...failEnv}});
+   assert.notEqual(bad.code,0);assert.match(bad.err,/storage availability requirement/);assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);
+  }
+ }finally{S.catRev=prev;}
+});

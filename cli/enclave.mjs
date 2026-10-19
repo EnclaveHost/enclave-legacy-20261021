@@ -45,6 +45,7 @@ import { createPublicClient, createWalletClient, http as viemHttp, fallback,
 import { base } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
+import {publishArtifactReplicas} from "../sdk/storage/artifacts.mjs";
 import {publishPackageReplicas,verifyPackageReplicas,validateStoragePlan} from "../sdk/bootstrap/storage.mjs";
 import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
 import {loadContractPins} from "../network/contract-pins.mjs";
@@ -2530,21 +2531,35 @@ const pinJson = (account, buf) =>
   pinBytes(account, buf, DEFAULTS.ipfsJsonUpload, "application/json", "config.json");
 
 async function cmdPublish(rest) {
+  const say=(...parts)=>opt.json?console.error(...parts):console.log(...parts);
   catalogWriteAllowed();   // before anything is pinned: the version would go to a catalog this CLI cannot vouch for
   // with a session: the publisher is the session's VAULT (app.publish, named apps only)
   const sess = await sessionForCommand();
   const account = sess ? null : loadKey();
   const f = flags(rest, { val: ["--slug", "--name", "--desc", "--version", "--mem", "--cpu-gflops",
-                                "--vram", "--gpu-gflops", "--ports", "--config", "--fee",
-                                "--nogpu-mem", "--nogpu-cpu-gflops"],
+                                "--vram", "--gpu-gflops", "--ports", "--config", "--config-file", "--fee",
+                                "--nogpu-mem", "--nogpu-cpu-gflops", "--storage-plan"],
                        bool: ["--gpu-optional"] });
+  let storagePlan=null;
+  if(f["storage-plan"]){
+    CHAIN_ONLY=true;
+    if(!CONTRACT_PINS)throw new Error("replicated publication requires --contract-pins");
+    if(sess)throw new Error("replicated publication requires a direct wallet; pass --wallet");
+    if(fs.statSync(f["storage-plan"]).size>16384)throw new Error("storage plan too large");
+    storagePlan=validateStoragePlan(parseUniqueJSON(fs.readFileSync(f["storage-plan"],"utf8")));
+  }
   const file = f._[0];
-  if (!file || !f.slug) throw new Error("usage: enclave publish <app.wasm> --slug <slug> [--name --desc --version --mem MB --cpu-gflops N --vram MB --gpu-gflops N --nogpu-mem MB --nogpu-cpu-gflops N --ports CSV --config JSON --fee $/hr]");
+  if (!file || !f.slug) throw new Error("usage: enclave publish <app.wasm> --slug <slug> [--name --desc --version --mem MB --cpu-gflops N --vram MB --gpu-gflops N --nogpu-mem MB --nogpu-cpu-gflops N --ports CSV --config JSON|--config-file FILE --storage-plan FILE --fee $/hr]");
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(f.slug)) throw new Error("slug: lowercase letters, digits, hyphens (max 40)");
   if (sess) {
     await sessionRequire(sess, "app.publish", "api.upload");
     sessionRequireApp(sess, await read(DEFAULTS.APP_CATALOG_ADDRESS, CATALOG_ABI, "appIdOf", [sess.vault, f.slug]),
                       "app.publish", f.slug);
+  }
+  if(f["config-file"]){
+    if(f.config!==undefined)throw new Error("choose --config or --config-file, not both");
+    if(fs.statSync(f["config-file"]).size>CONFIG_MAX_BYTES)throw new Error("config file exceeds 1 MiB");
+    f.config=new TextDecoder('utf-8',{fatal:true}).decode(fs.readFileSync(f["config-file"]));
   }
   const publisher = sess ? sess.vault : account.address;
   // --config = the app's default/template ENCLAVE_CONFIG (deploy consoles pre-fill from it)
@@ -2593,6 +2608,7 @@ async function cmdPublish(rest) {
         + ` instead of --mem/--cpu-gflops. A deployment dialled for the card case is refused by CPU-only boxes rather than served too small - it keeps running wherever a card is.`);
     }
   }
+  if(storagePlan&&fs.statSync(file).size>2*1024*1024*1024)throw new Error("artifact exceeds the adapter 2 GiB limit");
   const bytes = fs.readFileSync(file);
   // same gate the IPFS gateway and runners apply: a wasi:http *component* —
   // with the one core-module carve-out: wasm64 (a 64-bit linear memory, the
@@ -2658,7 +2674,8 @@ async function cmdPublish(rest) {
   // 1. pin to IPFS. The gateway requires a WALLET-AUTHORIZED token (closes the
   //    open-pin storage DoS): sign enclave-upload:<sha256>:<expiry>, trade it at
   //    the API for a one-time token, then upload the bytes carrying it.
-  const cid = await pinBytes(sess ?? account, bytes, DEFAULTS.ipfsUpload, "application/wasm", file);
+  const storage=storagePlan?{wasm:await publishArtifactReplicas(bytes,"wasm",storagePlan,account)}:null;
+  const cid = storage?storage.wasm.cid:await pinBytes(sess ?? account, bytes, DEFAULTS.ipfsUpload, "application/wasm", file);
   say(`pinned ipfs://${cid}`);
 
   // 2. cut the catalog version (publisher = your address; appId = keccak(publisher, slug))
@@ -2724,7 +2741,8 @@ async function cmdPublish(rest) {
     if (Buffer.byteLength(onchain) > CONFIG_INLINE_MAX) throw new Error(
       `the on-chain routing manifest (${ROUTING_KEYS.join(", ")}) is ${Buffer.byteLength(onchain)} bytes, `
       + `over the ${CONFIG_INLINE_MAX}-byte record limit - shorten \`volumes\` or \`_media\``);
-    configCid = await pinJson(sess ?? account, cfgBuf);
+    if(storagePlan){storage.config=await publishArtifactReplicas(cfgBuf,"json",storagePlan,account);configCid=storage.config.cid;}
+    else configCid = await pinJson(sess ?? account, cfgBuf);
     say(`pinned config ipfs://${configCid} (${cfgBytes} bytes)`);
     f.config = onchain;
   }
@@ -2745,7 +2763,7 @@ async function cmdPublish(rest) {
   const approvedNow = (rcpt.logs || []).some((l) =>
     l.topics?.[0] === APPROVAL_SET_TOPIC && BigInt(l.data) === 1n);
   if (opt.json) return jout({ slug: f.slug, version, cid, appId, tx: rcpt.transactionHash,
-                              approval: approvedNow ? "approved" : "pending" });
+                              approval: approvedNow ? "approved" : "pending",...(storage?{storage}:{}) });
   say(`published ${f.slug}:${version} (tx ${rcpt.transactionHash})`);
   if (approvedNow) {
     say(`approved on publish (catalog-owner releases skip review). Deploy it:`);
@@ -4178,7 +4196,9 @@ deployments
                              with the record (rev-11 ledgers)
 
 catalog
-  publish <app.wasm> --slug S [--version V --name N --desc D --config JSON]
+  publish <app.wasm> --slug S [--version V --name N --desc D --config JSON|--config-file FILE]
+          [--storage-plan FILE] verify copies on independent adapters before publishing;
+                                requires --wallet and --contract-pins
           [--mem MB --cpu-gflops N --vram MB --gpu-gflops N --ports CSV]
           [--fee $/hr]        your hourly fee, paid straight to your wallet out
                              of deployers' fundings (capped on-chain; immutable
