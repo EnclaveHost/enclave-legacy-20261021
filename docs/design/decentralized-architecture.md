@@ -16,7 +16,7 @@ live network of independently operated machines.
 | --- | --- | --- |
 | Host admission | Accepted host owner chooses its policy; payout and operator are not ownership | Source and wallet-policy tests exist; compatible runtime activation remains |
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
-| Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
+| Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory deployed and bytecode verified on Base; clients/grants not migrated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
@@ -352,6 +352,47 @@ custodian endpoint testing, a hardware quorum, and owner-authorized migration
 of each encrypted bundle. Existing ciphertext is not transferable to a new
 independent public key without an authorized decrypt/re-encrypt or separately
 verified handover. None of these source tests proves live custody migration.
+
+## Verified Base authority deployment
+
+On 2026-10-19 the replacement authorities were deployed on Base from source
+commit `d8fac3c44b32115e80501c45ee0fb919ca2df56c`. The machine-readable
+[address and verification record](../../contracts/deployments/independent-authorities-base.json)
+contains constructor pins, transaction receipts, runtime hashes, immutable
+bindings, source hashes and funding/refund evidence.
+
+| Contract | Base address |
+| --- | --- |
+| PinnedSessionVaultFactory | `0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b` |
+| PinnedSessionAuthority | `0xF76A138cEb162Aa4bAB47D4787793C569759CAc8` |
+| SessionVault implementation | `0x87bc7Bfc8cA8b857FB43eBc6F4E49c807351Ff5c` |
+| SessionVaultLib | `0xcc2824CdD4be8AD2656B5201662E60E025BF12b4` |
+| EnclaveHostOwnership | `0xF5E9E6C02449001f6E8e95E5d87413f2cb6790ea` |
+| EnclaveSecretVaultV2 | `0x56b81b3970a8ac2c52f9874Bd2758eDE30758228` |
+
+Three of four configured RPCs agreed at block 52,823,641, hash
+`0xe7a5b52ba50e0688bf8e812e1e0462f22bb6f5433339702df575b38fe569b8a7`.
+Verification compares all six deployed runtimes with compiled source, applies
+only compiler-declared immutable slots, and checks every immutable getter,
+library link and the implementation's initialized owner sentinel. Six source
+and deployment tests pass. A Base fork at block 52,823,514 additionally exercised
+the live host registry: a foreign operator could not nominate an owner, the
+registered operator could nominate one, and the nominated wallet could accept.
+Deleting the old address book on that fork did not affect the new bindings.
+
+These deployments introduce no deployer-controlled admin role. They do not
+remove governance within the existing ledger, catalog, registry or other pinned
+dependencies. The dedicated deployer received 0.00025 ETH, spent
+0.000082405485674447 ETH on deployment transactions and returned
+0.000166594514325553 ETH; 0.0000008727526662 ETH remains after the refund fee.
+Funding-transaction gas was paid separately by the operator.
+
+**Activation remains outstanding:** no production address-book entry, host
+ownership, session grant, secret bundle or runtime was changed by deployment.
+Host operators must nominate wallets and those wallets must accept. Clients
+must explicitly select the new factory. Compatible measured custodians must
+form a committee before owners authorize bundle migration. Existing production
+custody still uses its original vault and one Enclave seat.
 
 ## Direct custody transport
 
