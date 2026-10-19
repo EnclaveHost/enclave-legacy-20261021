@@ -35,7 +35,7 @@ const fetcherPath = env("ENCLAVE_CID_FETCHER", path.resolve(HERE, "../../node/fe
 const fetchComponent = cidFetcher({
   script: fetcherPath,
   python: env("PYTHON_BIN", "python"),
-  gateway: env("IPFS_GATEWAY"),
+  gateway: env("IPFS_GATEWAYS") || env("IPFS_GATEWAY"),
   timeoutMs: Number(env("ENCLAVE_FETCH_TIMEOUT_MS", "240000")),
 });
 
