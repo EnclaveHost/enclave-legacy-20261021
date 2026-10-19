@@ -111,13 +111,30 @@ On 2026-10-19 (`cold-host-proof`, outside the repository):
   RuntimeID `f548e338…c74f` and firmware `142589cc…`, and an authenticated
   `/prefetch` through explicit public gateways derived the exact owner AppID.
 
-Not shown: network isolation covered the image build only, not the downloads or
-the manager prefetch. The prefetch used a derivation record from the earlier
-hardware run, not one this host derived from chain. No guest was booted from the
-downloaded release, the manager was stopped, and no owner-startup request,
-lease claim or chain write took place. The replicas are Enclave-operated. The
-host's VCEK and TCB floor were already present; obtaining them on a host that
-has never run a guest is not yet automated (`isolation/m2/vcek-prep.mjs` needs
-a guest report). The tests above (`test/pinned-host-runtime.test.mjs`,
-`isolation/m4/guestd/cpu_release_test.go`) drive the real launcher, builder and
-fetcher with fixtures; they do not boot hardware.
+A subsequent hardware run used the final reviewed guestd, the downloaded release
+and a new empty guest store. It obtained the catalog component through explicit
+literal-IP replicas (the first configured source refused), derived the same
+AppID, and fetched the current owner-committed package after three matching
+fixed-block chain reads. A fresh SNP guest booted while the actual guest egress
+dial path refused Enclave control names and allowed only measured chain peers.
+Guestd returned an attested verdict; a separate TLS client matched its attested
+SPKI before sending the request and received HTTP 200. Measurement remained
+`caf11b48…a733a`. The test used 0.000540 USDC runtime credit, plus transaction gas.
+The guest was destroyed, both lab services stopped, the deployment suspended,
+the lease released and unused credit refunded at Base blocks 52,830,351–52,830,354.
+
+Limits: the runtime was downloaded in the preceding acquisition proof, not
+re-downloaded during this boot. Host control traffic was not namespace-blocked;
+the guest's control traffic was denied. The lab assembled the derivation from
+current chain catalog data; it did not run the full supervisor. The host VCEK,
+TCB floor, verifier tools and operator pin were already present. Normal guest
+deletion removed raw serial/judge files; the retained evidence contains the
+authenticated manager verdict, SPKI-checked HTTP probe, egress log and transaction
+receipts. All storage replicas and this host are Enclave-operated. Production
+runtimes, custody and operator independence were not demonstrated by this run.
+
+Obtaining collateral on a host that has never run a guest is not yet automated
+(`isolation/m2/vcek-prep.mjs` needs a guest report). The source tests
+(`test/pinned-host-runtime.test.mjs`, `isolation/m4/guestd/cpu_release_test.go`)
+exercise the launcher, builder and fetcher with fixtures in addition to the
+separate hardware check described above.

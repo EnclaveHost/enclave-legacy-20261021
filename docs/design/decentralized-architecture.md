@@ -427,8 +427,14 @@ re-verifies the full release. No host `/boot`, module tree or `wasmtime` is used
 See [cold host setup](../network/cold-host.md) for prerequisites and limits.
 A real downloaded release reproduced the earlier hardware measurement in an
 isolated build and a fresh manager derived the owner AppID through explicit
-gateways. No guest has yet booted from a downloaded release on a cold host, and
-no active owner-startup request or lease claim was made.
+gateways. A subsequent fresh SNP guest booted from the downloaded release with
+an empty host artifact store and a real owner-authorized lease. With guest
+control access denied, it passed attestation and returned HTTP 200 after its
+TLS key matched the attested SPKI. It used 0.000540 USDC runtime credit; the
+lease was released, deployment suspended, unused credit refunded and lab
+services stopped. The lab derived catalog inputs itself rather than through
+the full supervisor. Host tools/collateral were already present and all replicas
+remain Enclave-operated; see the guide for the retained evidence and limits.
 
 ## Independent custody formation
 
