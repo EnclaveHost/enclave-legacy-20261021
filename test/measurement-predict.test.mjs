@@ -416,6 +416,37 @@ test("config gateway: preferred source and verified fallback preserve CID and si
   assert.equal(P.predictorEnv({ SECRETS_RELEASE_CONFIG_GATEWAY: "https://pin.example" }).configGateway, "https://pin.example");
 });
 
+test("explicit replicas replace the legacy gateway for cold predictions and config reads", async () => {
+  const gateways = ["https://first.example", "https://second.example"];
+  const seen = [];
+  const { p } = predictor({ opts: { gateways, timeoutMs: 2000 }, tools: {
+    "fetch-cid.py": (a, opts) => {
+      seen.push({ cid: a[2], source: a[5] });
+      assert.ok(opts.timeoutMs > 0 && opts.timeoutMs <= 1000);
+      assert.ok(gateways.includes(a[5]), "the legacy source must never be contacted");
+      assert.equal(fs.existsSync(a[3]), false, "failed output is removed before retry");
+      if (a[5] === gateways[0]) {
+        fs.writeFileSync(a[3], "partial unverified output");
+        return { code: 1, out: "", err: "unavailable or invalid CAR" };
+      }
+      return null;
+    }
+  } });
+  assert.equal((await p.expectedFor(REF)).ok, true);
+  const config = await p.fetchVerified("bafyconfigreplicatest", 1024);
+  assert.equal(config.ok, true);
+  for (const cid of new Set(seen.map(x => x.cid))) {
+    assert.deepEqual(seen.filter(x => x.cid === cid).map(x => x.source), gateways);
+  }
+  const { p: down } = predictor({ opts: { gateways }, tools: {
+    "fetch-cid.py": () => ({ code: 1, out: "", err: "all replicas down" })
+  } });
+  assert.equal((await down.expectedFor(REF)).ok, false);
+  assert.equal((await down.fetchVerified("bafyconfigreplicatest")).ok, false);
+  assert.ok(predictor({ opts: { gateways: ["http://insecure.example"] } }).p.problems.includes("an https gateway"));
+  assert.deepEqual(P.predictorEnv({ SECRETS_RELEASE_PREDICT_GATEWAYS: " https://first.example, ,https://second.example " }).gateways, gateways);
+});
+
 test("versionConfigReader: the version's inline config and configCid through agreeing RPCs; a revert on versionConfigCid is none; a disagreement refuses", async () => {
   const mk = (over = {}) => ({ readContract: async ({ functionName }) => {
     if (functionName === "getVersion") return { cid: CID, version: "1", vramMb: 0, gpuGflops: 0, memMb: 128, cpuGflops: 0, createdAt: 0n, verified: false, yanked: false, ports: "", approval: 1, config: over.config ?? '{"wasi":"p2"}' };
