@@ -42,7 +42,7 @@ export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
 
 export async function runDirectory(config){
   const log=m=>console.log(new Date().toISOString(),m);
-  const reader=new LeaseReader({rpc:config.rpc,addressBook:config.addressBook,includeHostPayout:true});
+  const reader=new LeaseReader({rpc:config.rpc,addressBook:config.addressBook,authorityPins:config.authorityPins,includeHostPayout:true});
   const leases=new Map(),operators=new Map();let registry=null,registryAt=0,refreshLeases=null;
   const leaseOf=async id=>{
     const cached=leases.get(id);if(cached&&cached.at+15000>Date.now())return cached.row;
@@ -65,7 +65,8 @@ export async function runDirectory(config){
     operators.set(id,{at:Date.now(),operator});return operator;
   };
   const directory=new PublicDirectory({directory:config.stateDir,checkers:config.checkers,leaseOf,hostOperator,
-    verifyOwner:(owner,message,signature)=>verifyOwnerSignature({clients:reader.clients,owner,message,signature,addressBook:config.addressBook})});
+    verifyOwner:(owner,message,signature)=>verifyOwnerSignature({reader,owner,message,signature,addressBook:config.addressBook,
+      sessionVaultFactory:reader.authorityPins?.sessionVaultFactory})});
   await directory.read(); // corruption must refuse startup, not forget replay floors
   const server=createDirectoryServer(directory,{log});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(config.port||8188,config.bind||'127.0.0.1',resolve);});

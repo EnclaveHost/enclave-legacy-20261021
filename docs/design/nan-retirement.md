@@ -58,3 +58,9 @@ The proposed vault also pins its deployment ledger and SessionVault factory at c
 ### Client catalog selection (prepared)
 
 The CLI accepts an explicitly named catalog version for create/upgrade regardless of approval, yank or listing status. Implicit selection continues to recommend an approved, non-yanked release. The console has an All releases view, retains direct links to delisted apps, exposes every immutable version and displays moderation status in deploy/upgrade flows. Owner/session scope, minimum resources, publisher fees, rate limits and isolation checks remain. Catalog moderation is not a network-wide client veto; a host may still decline according to its owning wallet's policy. Production legacy hosts retain their old admission checks until the new host mode is activated.
+
+### Public directory authority pins
+
+Directories accept a complete `authorityPins` object naming `deployments`, `registry`, `connectivity` and `sessionVaultFactory`. The first two must be nonzero; zero explicitly disables either optional binding. A partial/invalid object refuses startup. With pins configured, lease/operator reads never consult the address book; unknown bindings refuse rather than falling back. Contract-owner and SessionVault policy signatures use fresh agreeing reads at the same confirmed block. EOA signatures remain checked against the deployment's verified owner.
+
+Capture bindings and deployed bytecode hashes with `scripts/network/capture-network-authorities.mjs --book <address> --out <new-json-file>`. An explicitly verified legacy SessionVault factory can be supplied with `--session-factory` when the book entry is empty; a conflicting nonempty binding refuses. Review and copy the resulting `authorityPins` into directory configuration. This fixes those directories' authority; existing provider and host network configurations still require their own cutover and the cold-policy revision anchor remains unresolved.

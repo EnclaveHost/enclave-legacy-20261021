@@ -5,6 +5,7 @@ import {base} from 'viem/chains';
 import {canonical} from './route-record.mjs';
 import {readConnectivity} from './connectivity-chain.mjs';
 import {guardedFetch} from './guarded-fetch.mjs';
+import {validateNetworkAuthorities} from './network-authorities.mjs';
 const fields=[['id','bytes32'],['owner','address'],['appRef','string'],['ports','string'],['configCid','string'],['gpuMilli','uint16'],['cpuMilli','uint16'],['appPort','uint32'],['isPublic','bool'],['active','bool'],['createdAt','uint64'],['rate','uint256'],['balance6','uint256'],['spent6','uint256'],['runner','bytes32'],['runnerOperator','address'],['leaseUntil','uint64']];
 const bookABI=[{type:'function',name:'addr',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'address'}]}];
 const deploymentABI=[{type:'function',name:'get',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'tuple',components:fields.map(([name,type])=>({name,type}))}]}];
@@ -14,11 +15,12 @@ const registryV1ABI=[{type:'function',name:'get',stateMutability:'view',inputs:[
   [['endpoint','string'],['repo','string'],['measurement','bytes32'],['operator','address'],['registeredAt','uint64'],['lastSeen','uint64'],['active','bool']].map(([name,type])=>({name,type}))}]}];
 function jsonValue(value) {return JSON.parse(JSON.stringify(value,(_k,v)=>typeof v==='bigint'?v.toString():v));}
 export class LeaseReader {
-  constructor({rpc,chainId=8453,addressBook,maxBlockAgeMs=90000,confirmations=2,clients,proxy,includeHostPayout=false,includeConnectivity=false,now=Date.now}) {
+  constructor({rpc,chainId=8453,addressBook,authorityPins,maxBlockAgeMs=90000,confirmations=2,clients,proxy,includeHostPayout=false,includeConnectivity=false,now=Date.now}) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(addressBook||'') || !Number.isSafeInteger(chainId) || chainId<=0 ||
         !Number.isSafeInteger(maxBlockAgeMs) || maxBlockAgeMs<1000 || maxBlockAgeMs>120000 || !Number.isSafeInteger(confirmations) || confirmations<1) throw new Error('invalid chain policy');
     if (!clients && (!Array.isArray(rpc) || rpc.length<2 || new Set(rpc.map(s=>new URL(s).hostname)).size!==rpc.length || rpc.some(s=>new URL(s).protocol!=='https:'))) throw new Error('at least two independent HTTPS RPC origins required');
     Object.assign(this,{chainId,addressBook,maxBlockAgeMs,confirmations,includeHostPayout,includeConnectivity,now});
+    Object.defineProperty(this,'authorityPins',{value:authorityPins===undefined?null:validateNetworkAuthorities(authorityPins),enumerable:true});
     // Public RPCs meter requests per second. Multicall3 folds a snapshot's
     // same-block reads into one eth_call each, however many apps it covers.
     this.clients=clients||rpc.map(url=>createPublicClient({chain:base,batch:{multicall:{wait:0}},
@@ -98,13 +100,13 @@ export class LeaseReader {
     if(!Array.isArray(ids)||ids.length>256||ids.some(id=>!/^0x[0-9a-f]{64}$/.test(id))) throw new Error('exact deployment ids required');
     this.failures=[];
     return this.agreed(async(c,blockNumber)=>{
-      const deployments=await c.readContract({address:this.addressBook,abi:bookABI,functionName:'addr',args:[stringToHex('deployments',{size:32})],blockNumber});
+      const deployments=await this.authorityAddress(c,'deployments',blockNumber);
       if(!/^0x[0-9a-fA-F]{40}$/.test(deployments)||/^0x0{40}$/i.test(deployments))throw new Error('no deployments contract');
       const schema=await c.readContract({address:deployments,abi:schemaABI,functionName:'deploymentsSchema',blockNumber});
       if(![15,16].includes(Number(schema))||(this.includeConnectivity===true&&Number(schema)!==16))throw new Error('unsupported deployments schema');
       let rows=await Promise.all(ids.map(id=>c.readContract({address:deployments,abi:deploymentABI,functionName:'get',args:[id],blockNumber})));
       if(this.includeHostPayout){
-        const registry=await c.readContract({address:this.addressBook,abi:bookABI,functionName:'addr',args:[stringToHex('registry',{size:32})],blockNumber});
+        const registry=await this.authorityAddress(c,'registry',blockNumber);
         await Promise.all(rows.map(async row=>{
           if(/^0x0{64}$/.test(row.runner))return;
           const host=await c.readContract({address:registry,abi:hostABI,functionName:'get',args:[row.runner],blockNumber});
@@ -114,7 +116,7 @@ export class LeaseReader {
           row.runnerRegistered=true;row.runnerPayoutWallet=host.payoutWallet;row.runnerProofKey=host.proofKey;
         }));
       }
-      const connectivityAddress=this.includeConnectivity&&Number(schema)>=16?await c.readContract({address:this.addressBook,abi:bookABI,functionName:'addr',args:[stringToHex('connectivity',{size:32})],blockNumber}):null;
+      const connectivityAddress=this.includeConnectivity&&Number(schema)>=16?await this.authorityAddress(c,'connectivity',blockNumber):null;
       // 'auto': a book that publishes no connectivity contract (none deployed yet) reads as schema 15 did. Without this the
       // 16d cutover (2026-10-12 16:04Z) made every RPC throw "connectivity contract required": no quorum, every TUNA route refused.
       if(connectivityAddress&&!(this.includeConnectivity==='auto'&&/^0x0{40}$/i.test(connectivityAddress))){
@@ -141,8 +143,16 @@ export class LeaseReader {
   // Who holds registry ids, from the same agreeing peers. Only the original
   // seven-field entry prefix is decoded, so every registry revision reads alike.
   // an address the book publishes (e.g. 'registry'), read like everything else: an agreeing quorum at a confirmed block
+  authorityAddress(client,name,blockNumber){
+    if(this.authorityPins){
+      if(!Object.hasOwn(this.authorityPins,name))throw Error('network authority is not pinned: '+name);
+      return this.authorityPins[name];
+    }
+    return client.readContract({address:this.addressBook,abi:bookABI,functionName:'addr',args:[stringToHex(name,{size:32})],blockNumber});
+  }
   async bookAddress(name) {
-    const v=await this.agreed(async(c,blockNumber)=>({address:(await c.readContract({address:this.addressBook,abi:bookABI,functionName:'addr',args:[stringToHex(name,{size:32})],blockNumber})).toLowerCase()}));
+    if(this.authorityPins)return this.authorityAddress(null,name);
+    const v=await this.agreed(async(c,blockNumber)=>({address:(await this.authorityAddress(c,name,blockNumber)).toLowerCase()}));
     return v.address;
   }
   registryEntries(registry,ids) {
