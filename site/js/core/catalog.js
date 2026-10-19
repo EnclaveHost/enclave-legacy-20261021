@@ -1,3 +1,4 @@
+import {catalogAdmissionNotice} from "./catalog-policy.js";
 import {directUploadHeaders} from "./upload-auth.js";
 /* ============================================================
    App store · on-chain catalog (EnclaveAppCatalog on Base) + IPFS CIDs
@@ -196,22 +197,20 @@ export async function loadCatalog(force, opts){
 }
 
 /* ---- version selection helpers ---- */
-// Yanked and rejected releases are the publisher's cleanup and the owner's
-// moderation surface, not the store's: normal browsers never see them (the
-// enclave refuses to deploy them anyway - resolveAppRef below). The app's
-// publisher and the catalog owner see everything, since these states are
-// exactly what they act on (yank/approve/reject buttons).
+// All immutable releases remain inspectable. Moderation controls still require
+// the publisher or catalog owner, and hosts decide which releases to accept.
 export const appPrivileged = (app) => {
   const me = (Enclave.address || "").toLowerCase();
   return !!me && (app.publisher.toLowerCase() === me || me === STORE.owner);
 };
-export const verVisible = (app, v) => appPrivileged(app) || (!v.yanked && v.approval !== APPROVAL.rejected);
+export const verVisible = (_app, v) => !!v;
 // indices into app.versions the viewer may see - callers keep the REAL index
 // (catalog:// refs and card-action idx are positions in the on-chain list)
 export const visibleVerIdxs = (app) =>
   app.versions.reduce((idxs, v, i) => (verVisible(app, v) && idxs.push(i), idxs), []);
-export function defaultIdx(app){         // newest visible non-yanked release, else newest visible; -1 = none to show
+export function defaultIdx(app){         // prefer approved releases; explicit selection can name every version
   const vs = app.versions;
+  for (let i = vs.length - 1; i >= 0; i--) if (!vs[i].yanked && Number(vs[i].approval) === APPROVAL.approved) return i;
   for (let i = vs.length - 1; i >= 0; i--) if (!vs[i].yanked && verVisible(app, vs[i])) return i;
   for (let i = vs.length - 1; i >= 0; i--) if (verVisible(app, vs[i])) return i;
   return -1;
@@ -441,23 +440,15 @@ export async function putConfig(text){
 }
 
 export function looksFriendly(s){ return s.includes(":") && !s.startsWith("ipfs://"); }
-/* opts.allowPending: admit a version still AWAITING approval — the dev-mode
-   path (PRIVATE deployments on a fleet advertising devDeploy; the caller owns
-   both checks). Pending resolutions NEVER enter REF_CACHE: the cache hit path
-   skips the approval gate, so caching one would let a later PUBLIC deploy of
-   the same input slip through unexamined. Rejected/yanked stay refused. */
-export function resolveAppRef(input, opts = {}){
+// Resolve explicit releases; catalog moderation remains visible and host-local.
+export function resolveAppRef(input){
   input = (input || "").trim();
   if (!input) return { reference: "", error: "Pick an app: slug:version from the Apps catalog." };
   if (input.startsWith("ipfs://") || /^(baf[a-z0-9]{10,}|Qm[1-9A-HJ-NP-Za-km-z]{20,})$/.test(input))
     return { reference: input, error: "CIDs can’t deploy - a CID names bytes, not a version (several versions can share bytes and differ in approved config). Deploy a slug:version from the Apps catalog." };
   if (!looksFriendly(input)) return { reference: input, error: "Not a slug:version reference. Deploys come from the on-chain catalog - pick an app on the Apps page." };
-  // The cache is only the PRE-LOAD fast path (a "Use in Deploy" stash resolving
-  // before the catalog read lands). Once the catalog is loaded, always resolve
-  // fresh: the stash writer (apps.js useInDeploy) caches whatever version the
-  // user clicked — a publisher's own PENDING one included — and the approval
-  // gate below must re-run against the caller's current opts, not be
-  // short-circuited by a cache entry that never saw it.
+  // Before catalog load, a cached reference can identify the release. Once
+  // loaded, read its current metadata so the moderation notice stays current.
   if (REF_CACHE[input] && !STORE.loaded) return { reference: REF_CACHE[input], label: input };
   let pub = null, rest = input;
   const slash = input.indexOf("/");
@@ -465,19 +456,14 @@ export function resolveAppRef(input, opts = {}){
   const colon = rest.lastIndexOf(":");
   const slug = rest.slice(0, colon).trim(), version = rest.slice(colon + 1).trim();
   if (!STORE.loaded) return { reference: input, label: input, pending: true };   // catalog not read yet
-  let apps = (STORE.apps || []).filter(a => a.slug === slug && a.active);
+  let apps = (STORE.apps || []).filter(a => a.slug === slug);
   if (pub) apps = apps.filter(a => a.publisher.toLowerCase() === pub);
   if (!apps.length) return { reference: input, label: input, error: "No catalog app '" + slug + "'" + (pub ? " by " + pub : "") + "." };
   if (apps.length > 1) return { reference: input, label: input, error: "Several publishers have '" + slug + "'; qualify it: <publisher>/" + slug + ":" + version };
-  const vi = apps[0].versions.findIndex(x => x.version === version && !x.yanked);
+  const vi = apps[0].versions.findIndex(x => x.version === version);
   const v = vi >= 0 ? apps[0].versions[vi] : null;
   if (!v) return { reference: input, label: input, error: "'" + slug + "' has no live version '" + version + "'." };
-  if (v.approval !== APPROVAL.approved && (v.approval === APPROVAL.rejected || !opts.allowPending))
-    return { reference: input, label: input, error: "'" + slug + ":" + version + "' " + (v.approval === APPROVAL.rejected
-      ? "was rejected by the catalog owner; the enclave refuses to deploy it."
-      : "isn’t approved yet by the catalog owner; the enclave only runs it PRIVATE (owner-only access) for testing - switch Access to Private.") };
-  const awaiting = v.approval !== APPROVAL.approved;   // pending, admitted by allowPending
-  if (!awaiting) REF_CACHE[input] = catalogRef(apps[0].appId, vi);
+  REF_CACHE[input] = catalogRef(apps[0].appId, vi);
   PORTS_CACHE[input] = v.ports || "";
   SPECS_CACHE[input] = specOf(v);         // raw specs; floors are computed at read time
   // The version's default config template (store media stripped: _media never
@@ -501,7 +487,7 @@ export function resolveAppRef(input, opts = {}){
   CONFIG_CID_CACHE[input] = v.configCid || "";
   if (v.configCid) CONFIG_CACHE[input] = "";
   return { reference: catalogRef(apps[0].appId, vi), label: input, mins: minPctsOf(SPECS_CACHE[input]),
-           ...(awaiting ? { awaitingApproval: true } : {}) };
+           notice: catalogAdmissionNotice(apps[0], v) };
 }
 
 // A mid-session address-book change (js/core/addressbook.js emits

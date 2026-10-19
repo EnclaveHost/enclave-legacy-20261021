@@ -31,6 +31,7 @@
 //       ENCLAVE_VISIBLE_WAIT  seconds deploy waits for a new record to reach every reader (default 60)
 //       ENCLAVE_SESSION   an exported session (enclave session new --env): the session-aware commands act through it
 //       ENCLAVE_SESSION_DIR  where session keys live (default ~/.config/enclave/sessions)
+import {catalogAdmissionNotice} from "../site/js/core/catalog-policy.js";
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
@@ -750,21 +751,20 @@ async function chainDeployments(owner) { // owner=null -> all
 }
 
 // [publisher/]slug[:version] -> { ref: catalog://<appId>/<idx>, ver, app } with
-// the same resolution + approval gate the console applies (runners re-check on
-// their side; this just fails fast with a readable reason). The ref names the
+// an exact immutable version. Default selection prefers approved releases;
+// an explicit version leaves admission to each host. The ref names the
 // on-chain VERSION RECORD — the authority for the wasm, config, and ports the
-// catalog owner approved. CIDs are refused: a CID names bytes, not a version
+// publisher recorded. CIDs are refused: a CID names bytes, not a version
 // (several versions can share bytes and differ entirely in approved config).
-// opts.allowPending: admit a version still AWAITING approval (the publisher
-// dev-mode path: --private deployments on a fleet advertising devDeploy).
-// Only an EXPLICIT :version label can name one; rejected/yanked stay refused.
-async function resolveAppRef(input, opts = {}) {
+// An explicit version selects the immutable release regardless of catalog moderation.
+// Hosts enforce their owning wallets' admission policy; the CLI reports status.
+async function resolveAppRef(input) {
   if (/^ipfs:\/\//i.test(input) || /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z0-9]{20,})$/.test(input))
     throw new Error(`CIDs can't deploy: a CID names bytes, not a version. Deploy a [publisher/]slug:version from the catalog (enclave apps)`);
   const m = input.match(/^(?:([0-9a-zA-Z.]+|0x[0-9a-fA-F]{40})\/)?([a-z0-9][a-z0-9-]*)(?::(.+))?$/);
   if (!m) throw new Error(`"${input}" is not an app reference ([publisher/]slug[:version])`);
   const [, pubFilter, slug, verLabel] = m;
-  let apps = (await catalogApps()).filter((a) => a.slug === slug && a.active);
+  let apps = (await catalogApps()).filter((a) => a.slug === slug && (verLabel !== undefined || a.active));
   if (pubFilter) apps = apps.filter((a) => a.publisher.toLowerCase() === pubFilter.toLowerCase());
   if (!apps.length) throw new Error(`no active catalog app with slug "${slug}"${pubFilter ? ` by ${pubFilter}` : ""}`);
   if (apps.length > 1 && !pubFilter)
@@ -773,19 +773,14 @@ async function resolveAppRef(input, opts = {}) {
   const versions = await readVersions(app.appId, app.versionCount);
   let vi;
   if (verLabel !== undefined) {
-    vi = versions.findIndex((v) => v.version === verLabel && !v.yanked);
-    if (vi < 0) throw new Error(`app "${slug}" has no (un-yanked) version labeled "${verLabel}"`);
+    vi = versions.findIndex((v) => v.version === verLabel);
+    if (vi < 0) throw new Error(`app "${slug}" has no version labeled "${verLabel}"`);
   } else {
     vi = versions.findLastIndex((v) => !v.yanked && Number(v.approval) === 1);
     if (vi < 0) throw new Error(`app "${slug}" has no approved version yet`);
   }
   const ver = versions[vi];
-  if (Number(ver.approval) === 2)
-    throw new Error(`${slug}:${ver.version} was rejected by the catalog owner; runners never serve it`);
-  if (Number(ver.approval) !== 1 && !opts.allowPending)
-    throw new Error(`${slug}:${ver.version} is ${APPROVAL_WORD[Number(ver.approval)]}; runners only claim approved versions`
-      + ` (deploy it --private to test it before approval, on a fleet advertising devDeploy)`);
-  return { ref: `catalog://${app.appId}/${vi}`, ver, app, pending: Number(ver.approval) !== 1 };
+  return { ref: `catalog://${app.appId}/${vi}`, ver, app, notice: catalogAdmissionNotice(app, ver) };
 }
 let _appsCache = null;
 async function catalogApps() {
@@ -1727,7 +1722,7 @@ async function cmdResume(rest) {
     say(`re-queued with ${dur(fundable)} of runtime - an enclave claims it shortly (watch: enclave status ${short(id)})`);
 }
 
-// Switch a deployment to another approved version of ITS app (setAppRef) —
+// Switch a deployment to an explicit version of ITS app (setAppRef) —
 // the upgrade path: paid time and any live lease stay on the record, so a new
 // release never costs a second buy-in; the current runner restarts the app in
 // place on the new version. On a rev-6 ledger --gpu/--cpu additionally RE-BUY
@@ -1737,8 +1732,8 @@ async function cmdResume(rest) {
 // create — and a live lease's unserved tail settles at the old rate before
 // re-burning at the new one, so nothing is ever re-priced retroactively.
 // `enclave resize` is the version-less spelling of the same flow. The same
-// pre-flight gates as deploy run BEFORE the wallet signature: catalog
-// approval, and the new version's minimum shares against the shares the
+// pre-flight resource and fee gates run BEFORE the wallet signature, including
+// the new version's minimum shares against the shares the
 // record will carry (a record no runner accepts would leave the app dark on
 // a still-billing lease).
 async function cmdUpgrade(rest, { resize = false } = {}) {
@@ -1777,8 +1772,8 @@ async function cmdUpgrade(rest, { resize = false } = {}) {
   const versions = await readVersions(app.appId, app.versionCount);
   let vi;
   if (rest[1] !== undefined) {
-    vi = versions.findIndex((v) => v.version === rest[1] && !v.yanked);
-    if (vi < 0) throw new Error(`app "${app.slug}" has no (un-yanked) version labeled "${rest[1]}"`);
+    vi = versions.findIndex((v) => v.version === rest[1]);
+    if (vi < 0) throw new Error(`app "${app.slug}" has no version labeled "${rest[1]}"`);
   } else if (resize) {
     vi = curIdx;   // a pure resize stays on the version the record already runs
     if (!versions[vi]) throw new Error(`${short(id)} references version index ${vi}, which the catalog doesn't list`);
@@ -1788,20 +1783,8 @@ async function cmdUpgrade(rest, { resize = false } = {}) {
   }
   const ver = versions[vi];
   if (vi === curIdx && !wantShares) return say(`${short(id)} already runs ${app.slug}:${ver.version} (version index ${vi}); nothing to do`);
-  if (Number(ver.approval) === 2)
-    throw new Error(`${app.slug}:${ver.version} was rejected by the catalog owner; runners never serve it`);
-  if (Number(ver.approval) !== 1) {
-    // pending target: only a PRIVATE deployment may switch to it (dev mode),
-    // and only an explicit version label may name it - same rules as deploy
-    if (d.isPublic)
-      throw new Error(`${app.slug}:${ver.version} is awaiting approval; a PUBLIC deployment can't switch to it (dev-mode testing is private-only)`);
-    if (rest[1] === undefined && vi !== curIdx)
-      throw new Error(`refusing to pick the pending ${app.slug}:${ver.version} implicitly; name it: enclave upgrade ${rest[0]} ${ver.version}`);
-    let av = null; try { av = await api("GET", "/availability"); } catch {}
-    if (!(av && av.aggregate && av.devDeploy === true))
-      throw new Error(`${app.slug}:${ver.version} is awaiting approval, and the live fleet doesn't advertise devDeploy (pending-version private deploys) yet - retry after the fleet updates, or wait for approval`);
-    say(`! ${app.slug}:${ver.version} is awaiting catalog approval - switching this PRIVATE deployment to it (dev mode)`);
-  }
+  const notice = catalogAdmissionNotice(app, ver);
+  if (notice) say(`! ${notice}`);
   // the record's shares (bought at create, or re-bought here) must cover the
   // version's minimums ON THE BOX THAT WILL APPLY THE CHANGE — its lease holder
   // while it has one, the fleet's otherwise; a record that box won't accept
@@ -1949,16 +1932,9 @@ async function cmdDeploy(rest) {
   });
   if (!f._[0]) throw new Error("usage: enclave deploy <app> [--gpu 0..1] [--cpu 0..1] --fund <usd> [flags]");
   if (sess) await sessionDeployPreflight(sess, f);
-  const { ref, ver, app, pending } = await resolveAppRef(sess ? sessionAppInput(sess, f._[0]) : f._[0], { allowPending: !!f.private });
+  const { ref, ver, app, notice } = await resolveAppRef(sess ? sessionAppInput(sess, f._[0]) : f._[0]);
   if (sess) sessionRequireApp(sess, app.appId, "deploy.create", app.slug);
-  if (pending) {
-    // dev-mode deploy (pending version, --private): fail closed unless EVERY
-    // live runner admits it - otherwise the create sits Queued forever
-    let av = null; try { av = await api("GET", "/availability"); } catch {}
-    if (!(av && av.aggregate && av.devDeploy === true))
-      throw new Error(`${app.slug}:${ver.version} is awaiting approval, and the live fleet doesn't advertise devDeploy (pending-version private deploys) yet - retry after the fleet updates, or wait for approval`);
-    say(`! ${app.slug}:${ver.version} is awaiting catalog approval - deploying PRIVATE (dev mode): owner-only data path, unlisted`);
-  }
+  if (notice) say(`! ${notice}`);
 
   // WASIp3 apps (the version config's `wasi: "0.3"`, stamped from the binary
   // at publish): only p3-capable runners claim them. Fleet-AND true = every
@@ -2696,10 +2672,9 @@ async function cmdPublish(rest) {
     say(`  enclave deploy ${f.slug}:${version} --fund 2`);
     return;
   }
-  say(`approval is pending. Test it NOW as a private deployment (owner-only data path,`);
-  say(`no approval needed - approval only gates public visibility):`);
+  say(`approval is pending. Each host decides whether to run this release. For owner-only access:`);
   say(`  enclave deploy ${f.slug}:${version} --private --fund 2`);
-  say(`once the catalog owner approves, deploy public:`);
+  say(`for public access on a host that accepts this release:`);
   say(`  enclave deploy ${f.slug}:${version} --fund 2`);
 }
 

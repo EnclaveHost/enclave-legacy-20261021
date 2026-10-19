@@ -265,7 +265,7 @@ function rpcServer() {
       capOf: () => [S.cap6],                 // rev-8 surface: the deployment's spend ceiling
       refundableOf: () => [S.refundable6],   // rev-10 surface: what refund() would pay back now
       getAppsPage: () => [Number(args[0]) === 0 ? [{ appId: APP_ID, publisher: OWNER, slug: "hello-world",
-        name: "Hello World", description: "first app", versionCount: S.versionCount, createdAt: 1n, updatedAt: 1n, active: true }] : []],
+        name: "Hello World", description: "first app", versionCount: S.versionCount, createdAt: 1n, updatedAt: 1n, active: S.catalogActive !== false }] : []],
       getVersionsPage: () => [Number(args[1]) === 0 ? [version, version2()].slice(0, S.versionCount) : []],
       numVersions: () => [S.numVersions],
       appIdOf: () => [APP_ID],
@@ -1210,4 +1210,30 @@ test("--unsigned and --signer refuse to guess which wallet they are acting as", 
     assert.notEqual(r.code, 0);
     assert.match(r.err, /needs --from/);
   }
+});
+
+
+test("explicit deploy and upgrade leave rejected, yanked and delisted admission to the host", async () => {
+  S.versionCount = 2; S.catalogActive = false;
+  try {
+    for (const status of [{approval:0}, {approval:2}, {approval:1,yanked:true}]) {
+      S.v2 = {memMb:64,cpuGflops:2,...status}; S.txs.length = 0;
+      const deployed = await run(["deploy", "hello-world:2", "--fund", "2", "--no-wait"]);
+      assert.equal(deployed.code,0,deployed.err);
+      assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/1`);
+      assert.match(deployed.out,/Catalog status: delisted/);
+      assert.match(deployed.out,/Each host decides/);
+      S.txs.length = 0;
+      const upgraded = await run(["upgrade",ID,"2"]);
+      assert.equal(upgraded.code,0,upgraded.err);
+      assert.equal(S.txs.find(t=>t.functionName==="setAppRef").args[1],`catalog://${APP_ID}/1`);
+    }
+    S.catalogActive = true; S.txs.length = 0;
+    const implicit = await run(["deploy","hello-world","--fund","2","--no-wait"]);
+    assert.equal(implicit.code,0,implicit.err);
+    assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/0`,"implicit selection remains an approved recommendation");
+    S.txs.length = 0;
+    const missing = await run(["deploy","hello-world:missing","--fund","2","--no-wait"]);
+    assert.notEqual(missing.code,0); assert.equal(S.txs.length,0);
+  } finally {S.catalogActive = true; S.versionCount = 1; S.v2 = null; S.txs.length = 0;}
 });

@@ -49,14 +49,14 @@ class AppCard extends EnclaveElement {
       : (!STORE.owner || isOfficial) ? ''
       : '<span class="app-badge comm" title="Community-published; not owner-verified">community</span>';
     const apBadge = v.approval === APPROVAL.approved
-      ? (isOfficial ? '' : '<span class="app-badge" title="Approved by the catalog owner; deployable">✓ approved</span>')
+      ? (isOfficial ? '' : '<span class="app-badge" title="Approved by the catalog owner; host admission still applies">✓ approved</span>')
       : v.approval === APPROVAL.rejected
-      ? '<span class="app-badge rej" title="Rejected by the catalog owner; deploys are refused">✕ rejected</span>'
-      : '<span class="app-badge unv" title="Awaiting catalog-owner approval; deploys are refused until then">pending</span>';
+      ? '<span class="app-badge rej" title="Rejected by the catalog owner; each host decides whether to accept it">✕ rejected</span>'
+      : '<span class="app-badge unv" title="Awaiting catalog-owner approval; each host decides whether to accept it">pending</span>';
     const officialBadge = isOfficial
       ? '<span class="app-badge" title="Published by Enclave Host, Inc. (the catalog deployer wallet)">★ by Enclave</span>' : "";
     const delistBadge = app.active ? ''
-      : '<span class="app-badge del" title="Delisted: hidden from the public store; only you (its publisher) and the catalog owner see it.">delisted</span>';
+      : '<span class="app-badge del" title="Delisted from recommendations; available under All releases.">delisted</span>';
     this.querySelector(".app-badges").innerHTML = officialBadge + badge + apBadge + delistBadge;
 
     // rating - only once someone has rated it. An unrated app shows nothing

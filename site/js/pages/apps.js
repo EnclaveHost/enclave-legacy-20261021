@@ -1,3 +1,4 @@
+import {catalogAdmissionNotice} from "../core/catalog-policy.js";
 /* ============================================================
    Apps page - the on-chain catalog store. Each listing renders
    as a <c-app-card>; the page owns the toolbar (filter/search),
@@ -79,7 +80,9 @@ function renderApps(){
   const myApp = (a) => !!me && a.publisher.toLowerCase() === me;
   syncModTabs(me, isOwner);
   let apps;
-  if (STORE.filter === "delisted"){
+  if (STORE.filter === "all"){
+    apps = STORE.apps.filter(a => a.versions.length);
+  } else if (STORE.filter === "delisted"){
     // moderation view: the catalog owner sees EVERY delisted app; a publisher
     // sees only their own - their one path back (relist, or republish the slug).
     apps = STORE.apps.filter(a => a.versions.length && !a.active && (isOwner || myApp(a)));
@@ -488,6 +491,7 @@ function quickDeploy(app, v, idx){
       '<p class="qd-sub">Runs in a VM of its own on <b class="qd-shares"></b> at <b class="qd-rate">$' + perHr + '/hr</b>. ' +
         (acct ? 'It runs on your credit - it runs until the time you bought is used up, and you can top up or stop it whenever you like.'
               : 'Fund it from your wallet - it runs until the time you bought is used up, and you can top up or stop it whenever you like.') + '</p>' +
+      (catalogAdmissionNotice(app, v) ? '<p class="qd-sub qd-catalog">' + esc(catalogAdmissionNotice(app, v)) + '</p>' : '') +
       '<p class="qd-sub qd-target" hidden></p>' +
       '<p class="qd-sub qd-prot" hidden></p>' +
       '<p class="qd-sub qd-fee" hidden></p>' +
@@ -1682,11 +1686,8 @@ function renderDetail(appId){
   if (!catConfigured()){ host.innerHTML = '<div class="store-note">The on-chain catalog isn’t wired up on this deployment yet.</div>'; return; }
   if (!STORE.loaded){ host.innerHTML = '<div class="loading" role="status">reading catalog from Base…</div>'; return; }
   const app = STORE.byId[appId] || (STORE.apps || []).find(a => a.appId === appId);
-  // a direct link to an app with nothing the viewer may see (every version
-  // yanked/rejected, or nothing approved/endorsed and the viewer is neither
-  // its publisher nor the catalog owner) reads as absent, same as the grid -
-  // not as an empty page
-  if (!app || !visibleVerIdxs(app).length || !(appApproved(app) || appVerified(app) || appPrivileged(app))){ host.innerHTML = '<div class="store-note">That app isn’t in the catalog. <a href="apps">← all apps</a></div>'; document.title = "Apps · Enclave"; return; }
+  // Direct links retain access to every published release, including delisted apps.
+  if (!app || !visibleVerIdxs(app).length){ host.innerHTML = '<div class="store-note">That app isn’t in the catalog. <a href="apps">← all apps</a></div>'; document.title = "Apps · Enclave"; return; }
   document.title = app.name + " · Enclave";
   let el = host.querySelector("c-app-detail");
   if (!el){ host.innerHTML = ""; el = document.createElement("c-app-detail"); host.appendChild(el); }

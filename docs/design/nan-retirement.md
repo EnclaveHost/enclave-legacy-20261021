@@ -26,7 +26,7 @@ The custody combiner now accepts a sufficient independent quorum when Enclave an
 
 The proposed vault now pins `EnclaveHostOwnership` and its registry at construction. Custodian admission computes the Enclave seat from accepted ownership, never payout declarations. The image builder requires an explicit `--host-ownership` pin. Its membership reader checks fresh agreeing chain state, checks that the vault matches that measured pin, and refuses legacy vaults without that authority interface. This is a new contract/runtime deployment, not an in-place update: leave existing committees on their compatible runtime until a controlled bundle/committee migration is ready. Existing committee flags remain epoch snapshots; ownership changes affect new admissions/handovers.
 
-Do not deploy this custody change as a completed veto migration. Remaining work includes publishing and binding host ownership, signed/measured runtime releases, activating the new wallet-based custody classification, and redistribution into an independently operated committee. Frontend/CLI catalog gates and other serving paths still require review; existing production runtimes retain their old gates until explicitly activated.
+Do not deploy this custody change as a completed veto migration. Remaining work includes publishing and binding host ownership, signed/measured runtime releases, activating the new wallet-based custody classification, and redistribution into an independently operated committee. Frontend/CLI explicit release selection now leaves catalog admission to each host, with moderation status displayed. Other serving paths still require review; existing production runtimes retain their old gates until explicitly activated.
 
 ### Host runtime integration (prepared, not activated)
 
@@ -54,3 +54,7 @@ Build the shared runtime with `node scripts/build-host-admission.mjs`; `--check`
 - A timed nan outage demonstrates these properties before services or data on nan are removed.
 
 The proposed vault also pins its deployment ledger and SessionVault factory at construction; the compatible release reader uses that ledger and the pinned host registry. A real-chain test clears the book's ledger/registry entries and verifies that the independent custody quorum can still release. Older deployed vaults and readers retain their legacy authority path until explicitly migrated. Other serving and discovery paths still resolve mutable address-book entries; this custody change alone does not remove all global authority.
+
+### Client catalog selection (prepared)
+
+The CLI accepts an explicitly named catalog version for create/upgrade regardless of approval, yank or listing status. Implicit selection continues to recommend an approved, non-yanked release. The console has an All releases view, retains direct links to delisted apps, exposes every immutable version and displays moderation status in deploy/upgrade flows. Owner/session scope, minimum resources, publisher fees, rate limits and isolation checks remain. Catalog moderation is not a network-wide client veto; a host may still decline according to its owning wallet's policy. Production legacy hosts retain their old admission checks until the new host mode is activated.

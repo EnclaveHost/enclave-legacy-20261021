@@ -49,17 +49,17 @@ class AppDetail extends EnclaveElement {
       : (!STORE.owner || isOfficial) ? ''
       : '<span class="app-badge comm" title="Community-published; not owner-verified">community</span>';
     const apBadge = v.approval === APPROVAL.approved
-      ? (isOfficial ? '' : '<span class="app-badge" title="Approved by the catalog owner; deployable">✓ approved</span>')
+      ? (isOfficial ? '' : '<span class="app-badge" title="Approved by the catalog owner; host admission still applies">✓ approved</span>')
       : v.approval === APPROVAL.rejected
-      ? '<span class="app-badge rej" title="Rejected by the catalog owner; deploys are refused">✕ rejected</span>'
-      : '<span class="app-badge unv" title="Awaiting catalog-owner approval; deploys are refused until then">pending</span>';
+      ? '<span class="app-badge rej" title="Rejected by the catalog owner; each host decides whether to accept it">✕ rejected</span>'
+      : '<span class="app-badge unv" title="Awaiting catalog-owner approval; each host decides whether to accept it">pending</span>';
     const officialBadge = isOfficial
       ? '<span class="app-badge" title="Published by Enclave Host, Inc. (the catalog deployer wallet)">★ by Enclave</span>' : "";
     const delistBadge = app.active ? ''
-      : '<span class="app-badge del" title="Delisted: hidden from the public store; only you (its publisher) and the catalog owner see it. Relist to restore it, or publish a new version to this slug (that relists it automatically).">delisted</span>';
+      : '<span class="app-badge del" title="Delisted from recommendations; available under All releases. Relist to restore it, or publish a new version to this slug (that relists it automatically).">delisted</span>';
     this.querySelector(".app-badges").innerHTML = officialBadge + badge + apBadge + delistBadge;
 
-    const nVis = visibleVerIdxs(app).length;   // yanked/rejected count only for the publisher + owner
+    const nVis = visibleVerIdxs(app).length;   // all immutable releases remain visible
     // the rating rides in the meta line and links to the reviews block below
     // (unrated apps show nothing - see <c-app-reviews>)
     const t = tallyOf(app.appId), avg = avgOf(app.appId);
@@ -109,9 +109,7 @@ class AppDetail extends EnclaveElement {
     this.querySelector(".app-cid code").textContent = v.cid;
 
     this.querySelector(".app-actions").innerHTML =
-      '<button class="btn btn-primary btn-sm" data-act="deploy" type="button"'
-        + (!app.active ? ' disabled title="Delisted: the enclave refuses its CIDs; relist first"'
-           : v.approval === APPROVAL.approved ? '' : ' disabled title="Deploys unlock once the catalog owner approves this version"') + '>Deploy →</button>'
+      '<button class="btn btn-primary btn-sm" data-act="deploy" type="button">Deploy →</button>'
       + '<a class="btn btn-sm" href="' + gw + '" target="_blank" rel="noopener">fetch .wasm</a>'
       + (isPub ? '<button class="btn btn-sm" data-act="newver" type="button" title="Open the publish form pre-filled from this version (new file/CID required)">add version</button>' : '')
       + (isPub && !app.active ? '<button class="btn btn-sm" data-act="relist" type="button">relist</button>' : '')
