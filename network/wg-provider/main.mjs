@@ -31,15 +31,15 @@ const providerId=providerIdFor(account.address,cfg.publicAddress);
 const stateDir=cfg.stateDir||'/var/lib/enclave-network';await fs.mkdir(stateDir,{recursive:true,mode:0o700});
 if(!Array.isArray(cfg.rpc)||cfg.rpc.length<2)throw new Error('two or more RPC endpoints required');
 
-const kernel=new Kernel({publicAddress:cfg.publicAddress,uplink:cfg.uplink||'eth0',ports,log});
-const keys=await kernel.ensure();
 // A paid provider charges through the on-chain connectivity contract: it must be a registry host that can sign receipts.
 const paid=(cfg.pricePerGiB6||0)>0;
 if(paid&&(cfg.kind!=='community'||!/^0x[0-9a-f]{64}$/.test(cfg.hostId||'')||!cfg.proofKeyFile))throw new Error('a paid provider is a community provider (kind community, hostId) with its host\'s proofKeyFile');
-const leases=new LeaseReader({rpc:cfg.rpc,addressBook:cfg.addressBook,includeHostPayout:true,...(paid?{includeConnectivity:'auto'}:{})});
+const leases=new LeaseReader({rpc:cfg.rpc,addressBook:cfg.addressBook,authorityPins:cfg.authorityPins,includeHostPayout:true,...(paid?{includeConnectivity:'auto'}:{})});
 const clients=cfg.rpc.map(url=>createPublicClient({chain:base,transport:http(url,{timeout:10000})}));
-// wallet, passkey vault (ERC-1271) or SessionVault owners: every RPC must agree the signature is valid.
-const verifyOwner=(owner,message,signature)=>verifyOwnerSignature({clients,owner,message,signature,addressBook:cfg.addressBook});
+// Owner signatures use the same fresh chain quorum and explicit factory binding.
+const verifyOwner=(owner,message,signature)=>verifyOwnerSignature({reader:leases,owner,message,signature,addressBook:cfg.addressBook,sessionVaultFactory:leases.authorityPins?.sessionVaultFactory});
+const kernel=new Kernel({publicAddress:cfg.publicAddress,uplink:cfg.uplink||'eth0',ports,log});
+const keys=await kernel.ensure();
 const policyFile=path.join(stateDir,'policy-nonces.json');
 let nonces={};try{nonces=JSON.parse(await fs.readFile(policyFile,'utf8'));}catch{}
 const policyMemory={get:async id=>nonces[id],set:async(id,n)=>{nonces[id]=n;await fs.writeFile(policyFile+'.tmp',JSON.stringify(nonces),{mode:0o600});await fs.rename(policyFile+'.tmp',policyFile);}};
@@ -61,7 +61,7 @@ const targets=async()=>{
 const config={providerId,hostId:cfg.hostId||null,roles:cfg.roles,pricePerGiB6:cfg.pricePerGiB6||0,publicAddress:cfg.publicAddress,exitKey:keys['wg-exit'],guardKey:keys['wg-guard'],
  ports,zone:cfg.zone||'app.enclave.host',probeZone:cfg.probeZone||'probe.enclave.host',checkers:cfg.checkers||[]};
 // a host's own (control) peers: an active registry entry whose operator signed, read with the same two-RPC agreement
-const registryAddress=async()=>{const [c]=clients;return c.readContract({address:cfg.addressBook,abi:[{type:'function',name:'addr',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'address'}]}],functionName:'addr',args:['0x'+Buffer.from('registry').toString('hex').padEnd(64,'0')]});};
+const registryAddress=()=>leases.bookAddress('registry');
 let registry;const hosts=async id=>{registry||=await registryAddress();const [h]=await leases.registryEntries(registry,[id]);return h||null;};
 // the peer table on disk: a restart (an update) keeps every peer at its tunnel address
 const peerFile=path.join(stateDir,'peers.json');
@@ -93,7 +93,7 @@ if(paid){
  // submitted while it serves (each lasts at most 5 minutes); the operator key pays the gas.
  const wallet=createWalletClient({account,chain:base,transport:http(cfg.rpc[0],{timeout:15000})}),[client]=clients;
  const onchain=async()=>{
-  const connectivity=await connectivityAddress(client,cfg.addressBook);if(!connectivity)return;
+  const connectivity=leases.authorityPins?.connectivity??await connectivityAddress(client,cfg.addressBook);if(!connectivity||/^0x0{40}$/i.test(connectivity))return;
   if(await ensureHost({wallet,client,connectivity,hostId:cfg.hostId,pricePerGiB6:cfg.pricePerGiB6}))log(`on chain: offering network service at ${cfg.pricePerGiB6} per GiB`);
   const d=await directories.providers({hostOperator:async id=>{const h=await hosts(id);return h?.active?h.operator:null;}});const mine=d?.providers?.find(e=>e.record?.record?.providerId===providerId);
   const sent=await submitAttestations({wallet,client,connectivity,hostId:cfg.hostId,address:cfg.publicAddress,attestations:(mine?.qualifications||[]).map(x=>x.onchain).filter(Boolean)});

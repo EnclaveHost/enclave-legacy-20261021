@@ -234,9 +234,10 @@ export async function runPrivacy(configFile){
   // caller's signal may already have expired on the failed attempt)
   const networkFetch=async(url,init={})=>{if(wgControl){try{await wgControl.proxies();return await guardedFetch(wgControl.proxies,{timeoutMs:15000,maxBytes:4194304,publicRecords:true})(url,init);}catch(e){if(cfg.enclaveNetwork?.controlRequired)throw e;}}
     return directFetch(url,{...init,signal:AbortSignal.timeout(15000)});};
-  const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,
+  const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,authorityPins:cfg.chain?.authorityPins,
     leaseReader:{registryEntries:(...a)=>leaseReaderLate?leaseReaderLate.registryEntries(...a):Promise.reject(new Error('lease reader not ready yet')),
-      bookAddress:(...a)=>leaseReaderLate?leaseReaderLate.bookAddress(...a):Promise.reject(new Error('lease reader not ready yet'))},directory:cfg.directory,log,fetch:networkFetch,
+      bookAddress:(...a)=>leaseReaderLate?leaseReaderLate.bookAddress(...a):Promise.reject(new Error('lease reader not ready yet')),
+      agreed:(...a)=>leaseReaderLate?leaseReaderLate.agreed(...a):Promise.reject(new Error('lease reader not ready yet'))},directory:cfg.directory,log,fetch:networkFetch,
     authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
   networkHost=network;
   if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,

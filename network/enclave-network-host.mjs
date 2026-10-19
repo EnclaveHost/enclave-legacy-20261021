@@ -23,6 +23,7 @@ import {verifyQualification} from './provider-qualification.mjs';
 import {HostEgress} from './host-egress.mjs';
 import fs from 'node:fs/promises';
 import {DirectoryClient} from './directory-client.mjs';
+import {validateNetworkAuthorities} from './network-authorities.mjs';
 
 
 // cfg.enclaveNetwork.hostEgress -> {apps, own} or null (absent); a malformed block throws
@@ -33,16 +34,19 @@ export function hostEgressOffer(h){
  return {apps:h.apps==='all'?'all':[...h.apps],own:[...(h.own||[])]};
 }
 
-export async function createNetworkHost({config:c,account,runner,rpc,addressBook,leaseReader,directory,authorize,forward,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
+export async function createNetworkHost({config:c,account,runner,rpc,addressBook,authorityPins,leaseReader,directory,authorize,forward,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
  if(!c?.relay||!/^https:\/\//.test(c.relay)&&!/^http:\/\/127\.0\.0\.1/.test(c.relay))throw new Error('Enclave network: relay https URL required');
  if(!Array.isArray(c.checkers)||!c.checkers.length)throw new Error('Enclave network: trusted checker addresses required');
  if(c.apps!=='all'&&!Array.isArray(c.apps))throw new Error('Enclave network: apps must be "all" or a list');
+ const pins=authorityPins===undefined?null:validateNetworkAuthorities(authorityPins);
+ if(pins&&c.registry&&c.registry.toLowerCase()!==pins.registry)throw Error('Enclave network: registry conflicts with authority pin');
+ if(pins&&typeof leaseReader?.agreed!=='function')throw Error('Enclave network: pinned authority requires a quorum reader');
  const onNetwork=id=>c.apps==='all'||c.apps.includes(id);
  const relay=async(p,init)=>{const r=await fetch(c.relay+p,{...init,signal:AbortSignal.timeout(10000)});if(r.status===404)return null;const b=await r.json().catch(()=>null);if(!r.ok)throw new Error(`relay ${p.split('/').slice(0,4).join('/')}: ${b?.error||r.status}`);return b;};
  const directories=new DirectoryClient({origins:c.directories||[c.relay],fetch});
  const clients=(rpc||[]).map(url=>createPublicClient({chain:base,transport:http(url,{timeout:10000})}));
- // wallet, passkey vault (ERC-1271) or SessionVault owners; every configured RPC must agree
- const verify=async(owner,message,signature)=>verifyOwnerSignature({clients,owner,message,signature,addressBook});
+ // Pinned mode verifies contract owners at the same fresh agreeing chain block.
+ const verify=async(owner,message,signature)=>verifyOwnerSignature({clients,reader:pins?leaseReader:undefined,owner,message,signature,addressBook,sessionVaultFactory:pins?.sessionVaultFactory});
  const state=new DurableState(path.join(directory,'enclave-network'));
  const memory={get:async id=>(await state.get('policy-nonces'))?.[id],set:async(id,n)=>state.update('policy-nonces',async old=>({...(old||{}),[id]:n}))};
  const policyCache=new Map();
@@ -66,7 +70,7 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  async function providers(){
   if(now()-directory_.at<30000)return directory_.list;
   // a community provider must be the operator of its registry host (the registry the address book publishes, unless configured)
-  const hostOperator=async hostId=>{const registry=c.registry||(registryAddress||=await leaseReader.bookAddress?.('registry'));if(!registry)return null;
+  const hostOperator=async hostId=>{const registry=pins?.registry||c.registry||(registryAddress||=await leaseReader.bookAddress?.('registry'));if(!registry)return null;
    const [h]=await leaseReader.registryEntries(registry,[hostId]);return h?.active?h.operator:null;};
   const d=await directories.providers({hostOperator,now:now()});
   directory_={at:now(),list:await eligibleProviders(d?.providers||[],{checkers:c.checkers,now:now(),hostOperator,log})};

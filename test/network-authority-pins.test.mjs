@@ -46,3 +46,22 @@ test('pinned SessionVault signatures use one fresh agreeing block without book d
  assert.equal(await verifyOwnerSignature({reader:reader([peer(),peer()]),owner:vault,message,signature,addressBook:book,sessionVaultFactory:zero}),false,'disabled factory cannot fall back');
  assert.equal(await verifyOwnerSignature({reader:reader([peer(),peer()]),owner:vault,message:message+' changed',signature,addressBook:book,sessionVaultFactory:factory}),false,'signature binds the exact policy');
 });
+
+// Exercise the host consumer, not only the signature helper: its policy lookup
+// must pass the pinned factory and fresh quorum through to owner verification.
+test('network host verifies a vault policy with pinned authorities and refuses conflicting registry settings',async t=>{
+ const {createNetworkHost}=await import('../network/enclave-network-host.mjs');
+ const {defaultNetworkPolicy,signNetworkPolicy}=await import('../network/network-policy.mjs');
+ const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');
+ const directory=await mkdtemp(tmpdir()+'/pinned-network-host-');t.after(()=>rm(directory,{recursive:true,force:true}));
+ const config={relay:'http://127.0.0.1:9',checkers:[owner.address],apps:'all',wgBinary:'/bin/true',nodeBinary:process.execPath,workerModule:'/bin/true'};
+ const policy={...defaultNetworkPolicy(id),nonce:1,issuedAt:1};const envelope=await signNetworkPolicy(owner,policy);
+ const args={config,directory,authorityPins:pins,addressBook:book,now,fetch:async()=>Response.json({envelope})};
+ const h=await createNetworkHost({...args,leaseReader:reader([peer(),peer()])});
+ assert.deepEqual(await h.policyFor({deploymentId:id},{id,owner:vault}),policy);
+ const stale=await createNetworkHost({...args,leaseReader:reader([peer({time:1699999800n}),peer({time:1699999800n})])});
+ await assert.rejects(stale.policyFor({deploymentId:id},{id,owner:vault}),/no valid owner policy/);
+ await assert.rejects(createNetworkHost({...args,config:{...config,registry:book},leaseReader:reader([peer(),peer()])}),/conflicts/);
+ await assert.rejects(createNetworkHost({...args,leaseReader:{}}),/quorum reader/);
+ await assert.rejects(createNetworkHost({...args,authorityPins:{registry},leaseReader:reader([peer(),peer()])}),/pin/);
+});
