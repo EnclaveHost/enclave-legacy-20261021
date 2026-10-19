@@ -31,3 +31,11 @@ test('streaming upload authorization matches buffered authorization without hash
  }
  assert.equal(calls,0);
 });
+
+test('runtime file authorization is bound to its distinct route',async()=>{
+ const opts={audience,address:account.address,bytes:new TextEncoder().encode('kernel'),signMessage:args=>account.signMessage(args),now:()=>1792345700000};
+ const headers=await directUploadHeaders({...opts,url:'https://adapter.example/add-file'});
+ const fields={audience,address:account.address.toLowerCase(),hash:headers['x-upload-sha256'],size:6,expiry:1792346000};
+ assert.equal(await recoverMessageAddress({message:uploadMessage({...fields,path:'/add-file'}),signature:headers['x-upload-signature']}),account.address);
+ assert.notEqual(await recoverMessageAddress({message:uploadMessage({...fields,path:'/add-wasm'}),signature:headers['x-upload-signature']}),account.address);
+});

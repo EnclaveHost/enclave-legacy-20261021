@@ -20,7 +20,7 @@ live network of independently operated machines.
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
-| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | New startup packages support verified multi-adapter publication and cold reads; production Sia and other artifacts still depend on one indexd/PostgreSQL writer |
+| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Startup packages, app files and opt-in runtime files support verified multi-adapter publication and cold reads; production Sia and other artifacts still depend on one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
 | Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
 
@@ -376,11 +376,43 @@ WASM copies or insufficient config copies prevent the catalog transaction and
 that no token-issuer API call occurs.
 
 The production adapter and existing retained artifacts have not been migrated to
-multiple independent backing stores. Base runtime/kernel images need an equivalent
-retention/publication path; the current validating pin routes accept WASM, JSON
-and images. No claim is made that these tests fix the previous production Sia CAR
+multiple independent backing stores. The opt-in runtime-file path below adds
+publication and recovery support for kernel/runtime bytes; production activation
+and retention policies remain pending. No claim is made that these tests fix the previous production Sia CAR
 truncation or CONNECT failures. Production Sia/indexd/PostgreSQL, operator
 independence and durable retention remain explicit completion gaps.
+
+## Runtime and kernel artifact storage
+
+`enclave artifact publish vmlinuz --storage-plan storage.json --wallet --json`
+uses the same local CID calculation, wallet scope, multipart streaming and complete
+readback checks for generic runtime bytes. The default `--kind file` selects
+`/add-file`; explicit `wasm`, `json` and `image` kinds use their validating routes.
+`enclave artifact verify vmlinuz --storage-plan storage.json --json` rechecks
+availability without a wallet, platform session, Enclave API or contract lookup.
+Neither command changes catalog records or admits a runtime. Runtime measurement
+and approved-image checks still apply separately when a host boots those bytes.
+
+Adapters must explicitly enable generic files with a positive
+`upload.maxFileBytes` (default zero, hard maximum 2 GiB) and configure
+`upload.walletAudience`. `/add-file` accepts only a direct wallet signature bound
+to that route: legacy HMAC tokens and `allowUnsigned` do not authorize it.
+Generic files share the existing four streaming slots, multipart handling and
+per-wallet/global byte budgets. `/add-wasm` still rejects non-WASM bytes.
+Operators must choose their own storage/retention policy; accepting bytes does
+not establish durable payment, a retention contract or organizational independence.
+
+The real three-adapter integration test additionally uploads the pinned 17,232,384-byte
+kernel, stops one backing store, publishes a new multipart generic artifact to
+the remaining two, then restarts both survivors. It verifies both generic files
+and reconstructs the original kernel through guestd's CID-verifying CAR fetcher
+into an empty output file. The pinned kernel SHA-256 is
+`1a3a02d5a982946e6cec2590171ba742e5528c647790a9ed9127879b76a124e7`.
+The harness also checks disabled-route refusal, unsigned and cross-route refusal,
+oversize refusal before body transfer, unchanged WASM classification and gateway
+sandbox/nosniff headers. Both native Rust and the release WASM running under Wasmtime pass this scenario.
+These are separate test stores on one machine; no new
+production kernel boot or independent operator is claimed.
 
 ## Independent custody formation
 

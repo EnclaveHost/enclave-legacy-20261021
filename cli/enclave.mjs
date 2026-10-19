@@ -45,7 +45,7 @@ import { createPublicClient, createWalletClient, http as viemHttp, fallback,
 import { base } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
-import {publishArtifactReplicas} from "../sdk/storage/artifacts.mjs";
+import {publishArtifactReplicas,verifyArtifactReplicas} from "../sdk/storage/artifacts.mjs";
 import {publishPackageReplicas,verifyPackageReplicas,validateStoragePlan} from "../sdk/bootstrap/storage.mjs";
 import {directUploadHeaders} from "../sdk/storage/upload-auth.mjs";
 import {loadContractPins} from "../network/contract-pins.mjs";
@@ -2997,6 +2997,25 @@ async function cmdSecrets(rest) {
   }
 }
 
+// Public artifact storage has no contract discovery or catalog write. Runtime
+// admission still checks its measured image; storing bytes does not admit it.
+async function cmdArtifact(rest) {
+  const sub=rest.shift(),f=flags(rest,{val:["--storage-plan","--kind"],bool:[]});
+  if(!["publish","verify"].includes(sub)||f._.length!==1||!f["storage-plan"])throw new Error("usage: enclave artifact publish|verify FILE --storage-plan FILE [--kind file|wasm|json|image]");
+  if(fs.statSync(f["storage-plan"]).size>16384)throw new Error("storage plan too large");
+  const plan=validateStoragePlan(parseUniqueJSON(fs.readFileSync(f["storage-plan"],"utf8")));
+  if(fs.statSync(f._[0]).size>2*1024*1024*1024)throw new Error("artifact exceeds the adapter 2 GiB limit");
+  const bytes=fs.readFileSync(f._[0]);
+  let storage;
+  if(sub==="verify")storage=await verifyArtifactReplicas(bytes,plan);
+  else {
+    if(sessionConfigured()&&!walletChosen())throw new Error("artifact publication requires a direct wallet; pass --wallet");
+    storage=await publishArtifactReplicas(bytes,f.kind||"file",plan,loadKey());
+  }
+  const out={file:path.resolve(f._[0]),published:sub==="publish",storage,admissionChanged:false};
+  return opt.json?jout(out):say(JSON.stringify(out,null,2));
+}
+
 // ---- secret custody (cli/custody.mjs; docs/security/secret-custody.md): the CLI's own helpers, handed in ----------
 async function cmdCustodyHere(rest) {
   // loaded on use: the custody code imports ../custody (and viem from the repo root), which a bare `cli/` install lacks
@@ -4286,6 +4305,12 @@ sell hosting (run an enclave on your own TEE hardware — metal/PROTOCOL.md)
                              from that wallet — the box cannot declare it
   host clear-payout          withdraw the declaration again
 
+artifacts
+  artifact publish FILE --storage-plan FILE [--kind file|wasm|json|image]
+                             sign and verify replicated storage; no admission or catalog change
+  artifact verify FILE --storage-plan FILE
+                             verify current copies without a wallet or API
+
 platform
   pricing | availability | gpu | account
 
@@ -4646,7 +4671,7 @@ const COMMANDS = {
   "rate-cap": cmdRateCap, cap: cmdRateCap,
   refund: cmdRefund, cancel: cmdRefund, transfer: cmdTransfer,
   secrets: cmdSecrets, config: cmdConfig, custody: cmdCustodyHere, bootstrap: cmdBootstrap,
-  publish: cmdPublish, apps: cmdApps,
+  publish: cmdPublish, apps: cmdApps, artifact: cmdArtifact,
   pricing: cmdPricing, availability: cmdAvailability, gpu: cmdGpu, account: cmdAccount,
   encvol: cmdEncvol, host: cmdHost, session: cmdSession,
 };
@@ -4703,7 +4728,7 @@ if (!COMMANDS[cmd]) die(`unknown command "${cmd}"; run: enclave help`);
 // `key new`/`key import` are purely local and `login`/`logout` touch only the
 // API, so skip the address-book resolve — no reason to make them wait on an RPC.
 // `session …` reads only the sessions relay and the session's own vault (`session delegate` reads the book itself).
-const OFFLINE = cmd === "key" || cmd === "login" || cmd === "logout" || cmd === "session";
+const OFFLINE = cmd === "artifact" || cmd === "key" || cmd === "login" || cmd === "logout" || cmd === "session";
 try {
   configureContractPins();
   if (cmd === "bootstrap" && !CONTRACT_PINS) throw new Error("bootstrap requires --contract-pins");

@@ -1475,3 +1475,43 @@ globalThis.fetch=async(url,opts={})=>{
   }
  }finally{S.catRev=prev;}
 });
+
+test('runtime artifact CLI publishes with scoped signatures and verifies without wallets, RPC or platform APIs',async()=>{
+ const file=path.join(confDir,'runtime-kernel.bin'),planFile=path.join(confDir,'runtime-storage.json'),preload=path.join(confDir,'runtime-fetch.mjs');
+ fs.writeFileSync(file,Buffer.alloc(512*1024+7,0xa7));
+ fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({upload:`https://runtime${n}.example/add-json`,gateway:`https://runtime${n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+ fs.writeFileSync(preload,`import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import {artifactIdentity} from ${JSON.stringify(pathToFileURL(path.join(REPO,'sdk/storage/unixfs.mjs')).href)};
+import {uploadMessage} from ${JSON.stringify(pathToFileURL(path.join(REPO,'sdk/storage/upload-auth.mjs')).href)};
+import {recoverMessageAddress} from ${JSON.stringify(pathToFileURL(path.join(REPO,'node_modules/viem/_esm/index.js')).href)};
+const bytes=fs.readFileSync(${JSON.stringify(file)}),identity=artifactIdentity(bytes);
+globalThis.fetch=async(url,opts={})=>{
+ const u=new URL(url),i=['runtime1.example','runtime2.example','runtime3.example'].indexOf(u.hostname);
+ if(i<0)throw Error('unexpected network request: '+u.hostname);
+ if(i===0||process.env.RUNTIME_TEST_DOWN==='two'&&i===1)return new Response('',{status:503});
+ if(opts.method==='POST'){
+  assert.equal(u.pathname,'/add-file');assert.equal(opts.headers['x-upload-token'],undefined);
+  const chunks=[];for await(const chunk of opts.body)chunks.push(Buffer.from(chunk));assert.deepEqual(Buffer.concat(chunks),bytes);
+  const h=opts.headers;assert.equal(await recoverMessageAddress({message:uploadMessage({audience:'0x'+String(i+1).repeat(64),path:'/add-file',address:h['x-upload-address'],hash:h['x-upload-sha256'],size:bytes.length,expiry:Number(h['x-upload-expiry'])}),signature:h['x-upload-signature']}),${JSON.stringify(OWNER)});
+  return new Response(JSON.stringify({cid:identity.cid}));
+ }
+ assert.equal(u.pathname,'/ipfs/'+identity.cid);
+ assert.equal(opts.headers['x-upload-signature'],undefined);
+ const [start,end]=opts.headers.range.slice(6).split('-').map(Number);
+ return new Response(bytes.subarray(start,end+1),{status:206,headers:{'content-range':'bytes '+start+'-'+end+'/'+bytes.length}});
+};`);
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`,ENCLAVE_ADDRESS_BOOK:BOOK_ADDR};
+ const args=sub=>['artifact',sub,file,'--storage-plan',planFile,'--json'];
+ S.txs.length=0;S.apiCalls.length=0;S.rpcCalls.length=0;
+ const published=await run([...args('publish'),'--wallet'],{env});assert.equal(published.code,0,published.err);
+ const report=JSON.parse(published.out);assert.equal(report.storage.kind,'file');assert.equal(report.storage.verifiedCopies,2);assert.equal(report.admissionChanged,false);assert.equal(report.published,true);
+ const verified=await run(args('verify'),{env:{...env,ENCLAVE_KEY:'invalid-key-that-must-not-be-read',ENCLAVE_SESSION:'invalid-session-that-must-not-be-read'}});assert.equal(verified.code,0,verified.err);
+ assert.equal(JSON.parse(verified.out).published,false);assert.equal(JSON.parse(verified.out).storage.cid,report.storage.cid);
+ for(const sub of ['publish','verify']){
+  const failed=await run([...args(sub),'--wallet'],{env:{...env,RUNTIME_TEST_DOWN:'two'}});assert.notEqual(failed.code,0);assert.match(failed.err,/storage availability requirement/);
+ }
+ const unknown=await run([...args('publish'),'--wallet','--kind','unknown'],{env});assert.notEqual(unknown.code,0);assert.match(unknown.err,/invalid artifact kind/);
+ const session=await run(args('publish'),{env:{...env,ENCLAVE_SESSION:'session-present'}});assert.notEqual(session.code,0);assert.match(session.err,/requires a direct wallet/);
+ assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);assert.equal(S.rpcCalls.length,0);
+});

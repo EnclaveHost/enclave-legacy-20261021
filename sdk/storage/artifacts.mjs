@@ -5,7 +5,7 @@ import {directUploadDigestHeaders} from './upload-auth.mjs';
 import {validateStoragePlan,replicaOptions,collectReplicas} from './replicas.mjs';
 import {readBoundedResponse,parseUniqueJSON} from '../bootstrap/package.mjs';
 const WINDOW=4*1024*1024;
-const kinds={wasm:{path:'/add-wasm',type:'application/wasm',max:2*1024*1024*1024},json:{path:'/add-json',type:'application/json',max:1024*1024},image:{path:'/add-image',type:'application/octet-stream',max:4*1024*1024}};
+const kinds={file:{path:'/add-file',type:'application/octet-stream',max:2*1024*1024*1024},wasm:{path:'/add-wasm',type:'application/wasm',max:2*1024*1024*1024},json:{path:'/add-json',type:'application/json',max:1024*1024},image:{path:'/add-image',type:'application/octet-stream',max:4*1024*1024}};
 async function readback(identity,replica,fetchImpl,signal) {
  const hash=createHash('sha256');
  for(let start=0;start<identity.bytes||start===0;start+=WINDOW){

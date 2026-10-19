@@ -1,7 +1,7 @@
 // The adapter verifies this deployment-bound EIP-191 message inside the guest.
 export function uploadMessage({audience,path,address,hash,size,expiry}) {
   if(!/^0x[0-9a-f]{64}$/.test(audience)||!/^0x[0-9a-f]{40}$/.test(address)||! /^[0-9a-f]{64}$/.test(hash)||
-     !['/add-wasm','/add-json','/add-image'].includes(path)||!Number.isSafeInteger(size)||size<0||!Number.isSafeInteger(expiry)||expiry<0)
+     !['/add-wasm','/add-json','/add-image','/add-file'].includes(path)||!Number.isSafeInteger(size)||size<0||!Number.isSafeInteger(expiry)||expiry<0)
     throw Error('Invalid direct upload scope');
   return `enclave-storage-upload:v1\nchainId:8453\nservice:${audience}\nmethod:POST\npath:${path}\naddress:${address}\nsha256:${hash}\nbytes:${size}\nexpiry:${expiry}`;
 }
