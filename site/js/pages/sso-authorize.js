@@ -34,7 +34,8 @@
    the operator's explicit decision (2026-08-17). Deployments are
    this platform's trust unit, so an app learning a signed-in
    visitor's account id is accepted, not gated on a click. The only
-   interaction left is signing in when there is no session.
+   interaction left is signing in when there is no session, and one
+   tap back to a mobile app (a return to /sso-app: see below).
 
    `prompt=select_account` is the one exception, and the APP asks
    for it: a signed-in visitor then gets a two-button card, continue
@@ -168,9 +169,21 @@ async function mount(){
     if (!out || !out.token) return fatal(body, "The relay did not return a token. Try again.", target);
 
     // FRAGMENT handoff: reaches no server log and no Referer
+    const back = target + "#sso=" + encodeURIComponent(out.token) +
+      (state ? "&state=" + encodeURIComponent(state) : "");
+    if (/^\/sso-app(\/|$)/.test(new URL(target).pathname)){
+      // The mobile shell's return (enclave-apps mobile-shell): the app claims
+      // https://<app>/sso-app as a verified Android app link, and Chrome hands
+      // such a link to the app only on a navigation the user STARTS on another
+      // site. A scripted redirect, or a tap on the app's own site, stays in
+      // the browser tab and the token never reaches the app. So: one tap, here.
+      body.innerHTML = card('<p class="co-note">Signed in to ' + esc(appHost) + '.</p>' +
+        '<a class="btn btn-primary" id="ssoBack" href="#">Return to the app</a>');
+      $("#ssoBack").href = back;
+      return;
+    }
     body.innerHTML = card('<p class="co-note">Returning to ' + esc(appHost) + '…</p>');
-    location.replace(target + "#sso=" + encodeURIComponent(out.token) +
-      (state ? "&state=" + encodeURIComponent(state) : ""));
+    location.replace(back);
   } catch(e){
     if (/rejected|cancelled|cancel/i.test((e && e.message) || "")) return fatal(body, "Cancelled. Nothing was signed.", target);
     showToast((e && e.message) || String(e));
