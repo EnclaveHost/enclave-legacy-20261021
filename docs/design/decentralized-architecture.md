@@ -18,7 +18,7 @@ live network of independently operated machines.
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
-| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Direct measured entry point, guestd transport, supervisor and CLI package workflow tested; production remains on legacy startup pending hardware activation |
+| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
@@ -222,11 +222,56 @@ production ledger at Base block 52,820,654, including each of the three possible
 single-provider omissions. This proves the present RPC path, not guest hardware
 startup or tolerance of two compromised RPC providers.
 
-**Activation remains incomplete:** the production guests still run legacy
-release images. Durable package replication, runtime admission and owner
-custody-rule updates remain to be activated. Cold hardware recovery with the
-control service denied is still an acceptance gate. Existing deployments and
-release-key checks have not been weakened.
+### Hardware public-startup evidence (2026-10-19)
+
+A separate guestd with a `db` instance prefix and isolated measured transport
+ports ran EnclaveDNS 0.1.4 on the real metal0 AMD SEV-SNP processor. The existing
+scoped CLI session committed a public startup package on Base; its vault owned
+deployment `0x87508b958c4d14381b58fe05a781efbd3f185a36d5239abdf37e8f242f944538`.
+An operator submitted the prepared session calls directly to Base without the
+central relay. The test funded 0.01 USDC and used an explicit active lease.
+
+Release `5ef70f6a950b1deadcf21119a0e02ba2f75dea029d870ef25a0e6d7940ac9aad`
+retained the production measured RPC hosts and TLS roots; only transport ports
+differed. After the baseline guest was destroyed, a new guest booted while
+`lab-bootstrap/egress` refused all guest destinations except those measured
+chain peers. Its actual dial path rejected api/ipfs/s3/nan.enclave.host before
+accepting the guest. The guest received 108 bytes of owner-committed config,
+started with zero tenant egress origins and reached readiness in 4,937 ms.
+It did not request a release ticket.
+
+The fresh guest's measurement was
+`caf11b488b5235182d5b4628f0d663d454585d84a790bb9b303cedb2ea99690496951529ca395ff032d5a729b30a733a`.
+The judge verified the AMD Turin signature chain, runtime/AppID/deployment
+bindings and fresh transport challenge at T1. A separate TLS client matched
+the attested SPKI before transmitting an HTTP request and received `200 ok`.
+The guest and both lab services were then stopped. Owner suspension, operator
+release and refund confirmed at Base blocks 52,821,885, 52,821,894 and 52,821,895.
+The test spent 0.006066 USDC of runtime credit; transaction gas was additional.
+
+This establishes a fresh **public-config guest startup** without central
+guest-control access. The host's verified artifact cache was warm and its
+retained bundle came from an Enclave-operated provider. The local package
+broker was untrusted but available. Production services remained online for
+other tenants; there were no independently operated participants or custody
+shares in this test. It does not establish independent artifact retention,
+storage/indexer recovery, custody quorum availability or new-user discovery.
+
+Live reads also demonstrated that a confirmed RPC view can briefly precede a
+recent claim/resume receipt. `AuthorizeWhenConfirmed` now permits a bounded
+30-second wait, retrying only unavailable chain snapshots. Each attempt retains
+the original two-peer agreement, confirmation depth, freshness and rollback
+checks. Invalid packages and agreeing owner/commitment mismatches fail
+immediately; post-custody revalidation still fails closed. Race tests cover
+claim visibility, deadline/cancellation, stale/unavailable peers, bad owner
+commitments and revocation before app start. This later retry change was not
+included in the hardware-tested release above.
+
+**Activation remains incomplete:** production guests still run legacy release
+images. Durable package replication, production runtime admission and owner
+custody-rule updates remain to be activated. End-to-end cold recovery with
+independent storage and custody remains an acceptance gate. Existing
+deployments and release-key checks have not been weakened.
 
 ## Governance disposition
 

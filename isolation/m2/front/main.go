@@ -265,18 +265,22 @@ func main() {
 	if *initFD > 0 {
 		initPipe := os.NewFile(uintptr(*initFD), "init-pipe")
 		err := f.releaseForInit(initPipe, hd, hdErr, func() (string, error) {
+			egressPort, custodyPort, packagePort := uint32(EgressPort), uint32(release.CustodyAuthPort), uint32(bootstrap.PackagePort)
+			if directBootstrap {
+				egressPort, custodyPort, packagePort = directPorts()
+			}
 			p := &provisioner{
 				ticket:      func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, release.TicketPort) },
-				egress:      func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, EgressPort) },
+				egress:      func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, egressPort) },
 				report:      f.report,
-				custodyAuth: func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, release.CustodyAuthPort) },
+				custodyAuth: func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, custodyPort) },
 				appFromCode: appFromCode,
 				relayHost:   release.RelayHost,
 				etc:         "/etc", fwdPort: 443,
 				audit: func(want []netip.AddrPort) error { return auditListeners("/proc/net", want) },
 				logf:  func(format string, a ...any) { fmt.Printf(format+"\n", a...) },
 			}
-			prov, err := p.runStartup(context.Background(), func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, bootstrap.PackagePort) }, hd, spki, rt, appSha)
+			prov, err := p.runStartup(context.Background(), func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, packagePort) }, hd, spki, rt, appSha)
 			if err != nil {
 				return "", err
 			}

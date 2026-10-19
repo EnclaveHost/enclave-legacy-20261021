@@ -205,7 +205,7 @@ func (r *Reader) Authorize(ctx context.Context, id [32]byte, raw []byte, loaded 
 	}
 	st, e := r.read(ctx, id)
 	if e != nil {
-		return nil, e
+		return nil, &snapshotUnavailable{e}
 	}
 	if !strings.EqualFold(m.Owner, st.row.owner) || m.AppRef != st.row.appRef {
 		return nil, errors.New("startup package owner or app reference changed")

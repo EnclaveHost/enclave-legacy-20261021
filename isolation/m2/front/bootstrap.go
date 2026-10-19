@@ -94,7 +94,7 @@ func (p *provisioner) runDirect(ctx context.Context, reader *bootstrap.Reader, m
 	copy(id[:], hostData)
 	loaded := bootstrap.Identity{RuntimeID: rt.RID}
 	copy(loaded.AppID[:], appID)
-	auth, err := reader.Authorize(ctx, id, manifest, loaded)
+	auth, err := reader.AuthorizeWhenConfirmed(ctx, id, manifest, loaded)
 	if err != nil {
 		return nil, err
 	}

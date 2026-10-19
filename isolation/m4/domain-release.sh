@@ -11,6 +11,7 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: domain-release.sh <new release dir>}
+out=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$out")
 [ ! -e "$out" ] || { echo "domain-release.sh: $out exists; a release is created once" >&2; exit 2; }
 . "$here/../m1/domain.env"
 fw=$(sha256sum "$OVMF" | cut -c1-64)

@@ -28,7 +28,7 @@ type bootstrapTransport func(*http.Request) (*http.Response, error)
 func (f bootstrapTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestDirectFrontUsesOwnerCommitmentWithoutTicketOrRelayOrigin(t *testing.T) {
-	for _, mode := range []string{"public", "revoked-before-start", "custody-unavailable", "tampered", "unmeasured-app"} {
+	for _, mode := range []string{"public", "claim-awaiting-confirmation", "revoked-before-start", "custody-unavailable", "tampered", "unmeasured-app"} {
 		t.Run(mode, func(t *testing.T) {
 			var v struct {
 				ID, Ledger, Manifest, CustodyManifest, AppID, RuntimeID, Row, Schema string
@@ -78,6 +78,9 @@ func TestDirectFrontUsesOwnerCommitmentWithoutTicketOrRelayOrigin(t *testing.T) 
 						n, _ := gets.LoadOrStore(req.URL.Hostname(), new(atomic.Int64))
 						count := n.(*atomic.Int64).Add(1)
 						raw := v.Row
+						if mode == "claim-awaiting-confirmation" && count == 1 {
+							raw = v.Variants["inactive"]
+						}
 						if mode == "custody-unavailable" {
 							raw = v.Variants["custody"]
 						}
@@ -128,7 +131,7 @@ func TestDirectFrontUsesOwnerCommitmentWithoutTicketOrRelayOrigin(t *testing.T) 
 			if tickets.Load() != 0 {
 				t.Fatal("direct mode contacted release ticket service")
 			}
-			if mode != "public" {
+			if mode != "public" && mode != "claim-awaiting-confirmation" {
 				if e == nil {
 					got.fwd.Close()
 					t.Fatal("unsafe startup accepted")

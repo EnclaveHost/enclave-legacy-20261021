@@ -44,6 +44,11 @@ if [ "${ISOLATION_DIRECT_BOOTSTRAP:-}" = 1 ]; then
   tags="-tags=bootstrapdirect"
   echo "app-image-template.sh: building owner-committed direct bootstrap front" >&2
 fi
+if [ "${ISOLATION_BOOTSTRAP_PORT_LAB:-}" = 1 ]; then
+  [ "${ISOLATION_DIRECT_BOOTSTRAP:-}" = 1 ] || { echo "bootstrap port lab requires direct bootstrap" >&2; exit 2; }
+  tags="-tags=bootstrapdirect,bootstrapportlab"
+  echo "app-image-template.sh: isolated hardware test ports; production chain and trust roots retained" >&2
+fi
 (cd "$m2" && GOFLAGS= CGO_ENABLED=0 go build $tags -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o "$t/front" ./front)
 mkdir -p "$t/proc" "$t/sys" "$t/dev" "$t/tmp"
 "$here/runtime-set.sh" compose "$t/rt"
@@ -51,6 +56,7 @@ mkdir -p "$t/proc" "$t/sys" "$t/dev" "$t/tmp"
 # admitting a V3 port bundle to this front. Older releases carry no marker.
 printf '1\n' > "$t/rt/protected-ports.enabled"
 if [ "${ISOLATION_DIRECT_BOOTSTRAP:-}" = 1 ]; then printf '1\n' > "$t/rt/direct-bootstrap.enabled"; fi
+if [ "${ISOLATION_BOOTSTRAP_PORT_LAB:-}" = 1 ]; then printf '19443 19445 19446\n' > "$t/rt/bootstrap-lab-ports"; fi
 # The guest kernel's module tree is named after the GUEST kernel, not the host's: see ../m1/domain.env.
 . "$here/../m1/domain.env"
 M=/lib/modules/$GUEST_KREL/kernel

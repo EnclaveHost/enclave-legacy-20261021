@@ -109,7 +109,10 @@ func NewReader(c Config) (*Reader, error) {
 			if e = json.Unmarshal(b, &msg); e != nil || msg.JSONRPC != "2.0" || msg.ID != 1 || len(msg.Error) > 0 && string(msg.Error) != "null" || len(msg.Result) == 0 || string(msg.Result) == "null" {
 				return errors.New("invalid bootstrap RPC response")
 			}
-			return json.Unmarshal(msg.Result, out)
+			if e := json.Unmarshal(msg.Result, out); e != nil {
+				return errors.New("invalid bootstrap RPC result")
+			}
+			return nil
 		}})
 	}
 	return r, nil
@@ -238,7 +241,7 @@ func (r *Reader) readAt(ctx context.Context, p endpoint, n uint64, id [32]byte) 
 	}
 	ts, e := quantity(before.Timestamp)
 	if e != nil || ts > uint64(r.now().Unix()+5) || int64(ts) < r.now().Add(-r.maxAge).Unix() {
-		return out, errors.New("stale or future chain block")
+		return out, fmt.Errorf("stale or future chain block (clock delta %ds)", r.now().Unix()-int64(ts))
 	}
 	h, e := hex.DecodeString(strings.TrimPrefix(before.Hash, "0x"))
 	if e != nil || len(h) != 32 || zero(h) {
@@ -348,17 +351,28 @@ headReads:
 	}
 	n := heads[1].n - r.confirmations
 	type result struct {
-		s snapshot
-		e error
+		s    snapshot
+		e    error
+		peer string
 	}
 	rc := make(chan result, len(heads))
 	for _, h := range heads {
-		go func(p endpoint) { s, e := r.readAt(ctx, p, n, id); rc <- result{s, e} }(h.peer)
+		go func(p endpoint) { s, e := r.readAt(ctx, p, n, id); rc <- result{s, e, p.name} }(h.peer)
 	}
 	seen := map[string]int{}
+	var refusals []string
 	for range heads {
 		select {
 		case v := <-rc:
+			if v.e != nil {
+				// Public measured peer names and bounded diagnostics only. Never
+				// include RPC bodies, configuration, custody values or signatures.
+				why := v.e.Error()
+				if len(why) > 160 {
+					why = "invalid RPC response"
+				}
+				refusals = append(refusals, v.peer+": "+why)
+			}
 			if v.e == nil {
 				k := fmt.Sprintf("%d/%d/%s/%s", v.s.number, v.s.timestamp, v.s.hash, v.s.raw)
 				seen[k]++
@@ -379,5 +393,5 @@ headReads:
 			return empty, errors.New("bootstrap chain snapshot deadline")
 		}
 	}
-	return empty, errors.New("no fresh agreeing bootstrap chain snapshot")
+	return empty, fmt.Errorf("no fresh agreeing bootstrap chain snapshot (%s)", strings.Join(refusals, "; "))
 }
