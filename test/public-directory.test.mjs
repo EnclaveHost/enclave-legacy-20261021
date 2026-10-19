@@ -153,3 +153,35 @@ for(const change of ['withdrawal','policy'])test(`a concurrent ${change} cannot 
  assert.equal(Object.keys(routes.labels).length,0);
  assert.equal(routes.pending.length,change==='policy'?1:0);
 });
+
+test('overlapping reads share verification, but the next read checks the lease again',async t=>{
+ const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);await r.d.accept('route',await r.publication());
+ let entered,release,calls=0;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ r.d.leaseOf=async()=>{calls++;entered();await gate;return {...r.lease};};
+ const first=r.d.routes();await started;const readers=Array.from({length:20},()=>r.d.routes());release();
+ const results=await Promise.all([first,...readers]);assert.equal(calls,1);assert.ok(results.every(v=>Object.keys(v.deployments).length===1));
+ r.lease.runner='0x'+'ef'.repeat(32);assert.equal(Object.keys((await r.d.routes()).deployments).length,0);assert.equal(calls,2);
+});
+
+test('expiry while another route is being checked cannot escape the final response',async t=>{
+ const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);await r.d.accept('route',await r.publication());
+ const original=r.d.currentRoute.bind(r.d);r.d.currentRoute=async(...args)=>{const result=await original(...args);r.advance(61000);return result;};
+ assert.equal(Object.keys((await r.d.routes()).deployments).length,0);
+});
+
+test('a read rechecks an earlier route after another route admits a withdrawal',async t=>{
+ const r=await rig(t);await r.d.accept('provider',r.pr);await r.d.accept('qualification',r.qualification);await r.d.accept('route',await r.publication());
+ const original=r.d.currentRoute.bind(r.d);let first=true;
+ r.d.currentRoute=async(...args)=>{const result=await original(...args);if(first){first=false;await r.d.accept('route',await r.publication(r.policy,2,true));}return result;};
+ assert.equal(Object.keys((await r.d.routes()).deployments).length,0);
+});
+
+test('public request saturation leaves bounded capacity for the local DNS reader',async t=>{
+ let entered,release;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const server=createDirectoryServer({checkers:[],providers:async()=>{entered();await gate;return [];},routes:async()=>({labels:{}})},{maxInFlight:1});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{release();server.closeAllConnections();server.close();});
+ const origin='http://127.0.0.1:'+server.address().port,first=fetch(origin+'/v1/network/providers');await started;
+ assert.equal((await fetch(origin+'/v1/network/providers')).status,429);
+ assert.equal((await fetch(origin+'/v1/network/routes')).status,200);
+ release();assert.equal((await first).status,200);
+});

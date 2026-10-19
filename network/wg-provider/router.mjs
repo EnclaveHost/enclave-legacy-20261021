@@ -9,7 +9,10 @@ function hostHeader(buf){
  const m=/\r\nhost:[ \t]*([^\r\n:]+)(?::\d+)?[ \t]*\r\n/i.exec(buf.subarray(0,end+2).toString('latin1'));return m?m[1].trim().toLowerCase():'';
 }
 
-export async function createRouter({port,host='0.0.0.0',route,tls=true,count=()=>{},maxConnections=8192,log=()=>{}}){
+export async function createRouter({port,host='0.0.0.0',route,tls=true,noSniRoute=null,count=()=>{},maxConnections=8192,log=()=>{}}){
+ // Explicit IP-certificate recovery ingress only. Unknown SNI and malformed TLS still fail closed.
+ if(noSniRoute!==null&&(!tls||!noSniRoute||!/^127\.\d+\.\d+\.\d+$/.test(noSniRoute.host)||
+   !Number.isInteger(noSniRoute.tls)||noSniRoute.tls<1||noSniRoute.tls>65535))throw Error('no-SNI recovery route must be a loopback TLS service');
  const sockets=new Set();
  const server=net.createServer(socket=>{
   if(sockets.size>=maxConnections)return socket.destroy();
@@ -20,7 +23,7 @@ export async function createRouter({port,host='0.0.0.0',route,tls=true,count=()=
    head=Buffer.concat([head,chunk]);if(head.length>65536)return socket.destroy();
    const name=tls?clientHelloName(head):hostHeader(head);if(name===null)return;
    socket.removeListener('data',read);socket.pause();
-   const to=name&&route(name.toLowerCase());if(!to)return socket.destroy();
+   const to=tls&&name===''?noSniRoute:name&&route(name.toLowerCase());if(!to)return socket.destroy();
    // `to` is a peer's tunnel address (port 443/80 there), or a LOCAL route {host,tls,http} (main.mjs localRoutes: a
    // service on this box, e.g. a secret custodian, that shares the public ports by name)
    const local=typeof to==='object';

@@ -53,6 +53,15 @@ const TCP_ZONE  = process.env.TCP_ZONE ? fqdn(process.env.TCP_ZONE.trim()) : nul
 // never saw and attestation cannot complete. Unset = zone off.
 const BOX_ZONE  = process.env.BOX_ZONE ? fqdn(process.env.BOX_ZONE.trim()) : null;
 const NS_NAME   = fqdn(need("NS_NAME"));
+// Every replica publishes the same complete delegation, so resolvers do not
+// cache only the one server that happened to answer their last query.
+const NS_NAMES = [...new Set(process.env.NS_NAMES?.trim()
+  ? process.env.NS_NAMES.split(",").map(fqdn) : [NS_NAME])];
+if (!NS_NAMES.length || NS_NAMES.length > 8 || NS_NAMES.some(n => !n || n.length > 253 ||
+    n.split(".").some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
+  console.error("fatal: NS_NAMES must name 1..8 valid DNS names");
+  process.exit(1);
+}
 // hostmaster at the NS name's parent (ns1.enclave.host -> hostmaster.enclave.host)
 const RNAME     = "hostmaster." + (NS_NAME.includes(".") ? NS_NAME.slice(NS_NAME.indexOf(".") + 1) : NS_NAME);
 const DNS_PORT  = parseInt(process.env.DNS_PORT || "53", 10);
@@ -247,7 +256,7 @@ const rr = (name, type, ttl, rdata) =>
 const soaRR = (zone) => rr(zone, T.SOA, NEG_TTL, Buffer.concat([
   encodeName(NS_NAME), encodeName(RNAME),
   u32(SERIAL), u32(3600), u32(600), u32(604800), u32(NEG_TTL)]));
-const nsRR  = (zone) => rr(zone, T.NS, 300, encodeName(NS_NAME));
+const nsRR  = (zone, name) => rr(zone, T.NS, 300, encodeName(name));
 const srvRR = (name, port, target) =>
   rr(name, T.SRV, 60, Buffer.concat([u16(0), u16(0), u16(port), encodeName(target)]));
 
@@ -276,7 +285,7 @@ const EMPTY  = (rcode) => ({ rcode, aa: false, an: [], au: [], ad: [] });
 function apex(zone, qtype) {
   const an = [];
   if (qtype === T.SOA || qtype === T.ANY) an.push(soaRR(zone));
-  if (qtype === T.NS  || qtype === T.ANY) an.push(nsRR(zone));
+  if (qtype === T.NS  || qtype === T.ANY) an.push(...NS_NAMES.map(name => nsRR(zone, name)));
   return an.length ? HIT(an) : NODATA(zone);
 }
 
@@ -336,7 +345,10 @@ function resolveApp(qname, qtype) {
   const fixed = sub.includes(".") ? null : APP_STATIC.get(sub);
   if (fixed) return (qtype === T.A || qtype === T.ANY) ? HIT([rr(qname, T.A, 300, fixed)]) : NODATA(APP_ZONE);
   const pick = sub.includes(".") ? null : appRoutes.get(sub);
-  if (!pick || pick.expiresAt <= Date.now()) return NODATA(APP_ZONE);
+  // A replica without a current verified deployment route cannot assert that
+  // the name has no address. SERVFAIL lets recursive resolvers try another
+  // authority instead of caching a transient verification gap as NODATA.
+  if (!pick || pick.expiresAt <= Date.now()) return (pick || /^[0-9a-f]{8}$/.test(sub)) ? EMPTY(RC.SERVFAIL) : NODATA(APP_ZONE);
   const an = [];
   const ttl=Math.min(ROUTE_TTL,Math.max(0,Math.floor((pick.expiresAt-Date.now())/1000)));
   if (qtype === T.A || qtype === T.ANY) for(const address of pick.a) an.push(rr(qname,T.A,ttl,address));

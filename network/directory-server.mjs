@@ -7,13 +7,17 @@ import {LeaseReader} from './lease-reader.mjs';
 import {verifyOwnerSignature} from './owner-signature.mjs';
 
 export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
-  let inFlight=0,tokens=100,last=Date.now();
+  let inFlight=0,tokens=100,last=Date.now(),localInFlight=0,localTokens=20;
   return http.createServer({requestTimeout:15000,headersTimeout:10000,maxHeaderSize:8192},async(req,res)=>{
     const send=(status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store','access-control-allow-origin':'*','x-content-type-options':'nosniff'});res.end(JSON.stringify(value));};
     if(req.method==='OPTIONS'){res.writeHead(204,{'access-control-allow-origin':'*','access-control-allow-methods':'GET, POST, OPTIONS','access-control-allow-headers':'content-type','access-control-max-age':'600'});res.end();return;}
-    const now=Date.now();tokens=Math.min(100,tokens+(now-last)/100);last=now;
-    if(inFlight>=maxInFlight||tokens<1){send(429,{error:'directory busy'});req.resume();return;}
-    tokens--;inFlight++;
+    const now=Date.now();tokens=Math.min(100,tokens+(now-last)/100);localTokens=Math.min(20,localTokens+(now-last)/1000);last=now;
+    // Reserve bounded capacity for this machine's DNS consumer. Public traffic
+    // must not starve local verified-route refreshes. Forwarded headers confer
+    // no privilege; only a loopback socket and these read endpoints qualify.
+    const local=req.method==='GET'&&['/health','/v1/network/routes'].includes(req.url)&&['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+    if(local?(localInFlight>=4||localTokens<1):(inFlight>=maxInFlight||tokens<1)){send(429,{error:'directory busy'});req.resume();return;}
+    if(local){localTokens--;localInFlight++;}else{tokens--;inFlight++;}
     try{
       const u=new URL(req.url,'http://directory.local'),p=u.pathname;
       if(u.search)throw Error('query parameters are not supported');
@@ -36,7 +40,7 @@ export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
       if(policy&&envelope?.policy?.deploymentId!==policy[1])throw Error('policy path mismatch');
       const changed=await directory.accept(kind,envelope);send(200,{ok:true,changed});
     }catch(e){log('directory refusal '+String(req.url).slice(0,120)+': '+String(e.message).slice(0,200));if(!res.headersSent)send(400,{error:String(e.message).slice(0,200)});}
-    finally{inFlight--;if(Date.now()-now>4000)log('slow public request '+String(req.url).slice(0,120)+' '+(Date.now()-now)+'ms');}
+    finally{if(local)localInFlight--;else inFlight--;if(Date.now()-now>4000)log('slow public request '+String(req.url).slice(0,120)+' '+(Date.now()-now)+'ms');}
   });
 }
 

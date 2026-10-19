@@ -50,3 +50,20 @@ test("a local route carries a TLS hello for its name to the loopback service; an
     assert.deepEqual(got, [0x16], "an unknown name reached nothing");
   } finally { router.close(); backend.close(); }
 });
+
+test('IP recovery is opt-in, loopback-only, and never catches unknown SNI or malformed TLS',async()=>{
+ const got=[];const backend=net.createServer(s=>s.once('data',d=>{got.push(d);s.destroy();}));
+ await new Promise(r=>backend.listen(0,'127.0.0.1',r));
+ const local={host:'127.0.0.1',tls:backend.address().port};
+ const off=await createRouter({port:0,host:'127.0.0.1',route:()=>null});
+ const on=await createRouter({port:0,host:'127.0.0.1',route:()=>null,noSniRoute:local});
+ const hello=(port,servername='')=>new Promise(resolve=>{const c=tls.connect({host:'127.0.0.1',port,servername,rejectUnauthorized:false});c.on('error',()=>{});c.on('close',resolve);});
+ try {
+  await hello(off.port);assert.equal(got.length,0);
+  await hello(on.port);assert.equal(got.length,1);assert.equal(got[0][0],22);
+  await hello(on.port,'unknown.test');assert.equal(got.length,1);
+  await new Promise(resolve=>{const c=net.connect(on.port,'127.0.0.1',()=>c.write('GET / HTTP/1.1\r\nHost: bad\r\n\r\n'));c.on('error',()=>{});c.on('close',resolve);});
+  assert.equal(got.length,1);
+  for(const bad of [{host:'192.0.2.1',tls:443},{host:'localhost',tls:443},{host:'127.0.0.1',tls:0},{host:'127.0.0.1',tls:65536}])await assert.rejects(createRouter({port:0,route:()=>null,noSniRoute:bad}),/loopback TLS/);
+ }finally{off.close();on.close();backend.close();}
+});

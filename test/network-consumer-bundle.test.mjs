@@ -19,6 +19,7 @@ test('standalone network bundles load outside the repository without npm depende
  // A missing config must be the failure, rather than a dependency/import error.
  const absent=path.join(dir,'deliberately-absent.json');
  await assert.rejects(run(process.execPath,[path.join(dir,'provider.mjs'),absent],{cwd:dir,env:{...process.env,NODE_PATH:''}}),e=>e.code===1&&e.stderr.includes('ENOENT')&&e.stderr.includes(absent)&&!e.stderr.includes('Dynamic require'));
+ await assert.rejects(run(process.execPath,[path.join(dir,'dns.mjs')],{cwd:dir,env:{...process.env,NODE_PATH:'',DNS_READ_ONLY:'1',ROUTE_MAP_URL:'',BOX_ZONE:''}}),e=>e.code===1&&e.stderr.includes('requires explicit ROUTE_MAP_URL')&&!e.stderr.includes('Dynamic require'));
  const key=path.join(dir,'test-only.key');await writeFile(key,'0x'+'01'.repeat(32),{mode:0o600});
  const {stdout}=await run(process.execPath,[path.join(dir,'checker.mjs'),'--key-file',key,'--print-address'],{cwd:dir,env:{...process.env,NODE_PATH:''}});
  assert.equal(stdout.trim(),'0x1a642f0e3c3af545e7acbd38b07251b3990914f1');

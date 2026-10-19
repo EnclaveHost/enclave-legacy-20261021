@@ -109,7 +109,7 @@ const count=(to,up,down)=>{const m=meter.get(to)||{up:0,down:0};m.up+=up;m.down+
 const localRoutes=new Map(Object.entries(cfg.localRoutes||{}).filter(([n,r])=>/^[a-z0-9.-]{1,253}$/.test(n)&&r&&/^127\.\d+\.\d+\.\d+$/.test(r.host)
  &&Number.isInteger(r.tls)&&Number.isInteger(r.http)).map(([n,r])=>[n,{host:r.host,tls:r.tls,http:r.http}]));
 const routeOf=n=>localRoutes.get(n)||provider.route(n);
-const routes=[await createRouter({port:443,route:routeOf,tls:true,count,log}),await createRouter({port:80,route:routeOf,tls:false,count,log})];
+const routes=[await createRouter({port:443,route:routeOf,tls:true,noSniRoute:cfg.noSniRoute??null,count,log}),await createRouter({port:80,route:routeOf,tls:false,count,log})];
 const control=await createControl({provider,receipt,port:ports.control,log,info:()=>({providerId,operator:account.address.toLowerCase(),address:cfg.publicAddress,roles:cfg.roles,
  pricePerGiB6:config.pricePerGiB6,keys:{exit:keys['wg-exit'],guard:keys['wg-guard']},ports,region:cfg.region,kind:cfg.kind||'enclave'})});
 

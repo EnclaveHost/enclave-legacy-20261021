@@ -7,6 +7,8 @@ import {verifyNetworkPolicy,defaultNetworkPolicy} from './network-policy.mjs';
 import {recordHash,verifyRoute} from './route-record.mjs';
 
 const ID=/^0x[0-9a-f]{64}$/;
+const READ_CONTEXT=Symbol('verified directory context');
+const routeContext=(state,id)=>({publication:state.publications[id]??null,policy:state.policies[id]??null,providers:state.providers});
 const equal=(a,b)=>recordHash(a)===recordHash(b);
 const empty=()=>({version:1,providers:{},policies:{},publications:{}});
 export class PublicDirectory {
@@ -15,7 +17,7 @@ export class PublicDirectory {
     Object.assign(this,{hostOperator,leaseOf,verifyOwner,now,maxRecords});
     this.checkers=checkers.map(x=>x.toLowerCase());
     this.state=new DurableState(directory);this.floors=new DurableState(directory+'/route-floors');
-    this.tail=Promise.resolve();
+    this.tail=Promise.resolve();this.routeRead=null;this.providerChecks=new WeakMap();
   }
   async read(){const s=await this.state.get('public-records');if(s&&s.version!==1)throw Error('unsupported directory state');return s||empty();}
   // Serialize verification with acceptance so concurrent older submissions cannot
@@ -96,7 +98,10 @@ export class PublicDirectory {
     let policy=defaultNetworkPolicy(id);
     if(stored){policy=await verifyNetworkPolicy(stored.envelope,{owner:lease?.owner,deploymentId:id,verify:this.verifyOwner});}
     if(!equal(policy,publication.policy))throw Error('route policy not available or not current');
-    const providers=await eligibleProviders(Object.values(s.providers),{checkers:this.checkers,hostOperator:this.hostOperator,now:this.now()});
+    // Share provider checks only within an immutable read snapshot. Fresh state
+    // objects never reuse a previous pass's authorization.
+    if(!this.providerChecks.has(s))this.providerChecks.set(s,eligibleProviders(Object.values(s.providers),{checkers:this.checkers,hostOperator:this.hostOperator,now:this.now()}));
+    const providers=(await this.providerChecks.get(s)).filter(p=>p.expiresAt>this.now()&&p.qualifiedUntil>this.now());
     return verifyRoute(publication.bundle,{deploymentId:id,policy,lease,memory:this.floors,networkProviders:providers,providerProbeSigners:this.checkers,now:this.now()});
   }
   async currentRoute(id,s){
@@ -105,28 +110,52 @@ export class PublicDirectory {
     // the replacement. Also recheck successful reads if policy/provider state
     // changed while RPC verification was in flight. Never serve the old result
     // after a withdrawal, policy change or repeatedly changing snapshot.
-    const context=state=>({publication:state.publications[id]??null,policy:state.policies[id]??null,providers:state.providers});
+    const context=state=>routeContext(state,id);
     for(let attempt=0;attempt<3;attempt++){
       let route,error;
       try{route=await this.checkRoute(s.publications[id],s);}catch(e){error=e;}
       await this.tail;
       const latest=await this.read();
-      if(equal(context(s),context(latest))){if(error)throw error;return route;}
+      if(equal(context(s),context(latest))){if(error)throw error;return Object.assign(route,{[READ_CONTEXT]:recordHash(context(latest))});}
       s=latest;
     }
     throw Error('route state changed during verification');
   }
-  async routes(){
-    const s=await this.read(),labels={},deployments={},pending=[],collisions=new Set();
-    for(const id of Object.keys(s.publications)){
-      try{
-        const r=await this.currentRoute(id,s);if(!r.routes.length)continue;
+  routes(){
+    // Share only work that is still in flight, never a completed authorization.
+    // The pass below rechecks persisted state after every verification finishes.
+    if(!this.routeRead)this.routeRead=this.readRoutes().finally(()=>{this.routeRead=null;});
+    return this.routeRead;
+  }
+  async readRoutes(){
+    let s=await this.read();const results=new Map();
+    for(let attempt=0;attempt<3;attempt++){
+      const ids=Object.keys(s.publications).filter(id=>!results.has(id)||results.get(id)?.[READ_CONTEXT]!==recordHash(routeContext(s,id)));let next=0;
+      // Bound verification concurrency while allowing a batched chain snapshot.
+      await Promise.all(Array.from({length:Math.min(4,ids.length)},async()=>{
+        while(next<ids.length){const id=ids[next++];
+          try{results.set(id,await this.currentRoute(id,s));}catch{results.set(id,null);}
+        }
+      }));
+      await this.tail;
+      s=await this.read();
+      const changed=Object.keys(s.publications).filter(id=>results.get(id)&&results.get(id)[READ_CONTEXT]!==recordHash(routeContext(s,id)));
+      if(changed.length&&attempt<2)continue;
+      // Continuous updates can withhold that app, never resurrect its old route
+      // or starve all other apps. No asynchronous work follows this final check.
+      for(const id of changed)results.set(id,null);
+      const labels={},deployments={},pending=[],collisions=new Set();
+      for(const id of Object.keys(s.publications)){
+        const r=results.get(id);
+        if(!r||r.expiresAt<=this.now()){pending.push({id,reason:'no_current_verified_route'});continue;}
+        if(!r.routes.length)continue;
         const addresses=r.routes.map(x=>x.address),label=id.slice(2,10);
         deployments[id]={transport:r.routes[0].transport,expiresAt:r.expiresAt,httpsRoutes:r.routes,discovery:{ipns:r.ipns},version:2};
         if(labels[label]||collisions.has(label)){delete labels[label];collisions.add(label);}else labels[label]={transport:r.routes[0].transport,expiresAt:r.expiresAt,addresses};
-      }catch{pending.push({id,reason:'no_current_verified_route'});}
+      }
+      return {transport:'enclave-network',updatedAt:new Date(this.now()).toISOString(),relays:[],labels,deployments,pending};
     }
-    return {transport:'enclave-network',updatedAt:new Date(this.now()).toISOString(),relays:[],labels,deployments,pending};
+    throw Error('route state changed during verification');
   }
   async snapshot(){
     const s=await this.read();
