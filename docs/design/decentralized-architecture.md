@@ -20,7 +20,7 @@ live network of independently operated machines.
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
-| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Startup packages, app files and opt-in runtime files support verified multi-adapter publication and cold reads; production Sia and other artifacts still depend on one indexd/PostgreSQL writer |
+| Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Verified multi-adapter publication and cold reads exist; sealed Sia snapshots now recover real artifacts with indexd blocked. Live writes, funding and renewal still depend on the existing service |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
 | Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
 
@@ -696,3 +696,31 @@ new wallet; continued independent-role service under an Enclave host-wallet veto
 and owner revocation/transfer still taking effect. Production activation and these
 failure demonstrations remain required. The existence of backups or four
 Enclave-operated replicas does not satisfy these gates.
+
+## Sia recovery without a live indexer
+
+The companion [Sia recovery change](https://github.com/EnclaveHost/enclave-apps/pull/4)
+adds a read-only export of sealed object metadata and a standalone direct-host
+reader. Recovery requires a protected app key, an externally trusted snapshot
+SHA-256, and the expected file SHA-256 and length. It verifies sealed metadata and
+Sia download integrity, then publishes a local output only after the whole-file
+commitment matches. It rejects incomplete multipart metadata and never overwrites
+an existing output. Mutable-key exports are not transactional; quiesce writes if a
+consistent mutable bucket image is required.
+
+A production-data test recovered 1,501,902-byte and 23,677,756-byte artifacts while
+a systemd network policy allowed only 50 Sia host IPs. Negative probes confirmed
+Nan, all four Enclave provider fronts and local indexd were blocked; local indexd
+was reachable outside the test. Both files matched independently retained hashes.
+A deliberately wrong file hash produced no output or partial file. Temporary
+remote credentials were removed. Seven tests passed, including erasure-coded
+recovery after discarding the mock indexer. Native and WASM release builds passed;
+this live recovery execution used the native binary.
+
+The encrypted recovery bundle contains the snapshot, app key, native and WASM
+binaries, instructions and file manifest. Four Enclave-operated providers hold
+verified ciphertext copies; the passphrase remains local. These copies do not
+establish independent custody. The reader uses existing prepaid Sia account
+balances; it cannot renew contracts, refill accounts or publish writes. It is a
+point-in-time recovery tool, not an automatic fallback for a live mutable index.
+The live S3 service and its single indexd/PostgreSQL writer remain in use.
