@@ -27,7 +27,7 @@ const registryId = keccak256(toBytes(cfg.registryEndpoint));
 const pub = createPublicClient({ chain: base, transport: viemHttp(cfg.rpc || "https://mainnet.base.org") });
 const submitter = process.env[cfg.submitterKeyEnv || "CUSTODY_SUBMITTER_KEY"] ? privateKeyToAccount(process.env[cfg.submitterKeyEnv || "CUSTODY_SUBMITTER_KEY"]) : null;
 const wallet = submitter ? createWalletClient({ chain: base, account: submitter, transport: viemHttp(cfg.rpc || "https://mainnet.base.org") }) : null;
-const ALLOWED = new Set(["createCommittee", "proposeHandover", "postDeal", "ackHandover", "proposeCode", "removeCode"]);
+const ALLOWED = new Set(["createCommittee", "createIndependentCommittee", "proposeHandover", "postDeal", "ackHandover", "proposeCode", "removeCode"]);
 
 // ---- fw_cfg for the guest (unmeasured) ----
 const fwPath = path.join(cfg.stateDir, "fwcfg.json");
@@ -52,7 +52,11 @@ const srv = http.createServer(async (req, res) => {
     if (req.url === "/state" && req.method === "PUT") {
       if (body.length < 28 || body.length > 4 << 20) return send(400, { error: "bad state" });
       if (fs.existsSync(STATE)) fs.copyFileSync(STATE, `${STATE}.${Date.now()}`);   // keep history; prune below
-      const tmp = `${STATE}.tmp`; fs.writeFileSync(tmp, body, { mode: 0o600 }); fs.renameSync(tmp, STATE);
+      const tmp = `${STATE}.tmp`;
+      const fd=fs.openSync(tmp,'w',0o600);
+      try{fs.writeFileSync(fd,body);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      fs.renameSync(tmp, STATE);
+      const dir=fs.openSync(cfg.stateDir,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
       const old = fs.readdirSync(cfg.stateDir).filter((f) => /^state\.bin\.\d+$/.test(f)).sort();
       for (const f of old.slice(0, Math.max(0, old.length - 20))) fs.unlinkSync(path.join(cfg.stateDir, f));
       return send(200, { ok: true });

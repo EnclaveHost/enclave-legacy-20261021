@@ -311,6 +311,59 @@ contract EnclaveSecretVaultV2 {
         emit EpochActivated(committeeId, 1);
     }
 
+    /// An independent committee starts at its full threshold, without an Enclave
+    /// founder. Each measured member must verify distributed key generation and
+    /// persist its own share before signing this exact roster/code/commitment set.
+    /// Anyone may submit the signatures; no caller gains authority over the key.
+    function createIndependentCommittee(bytes32 salt, Machine[] calldata machines, bytes calldata commitments,
+                                        bytes32[] calldata codeSet, bytes[] calldata identitySigs,
+                                        bytes[] calldata hostSigs) external returns (bytes32 cid) {
+        uint256 n = machines.length;
+        if (n < 3 || n > MAX_SEATS || identitySigs.length != n || hostSigs.length != n) revert BadSeats();
+        uint256 t = (2 * n + 2) / 3;
+        if (commitments.length != t * POINT) revert BadCommittee();
+        for (uint256 i = 0; i < t; i++) {
+            if (commitments[i * POINT] != 0x02 && commitments[i * POINT] != 0x03) revert BadCommittee();
+        }
+        if (codeSet.length == 0 || codeSet.length > MAX_CODESET) revert BadCode();
+        for (uint256 i = 0; i < codeSet.length; i++) if (codeSet[i] == bytes32(0)) revert BadCode();
+        bytes32[] memory hashes = new bytes32[](n);
+        address[] memory owners = new address[](n);
+        for (uint256 i = 0; i < n; i++) {
+            Machine calldata m = machines[i];
+            if (_admit(m, hostSigs[i])) revert BadSeats();
+            (owners[i],,,) = hostOwnership.authority(m.registryId);
+            bool admittedCode;
+            for (uint256 j = 0; j < codeSet.length; j++) if (m.measurement == codeSet[j]) admittedCode = true;
+            if (!admittedCode) revert BadCode();
+            for (uint256 j = 0; j < i; j++) {
+                if (machines[j].identity == m.identity || machines[j].encKey == m.encKey ||
+                    machines[j].chipId == m.chipId || machines[j].registryId == m.registryId ||
+                    owners[j] == owners[i]) revert BadMachine();
+            }
+            hashes[i] = machineHash(m);
+        }
+        bytes memory Y = commitments[0:POINT];
+        cid = keccak256(abi.encode(block.chainid, address(this), salt, keccak256(Y)));
+        Committee storage c = _committees[cid];
+        if (c.epoch != 0) revert BadCommittee();
+        bytes32 digest = keccak256(abi.encode("enclave-custody-v2 independent genesis", block.chainid,
+            address(this), cid, keccak256(commitments), keccak256(abi.encode(hashes)), keccak256(abi.encode(codeSet))));
+        for (uint256 i = 0; i < n; i++) _checkSig(machines[i].identity, digest, identitySigs[i]);
+        c.Y = Y;
+        c.epoch = 1;
+        c.lastEpoch = 1;
+        c.activatedAt = uint64(block.timestamp);
+        Epoch storage e = _epochs[cid][1];
+        e.t = uint8(t);
+        e.W = uint8(n);
+        e.commitments = commitments;
+        for (uint256 i = 0; i < n; i++) { e.machines.push(machines[i]); e.enclave.push(false); }
+        for (uint256 i = 0; i < codeSet.length; i++) _codeActiveAt[cid][codeSet[i]] = uint64(block.timestamp);
+        emit CommitteeCreated(cid, machines[0].identity, Y);
+        emit EpochActivated(cid, 1);
+    }
+
     function proposeHandover(bytes32 cid, Machine[] calldata next, bytes[] calldata hostSigs, uint32[] calldata dealerIndices,
                              address[] calldata approvers, bytes[] calldata approvals) external {
         Committee storage c = _committees[cid];

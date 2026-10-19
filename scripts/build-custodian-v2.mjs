@@ -14,12 +14,16 @@ import zlib from "node:zlib";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
+import { independentOwners } from "../custody/v2/admission.mjs";
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const arg = (n, d) => { const i = process.argv.indexOf("--" + n); return i > 0 ? process.argv[i + 1] : d; };
 const BASE = path.resolve(arg("base", "")), OUT = path.resolve(arg("out", "")), VAULT = String(arg("vault", "")).toLowerCase();
 const HOST_OWNERSHIP = String(arg("host-ownership", "")).toLowerCase();
 const VCPUS = String(arg("vcpus", "2"));
+const ENCLAVE_OWNER="0x0b2d009c0c9af05b12100d77f3c815fea822ee61";
+const ownerFile=arg("independent-owners",null);
+const INDEPENDENT_OWNERS=ownerFile ? independentOwners(JSON.parse(fs.readFileSync(ownerFile,'utf8')),ENCLAVE_OWNER) : null;
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 if (!fs.existsSync(path.join(BASE, "manifest.json"))) throw new Error("--base must be a metal dist dir");
 if (fs.existsSync(OUT)) throw new Error(`${OUT} exists: an image is built once`);
@@ -39,7 +43,7 @@ if (sha(fs.readFileSync(path.join(BASE, "vmlinuz"))) !== m.kernel.sha256) throw 
 const measured = `export const MEASURED = Object.freeze(${JSON.stringify({
   chainId: 8453, vault: VAULT, hostOwnership: HOST_OWNERSHIP,
   rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://1rpc.io/base"],
-  minAgree: 2, maxAgeSec: 120, enclaveOwner: "0x0b2d009c0c9af05b12100d77f3c815fea822ee61",
+  minAgree: 2, maxAgeSec: 120, enclaveOwner: ENCLAVE_OWNER, independentOwners: INDEPENDENT_OWNERS,
   capacityContract: "0x87c7266543ff5839b2c20226bd9b3cd511a23641", witnesses: { "0xd80bf435467df887f1031743c2a2125a130fe225": "enclave-bootstrap" } })});\n`;
 const bundled = await build({ entryPoints: [path.join(ROOT, "custody/v2/daemon.mjs")], bundle: true, platform: "node", format: "esm", target: "node22",
   write: false, legalComments: "none", banner: { js: 'import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);' },
@@ -49,6 +53,14 @@ const tmpKey = path.join(OUT + ".snpkey");
 execFileSync("go", ["build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w -buildid=", "-o", tmpKey, "./cmd/snpkey"],
   { cwd: path.join(ROOT, "isolation/m2"), env: { ...process.env, GOFLAGS: "", CGO_ENABLED: "0", GOEXPERIMENT: "nodwarf5", GOTOOLCHAIN: "go1.27.0" }, stdio: "inherit" });
 const snpkey = fs.readFileSync(tmpKey); fs.unlinkSync(tmpKey);
+let dkg=null,dkgBuild=null;
+if(INDEPENDENT_OWNERS){
+  execFileSync('cargo',['build','--locked','--release','--target','x86_64-unknown-linux-musl','--manifest-path',path.join(ROOT,'custody/dkg/Cargo.toml')],{cwd:ROOT,stdio:'inherit'});
+  const binary=path.join(ROOT,'custody/dkg/target/x86_64-unknown-linux-musl/release/enclave-custody-dkg');
+  if(/INTERP/.test(execFileSync('readelf',['-lW',binary],{encoding:'utf8'}))||/\(NEEDED\)/.test(execFileSync('readelf',['-dW',binary],{encoding:'utf8'})))throw Error('DKG helper must be static');
+  dkg=fs.readFileSync(binary);
+  dkgBuild={rustc:execFileSync('rustc',['--version'],{encoding:'utf8'}).trim(),cargo:execFileSync('cargo',['--version'],{encoding:'utf8'}).trim(),target:'x86_64-unknown-linux-musl',lockSha256:sha(fs.readFileSync(path.join(ROOT,'custody/dkg/Cargo.lock')))};
+}
 const gsup = fs.readFileSync(path.join(ROOT, "custody/v2/cvm-gsup.mjs"));
 
 // 3. rewrite the newc cpio: replace gsup, append the custodian dir + files before the trailer
@@ -75,6 +87,7 @@ while (off < raw.length) {
     add(0o040755, "opt/custodian", Buffer.alloc(0));
     add(0o100644, "opt/custodian/custodian.mjs", custodianJs);
     add(0o100755, "opt/custodian/snpkey", snpkey);
+    if(dkg)add(0o100755,"opt/custodian/dkg",dkg);
     parts.push(raw.subarray(start, off));
     break;
   }
@@ -91,7 +104,9 @@ fs.copyFileSync(path.join(BASE, "vmlinuz"), path.join(OUT, "vmlinuz"));
 const cmdline = fs.readFileSync(path.join(BASE, "cmdline"), "utf8").trim().replace("${MODE}", "snp");
 fs.writeFileSync(path.join(OUT, "cmdline"), cmdline + "\n");
 const manifest = { role: "enclave-custodian-v2", commit, vault: VAULT, hostOwnership: HOST_OWNERSHIP, base: { dir: path.basename(BASE), initramfsSha256: sha(gz), kernelSha256: m.kernel.sha256 },
-  files: { "/opt/metal/gsup.mjs": sha(gsup), "/opt/custodian/custodian.mjs": sha(custodianJs), "/opt/custodian/snpkey": sha(snpkey) },
+  independentOwners: INDEPENDENT_OWNERS,
+  dkgBuild,
+  files: { "/opt/metal/gsup.mjs": sha(gsup), "/opt/custodian/custodian.mjs": sha(custodianJs), "/opt/custodian/snpkey": sha(snpkey), ...(dkg?{'/opt/custodian/dkg':sha(dkg)}:{}) },
   kernel: { sha256: m.kernel.sha256 }, initramfs: { sha256: sha(out), bytes: out.length }, cmdline, vcpus: Number(VCPUS) };
 // 4. the launch measurement this image produces on this host's firmware (the verifying OVMF), Turin
 const OVMF = process.env.OVMF || path.join(process.env.HOME, ".cache/enclave-isolation/fwbuild/OVMF.amdsev.fd");

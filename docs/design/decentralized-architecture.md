@@ -19,7 +19,7 @@ live network of independently operated machines.
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory and direct SDK transactions tested locally; factory not activated |
 | Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
-| Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
+| Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
 | Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
@@ -272,6 +272,86 @@ images. Durable package replication, production runtime admission and owner
 custody-rule updates remain to be activated. End-to-end cold recovery with
 independent storage and custody remains an acceptance gate. Existing
 deployments and release-key checks have not been weakened.
+
+## Independent custody formation
+
+The previous v2 committee could only be created by an Enclave-owned founder;
+non-Enclave membership depended on a measured Enclave capacity-witness key.
+The new `createIndependentCommittee` path needs 3–64 distinct accepted owner
+wallets, host IDs, encryption keys, identities and chips. It starts at
+`ceil(2n/3)` and accepts only a unanimous set of founder signatures over the
+exact machine order, code set and polynomial commitments. Anyone can submit
+those signatures. No Enclave founder, capacity witness or transaction sender
+receives administrative authority. The existing committee path is retained
+for existing deployments; this function requires a new vault deployment.
+
+`custody/dkg` pins `frost-secp256k1` 3.0.0 and its Cargo lockfile. It implements
+the library's three DKG phases through private local pipes, not HTTP. The
+JavaScript measured-guest adapter authenticates each first-round broadcast,
+requires every member to acknowledge the same broadcast digest, and encrypts
+signed second-round messages to each recipient with HPKE. Every message is
+bound to chain, vault, salt, machine order, code set and transcript. The final
+share is persisted before any founder signature is emitted; a crash between
+persistence and signing resumes that result. See the upstream
+[DKG communication requirements](https://docs.rs/frost-secp256k1/3.0.0/frost_secp256k1/keys/dkg/index.html).
+This integration is not an external cryptographic audit.
+
+Build a separate measured image with
+`--independent-owners owners.json` added to `scripts/build-custodian-v2.mjs`.
+The file is a JSON array of 3–64 accepted non-Enclave owner addresses. The
+image includes the static musl DKG helper, its hash and build metadata. This
+is an explicit committee-local admission policy: it does not claim that
+distinct wallets prove independent organizations or provide permissionless
+Sybil resistance. Another consenting group can choose its own measured set,
+without an Enclave signing or receipt service. Payout wallets confer no seat.
+The policy also applies to later candidate joins, including Enclave candidates.
+
+The public creation plan contains `chainId`, `vault`, a fresh bytes32 `salt`,
+ordered `machines`, `codeSet` and ordered `operatorPermits`. Each host operator
+signs `independentPlanDigest(plan)` with `signDigest` from
+`custody/v2/digests.mjs`; these permits are specific to the complete plan and
+do not authorize spending or secret release. Every member checks all permits,
+accepted ownership, distinct owners/chips and fresh peer attestation before
+allocating a sealed DKG session. Founders must run the same measured image.
+One session is retained per custodian identity; there is no public reset API.
+
+The API route `/v2/custody/independent-genesis` supports `start`, `agree`,
+`exchange`, `finish` and `activate`. The untrusted CLI coordinator is:
+
+```sh
+node scripts/independent-custody.mjs --plan signed-plan.json --out result.json
+node scripts/independent-custody.mjs --plan signed-plan.json --out result.json \
+  --activate --rpcs https://mainnet.base.org,https://base-rpc.publicnode.com
+```
+
+The first command obtains the founders' signed public result. The second
+resumes the persisted transcript, submits through one host's configured gas
+payer and lets each member adopt its own share only after the matching
+committee is on chain. The coordinator verifies all founder signatures; the
+activation CLI requires explicit agreeing RPCs and checks the resulting
+on-chain roster, threshold and commitments. The host state writer fsyncs the file and directory;
+the guest serializes sealed snapshots and awaits DKG saves. A dishonest host
+can still refuse durable storage, so quorum replication and recovery remain
+required availability properties.
+
+Validation uses the actual FROST helper and real Solidity execution on Anvil.
+All founders derive identical commitments; each of the three two-member
+subsets decrypts the same test bundle, while one share or a repeated share
+fails. The real DKG signatures create a 2-of-3 committee through an unrelated
+gas payer. Tests reject altered broadcasts, split transcript acknowledgements,
+modified ciphertext, missing peers, wrong recipients, unauthorized plans,
+wrong code/owners and invalid private state; they exercise the crash boundary
+before final signing and coordinator replay. The vault's 34 contract tests
+pass, including independent genesis and its threshold code governance.
+The static helper builds/runs and the daemon bundles successfully. Custodian
+attestation in the admission unit test is simulated, not real hardware.
+
+**Still not activated:** the live custody vault and single Enclave seat have
+not been replaced. The new measured image needs admission/deployment, direct
+custodian endpoint testing, a hardware quorum, and owner-authorized migration
+of each encrypted bundle. Existing ciphertext is not transferable to a new
+independent public key without an authorized decrypt/re-encrypt or separately
+verified handover. None of these source tests proves live custody migration.
 
 ## Governance disposition
 

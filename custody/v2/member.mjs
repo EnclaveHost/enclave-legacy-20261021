@@ -30,7 +30,7 @@ export const machineBinding = (machine, nonce) => sha256(Buffer.from("enclave-cu
 // state shape: { epochs: { "<cid>:<epoch>": [{k, x (hex)}] }, pending: { "<cid>:<toEpoch>": [{k,x}] }, hostSig, candidates }
 export function createMember({ chainId, vault, identity, encPrivateKey, machine, chain, store, submit, fetchJson, attestSelf,
                                verifyPeerQuote, capacityCheck = async () => ({ ok: false, reason: "no proof-of-capacity verifier configured" }),
-                               enclaveOwner, now = () => Date.now(), log = console.log, minTcb = DEFAULT_MIN_TCB, capacityReceipts = null }) {
+                               enclaveOwner, now = () => Date.now(), log = console.log, minTcb = DEFAULT_MIN_TCB, capacityReceipts = null, admissionCheck = null }) {
   const vaultL = lc(vault);
   const me = { ...machine, identity: lc(machine.identity) };
   let st = store.load() || { epochs: {}, pending: {}, hostSig: null, candidates: {} };
@@ -80,7 +80,14 @@ export function createMember({ chainId, vault, identity, encPrivateKey, machine,
   }
 
   // ---- candidate verification (§5): run by EVERY member for itself ----
-  async function verifyCandidate({ machine: m, hostSig, endpoint }, committeeId) {
+  async function verifyCandidate({ machine: m, hostSig, endpoint }, committeeId, genesisOwners = null) {
+    if (genesisOwners) {
+      // Before contacting a proposed endpoint, bind its host to a wallet this
+      // image explicitly admits. Genesis peers must run this same measured code.
+      const reg = await chain.readRegistryEntry({registryId:m.registryId});
+      if (!reg.entry?.active || !genesisOwners.includes(reg.entry.owner) || m.measurement !== me.measurement)
+        return {ok:false,reason:'genesis owner or measured code is outside policy'};
+    }
     const nonce = randomBytes(32).toString("hex");
     const ev = await fetchJson(`${m.endpoint}/v2/custody/evidence`, { nonce });
     if (!ev || lc(D.machineHash(ev.machine)) !== lc(D.machineHash(m))) return { ok: false, reason: "evidence names another machine" };
@@ -89,19 +96,56 @@ export function createMember({ chainId, vault, identity, encPrivateKey, machine,
     if (!v.ok) return { ok: false, reason: `attestation: ${v.reason}` };
     if (hex0x(sha256(Buffer.from(v.measurement, "hex"))) !== lc(m.measurement)) return { ok: false, reason: "measurement does not match the machine record" };
     if (hex0x(sha256(Buffer.from(v.chipId, "hex"))) !== lc(m.chipId)) return { ok: false, reason: "chip id does not match the machine record" };
-    const code = await chain.readCodeActiveAt({ committeeId, measurement: m.measurement });
-    if (!code.activeAt || code.activeAt * 1000 > now()) return { ok: false, reason: "custodian code not active in the committee's code set" };
+    if (!genesisOwners) {
+      const code = await chain.readCodeActiveAt({ committeeId, measurement: m.measurement });
+      if (!code.activeAt || code.activeAt * 1000 > now()) return { ok: false, reason: "custodian code not active in the committee's code set" };
+    }
     const reg = await chain.readRegistryEntry({ registryId: m.registryId });
     if (!reg.entry || !reg.entry.active) return { ok: false, reason: "host registry entry not active" };
     const who = await D.recoverDigest(D.hostDigest({ chainId, vault: vaultL, machine: m }), hostSig || ev.hostSig);
     if (!who || who !== reg.entry.operator) return { ok: false, reason: "host binding not signed by the host's registry operator" };
     if (!reg.entry.owner || /^0x0{40}$/.test(reg.entry.owner)) return { ok: false, reason: "host wallet ownership has not been accepted" };
     const enclave = reg.entry.owner === lc(enclaveOwner);
-    if (!enclave) {
-      const c = await capacityCheck({ machine: m, chipIdRaw: v.chipId, registry: reg.entry, receipts: Array.isArray(ev.receipts) ? ev.receipts : [] });
-      if (!c || !c.ok) return { ok: false, reason: `proof of capacity: ${(c && c.reason) || "refused"}` };
+    if (!genesisOwners && (admissionCheck || !enclave)) {
+      const c = await (admissionCheck || capacityCheck)({ machine: m, chipIdRaw: v.chipId, registry: reg.entry, receipts: Array.isArray(ev.receipts) ? ev.receipts : [] });
+      if (!c || !c.ok) return { ok: false, reason: `${admissionCheck ? "membership policy" : "proof of capacity"}: ${(c && c.reason) || "refused"}` };
     }
     return { ok: true, enclave, hostSig: hostSig || ev.hostSig };
+  }
+  async function verifyGenesisRoster(plan, owners) {
+    if (plan.chainId !== chainId || lc(plan.vault) !== vaultL || plan.machines.length < 3 || plan.machines.length > 64 ||
+        plan.codeSet.length !== 1 || plan.codeSet[0] !== me.measurement ||
+        !Array.isArray(plan.operatorPermits)||plan.operatorPermits.length!==plan.machines.length) return false;
+    if (!plan.machines.some(m=>lc(D.machineHash(m))===lc(D.machineHash(me)))) return false;
+    const accepted=new Set(), chips=new Set();
+    const permitDigest=D.independentPlanDigest(plan);
+    // All operators consent before any remote evidence call or sealed session
+    // allocation. A public caller cannot consume a machine with a chosen salt.
+    for(let i=0;i<plan.machines.length;i++){
+      const reg=await chain.readRegistryEntry({registryId:plan.machines[i].registryId});
+      if(!reg.entry?.active||!owners.includes(reg.entry.owner)||
+         await D.recoverDigest(permitDigest,plan.operatorPermits[i])!==reg.entry.operator)return false;
+    }
+    for (const m of plan.machines) {
+      const r=await verifyCandidate({machine:m},null,owners);
+      if(!r.ok||r.enclave||chips.has(m.chipId))return false;
+      const reg=await chain.readRegistryEntry({registryId:m.registryId});
+      if(!reg.entry?.active||!owners.includes(reg.entry.owner)||accepted.has(reg.entry.owner))return false;
+      accepted.add(reg.entry.owner);chips.add(m.chipId);
+    }
+    return true;
+  }
+  async function adoptIndependentGenesis({committeeId,commitments,share}) {
+    const {committee:com}=await chain.readCommittee({committeeId});
+    if(!com||com.epoch!==1||com.machines.some(m=>m.enclave)||com.machines.length<3||
+       hex0x(com.commitments)!==commitments)throw Error('independent genesis not confirmed');
+    const pos=com.machines.findIndex(m=>lc(D.machineHash(m))===lc(D.machineHash(me)));
+    const lay=v2.seatLayout(com.machines);
+    if(pos<0||com.t!==lay.t||com.W!==lay.W)throw Error('independent genesis roster mismatch');
+    const k=pos+1,x=v2.bytesToScalar(Buffer.from(share,'hex'));
+    v2.verifySubShare({newIndex:k,y:x,dealCommitments:splitPoints(com.commitments)});
+    putShares('epochs',lc(committeeId),1,[{k,x}]);save();
+    return {committeeId,epoch:1};
   }
   async function join(body, committeeId) {
     const m = body && body.machine;
@@ -262,5 +306,5 @@ export function createMember({ chainId, vault, identity, encPrivateKey, machine,
     return { state: "proposed", tx };
   }
 
-  return { me, shares, info, evidence, setHostSig, genesis, join, approve, tick, _state: () => st, _lastSeen: lastSeen };
+  return { me, shares, info, evidence, setHostSig, genesis, verifyGenesisRoster, adoptIndependentGenesis, join, approve, tick, _state: () => st, _lastSeen: lastSeen };
 }

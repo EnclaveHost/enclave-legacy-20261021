@@ -17,6 +17,14 @@ export const handoverDigest = ({ chainId, vault, committeeId, fromEpoch, next, d
   keccak256(encodeAbiParameters([T("string"), T("uint256"), T("address"), T("bytes32"), T("uint32"), T("bytes32"), T("bytes32")],
     ["enclave-custody-v2 handover", BigInt(chainId), vault, committeeId, fromEpoch,
      keccak256(encodeAbiParameters([T("bytes32[]")], [next.map(machineHash)])), keccak256(encodeAbiParameters([T("uint32[]")], [dealerIndices]))]));
+export const independentGenesisDigest = ({ chainId, vault, committeeId, commitments, machines, codeSet }) =>
+  keccak256(encodeAbiParameters([T("string"), T("uint256"), T("address"), T("bytes32"), T("bytes32"), T("bytes32"), T("bytes32")],
+    ["enclave-custody-v2 independent genesis", BigInt(chainId), vault, committeeId, keccak256(hx(commitments)),
+     keccak256(encodeAbiParameters([T("bytes32[]")], [machines.map(machineHash)])), keccak256(encodeAbiParameters([T("bytes32[]")], [codeSet]))]));
+export const independentPlanDigest = ({chainId,vault,salt,machines,codeSet}) =>
+  keccak256(encodeAbiParameters([T("string"),T("uint256"),T("address"),T("bytes32"),T("bytes32"),T("bytes32")],
+    ["enclave-custody-v2 independent plan",BigInt(chainId),vault,salt,
+      keccak256(encodeAbiParameters([T("bytes32[]")],[machines.map(machineHash)])),keccak256(encodeAbiParameters([T("bytes32[]")],[codeSet]))]));
 export const dealDigest = ({ chainId, vault, committeeId, toEpoch, dealerIndex, dealCommitments, sealed }) =>
   keccak256(encodeAbiParameters([T("string"), T("uint256"), T("address"), T("bytes32"), T("uint32"), T("uint32"), T("bytes32"), T("bytes32")],
     ["enclave-custody-v2 deal", BigInt(chainId), vault, committeeId, toEpoch, dealerIndex, keccak256(hx(dealCommitments)), keccak256(encodeAbiParameters([T("bytes[]")], [sealed.map(hx)]))]));

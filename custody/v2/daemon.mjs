@@ -26,6 +26,9 @@ import { cachedCollateral, httpCollateral } from "../../verifier/consumer.mjs";
 import { verifyQuote, parseSnpReport } from "../../relay/snp-verify.mjs";
 import { MEASURED } from "./measured.mjs";
 import { receiptCapacityCheck } from "./capacity.mjs";
+import { independentOwners, ownerAdmissionCheck } from "./admission.mjs";
+import { createIndependentGenesis, dkgHelper } from "./independent-genesis.mjs";
+import * as D from "./digests.mjs";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const FW = "/sys/firmware/qemu_fw_cfg/by_name/opt/org.enclave.custody/raw";
@@ -103,8 +106,11 @@ async function main() {
 
   if (!/^0x[0-9a-f]{40}$/.test(MEASURED.hostOwnership || "") || /^0x0{40}$/.test(MEASURED.hostOwnership)) throw new Error("measured host wallet authority is required");
   const chain = createChainReaderV2({ hostOwnership: MEASURED.hostOwnership, rpcs: MEASURED.rpcs, vault: MEASURED.vault, minAgree: MEASURED.minAgree, maxAgeSec: MEASURED.maxAgeSec });
-  const store = { load: () => state.member, save: (m) => { state.member = m; hostPut(hc.hostUrl, "/state", seal(key, state)).catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
-  const saveNow = async () => hostPut(hc.hostUrl, "/state", seal(key, state));
+  // Serialize snapshots so an older asynchronous member save cannot overwrite
+  // a newer DKG phase. DKG awaits persistence before it emits a phase response.
+  let writes=Promise.resolve();
+  const saveNow = () => { const blob=seal(key,state);const next=writes.catch(()=>{}).then(()=>hostPut(hc.hostUrl,"/state",blob));writes=next;return next; };
+  const store = { load: () => state.member, save: (m) => { state.member = m; saveNow().catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
   const submit = async (fn, args) => {
     const r = await fetch(hc.hostUrl + "/submit", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ fn, args }, (k, v) => (typeof v === "bigint" ? v.toString() : v)) });
@@ -113,7 +119,7 @@ async function main() {
     return j.tx;
   };
   const fetchJson = async (url, body) => {
-    const r = await fetch(url, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(url, {signal:AbortSignal.timeout(15000),...(body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })});
     const j = await r.json(); if (!r.ok) throw new Error(j.message || j.error || String(r.status)); return j;
   };
   const verifyPeerQuote = async (report, { binding, auxblob, minTcb }) => {
@@ -123,14 +129,57 @@ async function main() {
     if (!v.ok) return { ok: false, reason: v.reasons.slice(-1)[0] };
     return { ok: true, measurement: p.measurement.toString("hex"), chipId: p.chipId.toString("hex") };
   };
+  const owners=MEASURED.independentOwners ? independentOwners(MEASURED.independentOwners,MEASURED.enclaveOwner) : null;
   const member = createMember({ chainId: MEASURED.chainId, vault: MEASURED.vault, identity, encPrivateKey, machine, chain, store, submit, fetchJson,
                                 attestSelf: async (b) => tsmReport(b, hc.vcek), verifyPeerQuote, enclaveOwner: MEASURED.enclaveOwner, log,
                                 // a non-Enclave candidate proves capacity with the audit witness's receipt for its chip (§5 item 2)
+                                admissionCheck: owners ? ownerAdmissionCheck(owners) : null,
                                 capacityCheck: receiptCapacityCheck({ chainId: MEASURED.chainId, contract: MEASURED.capacityContract, witnesses: MEASURED.witnesses }),
                                 // this machine's own receipts, which its host fetches from the witness (unverified here: every member checks them)
                                 capacityReceipts: async () => { const r = await fetch(hc.hostUrl + "/receipts"); return r.ok ? (await r.json()).slice(0, 8) : []; } });
   const custodian = createCustodianV2({ chainId: MEASURED.chainId, vault: MEASURED.vault, encPrivateKey, shares: member.shares, chain,
                                         verifiers: productionVerifiers({ collateral: cachedCollateral({ dir: "/tmp/amd-collateral", upstream: httpCollateral({ timeoutMs: 8000 }) }) }), log });
+
+  let dkg=null;
+  async function independent(body) {
+    if(!owners)throw Error('independent genesis not enabled in this measured image');
+    if(!dkg){
+      const plan=state.independentPlan||body.plan;
+      if(!plan||!await member.verifyGenesisRoster(plan,owners))throw Error('independent roster not verified');
+      // One sealed session per machine; replacing its salt/transcript requires
+      // an explicit new identity, not a host-controlled reset endpoint.
+      const candidate=createIndependentGenesis({plan,identity,encPrivateKey,invoke:dkgHelper('/opt/custodian/dkg'),
+        verifyRoster:p=>member.verifyGenesisRoster(p,owners),
+        store:{load:()=>state.independentDkg,save:async s=>{state.independentDkg=s;await saveNow();}}});
+      state.independentPlan=plan;await saveNow();dkg=candidate;
+    }
+    if(body.action==='start')return dkg.start();
+    if(body.action==='agree')return dkg.agree(body.round1);
+    if(body.action==='exchange')return dkg.exchange(body.acks);
+    if(body.action==='finish')return dkg.finish(body.messages);
+    if(body.action==='activate'){
+      const s=state.independentDkg,plan=state.independentPlan;
+      if(s?.phase!==3||!s.result)throw Error('independent DKG has not finished');
+      if(!await member.verifyGenesisRoster(plan,owners))throw Error('independent roster changed');
+      if(!Array.isArray(body.results)||body.results.length!==plan.machines.length)throw Error('all founder signatures required');
+      const results=[...body.results].sort((a,b)=>a.id-b.id);
+      for(let i=0;i<results.length;i++){
+        const r=results[i];
+        if(r.id!==i+1||r.committeeId!==s.committeeId||r.commitments!==s.commitments||
+           await D.recoverDigest(D.independentGenesisDigest({...plan,committeeId:r.committeeId,commitments:r.commitments}),r.signature)!==plan.machines[i].identity.toLowerCase())throw Error('founder agreement mismatch');
+      }
+      const current=await chain.readCommittee({committeeId:s.committeeId});
+      if(!current.committee){
+        const hostSigs=[];
+        for(const m of plan.machines){const ev=await fetchJson(`${m.endpoint}/v2/custody/info`);hostSigs.push(ev.hostSig);}
+        await submit('createIndependentCommittee',[plan.salt,plan.machines,s.commitments,plan.codeSet,results.map(r=>r.signature),hostSigs]);
+      }
+      const adopted=await member.adoptIndependentGenesis(s);await saveNow();return adopted;
+    }
+    throw Error('unknown independent genesis action');
+  }
+  let independentTail=Promise.resolve();
+  const runIndependent=body=>{const next=independentTail.then(()=>independent(body));independentTail=next.catch(()=>{});return next;};
 
   // 3. HTTP (the tunnel agent forwards the relay's /t/<name>/... here)
   const rate = rateLimiter();
@@ -153,6 +202,7 @@ async function main() {
         case "/v2/custody/join": return json(res, 200, await member.join(body, hc.committeeId));
         case "/v2/custody/approve": return json(res, 200, await member.approve({ ...body, next: body.next || [] }));
         case "/v2/custody/host-binding": return json(res, 200, await member.setHostSig(String(body.sig || "")));
+        case "/v2/custody/independent-genesis": return json(res, 200, await runIndependent(body));
         default: return json(res, 404, { error: "not_found", message: "Unknown custody route." });
       }
     } catch (e) {

@@ -115,6 +115,77 @@ contract EnclaveSecretVaultV2Test is Test {
     }
 
     function _codeSet() internal pure returns (bytes32[] memory cs) { cs = new bytes32[](1); cs[0] = M; }
+    function _independentMachines() internal returns (EnclaveSecretVaultV2.Machine[] memory ms) {
+        ms = new EnclaveSecretVaultV2.Machine[](3);
+        for (uint256 i; i < 3; i++) ms[i] = _machineOn(800+i, _host(800+i, vm.addr(900+i)));
+    }
+    function _independentSigs(EnclaveSecretVaultV2.Machine[] memory ms, bytes memory cs, bytes32[] memory codes)
+        internal view returns (bytes[] memory sigs) {
+        bytes32[] memory hashes = new bytes32[](ms.length);
+        for (uint256 i; i < ms.length; i++) hashes[i] = _mh(ms[i]);
+        bytes32 digest = keccak256(abi.encode("enclave-custody-v2 independent genesis", block.chainid,
+            address(vault), _cid("independent"), keccak256(cs), keccak256(abi.encode(hashes)), keccak256(abi.encode(codes))));
+        sigs = new bytes[](ms.length);
+        for (uint256 i; i < ms.length; i++) sigs[i] = _psign(idKey[ms[i].identity], digest);
+    }
+    function test_independentGenesisAndCodeQuorumWithoutEnclave() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        // Delete mutable discovery before submission; the vault keeps its pins.
+        book.set("registry", address(0)); book.set("deployments", address(0));
+        vm.prank(stranger);
+        bytes32 cid = vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,_hostSigs(ms));
+        (bytes memory key, uint32 epoch, uint8 t, uint8 W,) = vault.committeeOf(cid);
+        assertEq(key,Y); assertEq(epoch,1); assertEq(t,2); assertEq(W,3);
+        (,bool[] memory enc) = vault.machinesOf(cid,1);
+        assertFalse(enc[0]); assertFalse(enc[1]); assertFalse(enc[2]);
+        address[] memory ap = new address[](2); ap[0]=ms[0].identity; ap[1]=ms[1].identity;
+        vault.proposeCode(cid,M2,ap,_codeSigs(cid,M2,true,ap));
+        assertGt(vault.codeActiveAt(cid,M2), block.timestamp);
+        vm.expectRevert(EnclaveSecretVaultV2.BadCommittee.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,_hostSigs(ms));
+    }
+    function test_independentGenesisRejectsRosterCodeAndCommitmentSubstitution() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        bytes[] memory hosts = _hostSigs(ms);
+        bytes memory changed = bytes.concat(Y, abi.encodePacked(bytes1(0x03), bytes32(uint256(99))));
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,changed,_codeSet(),sigs,hosts);
+        bytes32[] memory codes = new bytes32[](2); codes[0]=M; codes[1]=M2;
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,cs,codes,sigs,hosts);
+        sigs[2]=sigs[1];
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
+    function test_independentGenesisRequiresDistinctOwnersAndChips() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        ms[1].chipId=ms[0].chipId;
+        bytes[] memory hosts = _hostSigs(ms);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadMachine.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+        ms[1] = _machineOn(810,_host(810,vm.addr(900)));
+        hosts=_hostSigs(ms); sigs=_independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadMachine.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
+    function test_independentGenesisRejectsEnclaveFounderAndWrongThreshold() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs=bytes.concat(Y,Y);
+        bytes[] memory sigs=_independentSigs(ms,cs,_codeSet());
+        bytes[] memory hosts=_hostSigs(ms);
+        vm.expectRevert(EnclaveSecretVaultV2.BadCommittee.selector);
+        vault.createIndependentCommittee("independent",ms,Y,_codeSet(),sigs,hosts);
+        ms[1]=_machine(820,true);
+        hosts=_hostSigs(ms); sigs=_independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadSeats.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
     function _genesisDigest(bytes32 cid, EnclaveSecretVaultV2.Machine memory m, bytes32[] memory cs) internal view returns (bytes32) {
         return keccak256(abi.encode("enclave-custody-v2 genesis", block.chainid, address(vault), cid, keccak256(Y), _mh(m), keccak256(abi.encode(cs))));
     }

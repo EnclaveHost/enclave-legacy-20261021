@@ -1,10 +1,18 @@
 # Secret custody v2: custodians run by the hosts, inside their TEEs
 
-Status: LIVE on Base and metal0 (2026-10-14 23:35Z), verified on hardware. Successor to
+Initial production deployment: Base and metal0 (2026-10-14 23:35Z), verified on hardware. Successor to
 [secret-custody.md](secret-custody.md) (v1, still serving v1 bundles). The decisions in §11 are made; §6.2 adds Steven's
 Enclave-seat rules. Interfaces: [secret-custody-v2-spec.md](secret-custody-v2-spec.md).
 
-**What is live:**
+The table below is the original deployment snapshot, not the current migration
+inventory. Nan's control services have since moved to minipc. The 2026-10-19
+source also adds independent committee genesis, distributed key generation and
+measured accepted-owner admission without an Enclave capacity witness; these
+changes are not active in the legacy vault below. See
+[independent custody formation](../design/decentralized-architecture.md#independent-custody-formation)
+for the current implementation, validation and remaining activation gates.
+
+**Original deployment (2026-10-14):**
 
 | Part | Where |
 |---|---|

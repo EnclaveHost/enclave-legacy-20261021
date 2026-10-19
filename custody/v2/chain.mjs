@@ -35,6 +35,10 @@ export const VAULT_V2_ABI = [
   { type: "function", name: "ackCount", stateMutability: "view", inputs: [{ name: "cid", type: "bytes32" }, { name: "toEpoch", type: "uint32" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "codeActiveAt", stateMutability: "view", inputs: [{ name: "cid", type: "bytes32" }, { name: "measurement", type: "bytes32" }], outputs: [{ type: "uint64" }] },
   // writes (custodians sign; any funded account submits)
+  { type: "function", name: "createIndependentCommittee", stateMutability: "nonpayable",
+    inputs: [{ name: "salt", type: "bytes32" }, { name: "machines", ...M_ARR }, { name: "commitments", type: "bytes" },
+      { name: "codeSet", type: "bytes32[]" }, { name: "identitySigs", type: "bytes[]" }, { name: "hostSigs", type: "bytes[]" }],
+    outputs: [{ name: "committeeId", type: "bytes32" }] },
   { type: "function", name: "createCommittee", stateMutability: "nonpayable",
     inputs: [{ name: "salt", type: "bytes32" }, { name: "m", type: "tuple", components: MACHINE }, { name: "Y", type: "bytes" }, { name: "codeSet", type: "bytes32[]" }, { name: "identitySig", type: "bytes" }, { name: "hostSig", type: "bytes" }],
     outputs: [{ name: "committeeId", type: "bytes32" }] },
