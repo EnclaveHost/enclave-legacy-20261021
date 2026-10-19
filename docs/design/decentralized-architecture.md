@@ -874,3 +874,28 @@ and its owner delegation is read only from the pinned ledger. This closes runtim
 fallback authority; it does not transfer existing production sessions to the new
 immutable factory. The control-image overlay now includes the complete runtime
 file set and supports both adding and replacing these files in a verified image.
+
+
+The updated control image was staged from commit `9392b1f5` over the digest-verified
+production base and booted separately on real SEV-SNP hardware (2 vCPU, 3 GiB).
+The test supplied no registry credentials, disabled claiming, used an unreachable
+manager address and restricted QEMU outbound networking. Its supervisor reached
+healthy with zero deployments and logged immutable pins with book polling off.
+The hardware signature, pinned AMD root, chip/TCB certificate binding, static
+transport-key binding and minimum Turin firmware floor all passed verification.
+The launch measurement matched
+`a93e1cf752b556f37c62e98ccef9e9de5660093d31b88cdfde2377dc24072e95441b4059b19ed552f2a522d391be2abc`.
+The test VM was stopped; the production control PID was unchanged, and EyesOff,
+the dashboard and adapter health checks remained HTTP 200. This proves control
+runtime boot and measured delivery; it is not a deployed-app cold recovery or a
+fresh-challenge handshake test.
+
+Metal0's registered operator nominated wallet
+`0x0b2d009c0c9af05b12100d77f3c815fea822ee61` on the new host ownership contract in
+Base transaction
+`0x395e91a737243f9b29e9ffae7b4065a6aef6f6e5c175abaf38eaedf057ccfb0f`
+(block 52828018). Owner acceptance and policy commitment remain unsigned.
+Fresh agreeing Base reads also verified the immutable session factory and custody
+bindings and bytecode. Their explicit candidate pin profile is prepared, but
+existing owner sessions and the single-seat production custody vault have not
+migrated. Production runtime activation remains pending.
