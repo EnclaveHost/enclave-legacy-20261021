@@ -74,3 +74,18 @@ against the pinned catalog. It computes the canonical CID locally, without Kubo,
 a pinning server, or a trusted component hash cache. The privacy agent still checks
 the fresh lease, policy and actual guest proof before admitting traffic. This
 reconciler does not replace those checks or establish independent TLS/custody.
+
+### Circuit health probes
+
+`enclaveNetwork.egressProbeUrls` optionally supplies two to eight HTTPS probe URLs
+on distinct hostnames. Otherwise the agent uses the origins of its configured
+chain RPCs. One successful transport response keeps egress healthy; a failed or
+withholding probe cannot veto the other destinations. HTTP 4xx counts as a
+transport response (RPC endpoints commonly refuse GET); 5xx and transport errors
+do not. Losing probes are cancelled. These observations do not authorize a guest
+or extend its lease or attestation. Choose independently operated destinations;
+distinct hostnames alone do not prove independent ownership.
+
+Control-circuit probes use the configured signed-record directories, or the
+explicitly configured relay when no directories are supplied. The transport has
+no built-in Enclave API probe URL.

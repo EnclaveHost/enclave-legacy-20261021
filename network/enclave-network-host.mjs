@@ -24,6 +24,7 @@ import {HostEgress} from './host-egress.mjs';
 import fs from 'node:fs/promises';
 import {DirectoryClient} from './directory-client.mjs';
 import {validateNetworkAuthorities} from './network-authorities.mjs';
+import {egressProbeUrls,probeEgressUrls} from './egress-probes.mjs';
 
 
 // cfg.enclaveNetwork.hostEgress -> {apps, own} or null (absent); a malformed block throws
@@ -41,6 +42,7 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  const pins=authorityPins===undefined?null:validateNetworkAuthorities(authorityPins);
  if(pins&&c.registry&&c.registry.toLowerCase()!==pins.registry)throw Error('Enclave network: registry conflicts with authority pin');
  if(pins&&typeof leaseReader?.agreed!=='function')throw Error('Enclave network: pinned authority requires a quorum reader');
+ const probeUrls=egressProbeUrls(c.egressProbeUrls,rpc);
  const onNetwork=id=>c.apps==='all'||c.apps.includes(id);
  const relay=async(p,init)=>{const r=await fetch(c.relay+p,{...init,signal:AbortSignal.timeout(10000)});if(r.status===404)return null;const b=await r.json().catch(()=>null);if(!r.ok)throw new Error(`relay ${p.split('/').slice(0,4).join('/')}: ${b?.error||r.status}`);return b;};
  const directories=new DirectoryClient({origins:c.directories||[c.relay],fetch});
@@ -98,7 +100,7 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  // An egress-only circuit's health: one HTTPS request through it.
  async function probeEgress(app,circuit){
   const f=guardedFetch(circuit.egress,{timeoutMs:15000,maxBytes:65536});
-  const r=await f(new URL('https://enclave.host/'));if(r.status>=500)throw new Error('egress probe HTTP '+r.status);
+  await probeEgressUrls(f,probeUrls);
  }
  // Direct hosting (c.direct = {address, bindHost?, qualificationFile}): this host opted in to serve apps whose owners
  // chose direct on its own public address. It serves only while a trusted checker's current qualification of exactly

@@ -6,8 +6,8 @@ import {guardedFetch} from './guarded-fetch.mjs';
 const ZERO='0x'+'0'.repeat(64),COOLDOWN_MAX_MS=30*60000;
 
 export class WgControlTransport {
- constructor({runtime,providers,routes=2,probeUrl='https://api.enclave.host/v1/network/providers',probeUrls,now=Date.now,log=()=>{}}){
-  Object.assign(this,{runtime,providers,routes,probeUrl,now,log});this.probeUrls=probeUrls||[probeUrl];
+ constructor({runtime,providers,routes=2,probeUrl,probeUrls,now=Date.now,log=()=>{}}){
+  Object.assign(this,{runtime,providers,routes,probeUrl,now,log});this.probeUrls=probeUrls||(probeUrl?[probeUrl]:[]);
   if(!Array.isArray(this.probeUrls)||!this.probeUrls.length||this.probeUrls.length>8)throw Error('control probe URLs required');
   this.circuits=[];this.cooldown=new Map();this.strikes=new Map();this.closed=false;this.busy=false;
  }
