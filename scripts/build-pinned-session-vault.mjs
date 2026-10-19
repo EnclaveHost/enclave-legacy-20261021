@@ -11,7 +11,7 @@ export function compilePinnedSessionVault() {
     [name, { content: fs.readFileSync(path.join(root, 'contracts', name), 'utf8') }]));
   const settings = { optimizer: { enabled: true, runs: 1 }, viaIR: true,
     outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object', 'evm.bytecode.linkReferences',
-      'evm.deployedBytecode.object', 'evm.deployedBytecode.immutableReferences'] } } };
+      'evm.deployedBytecode.object', 'evm.deployedBytecode.immutableReferences', 'evm.deployedBytecode.linkReferences'] } } };
   const result = JSON.parse(solc.compile(JSON.stringify({ language: 'Solidity', sources, settings })));
   const errors = (result.errors || []).filter(x => x.severity === 'error');
   if (errors.length) throw new Error(errors.map(x => x.formattedMessage).join('\n'));

@@ -44,13 +44,13 @@ export const compileHostOwnership = () => compileContract("EnclaveHostOwnership"
 function compileContract(name) {
   const out = JSON.parse(solc.compile(JSON.stringify({ language: "Solidity",
     sources: { [name+".sol"]: { content: fs.readFileSync(path.join(REPO,"contracts",name+".sol"), "utf8") } },
-    settings: { viaIR: true, optimizer: { enabled: true, runs: 200 }, outputSelection: { "*": { "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"] } } } })));
+    settings: { viaIR: true, optimizer: { enabled: true, runs: 200 }, outputSelection: { "*": { "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object", "evm.deployedBytecode.immutableReferences", "evm.deployedBytecode.linkReferences"] } } } })));
   const errs = (out.errors || []).filter((e) => e.severity === "error");
   if (errs.length) die("solc:\n" + errs.map((e) => e.formattedMessage).join("\n"));
   const c = out.contracts[name+".sol"][name];
   const size = c.evm.deployedBytecode.object.length / 2;
   if (size > EIP170) die(`${name} is ${size} bytes, over EIP-170`);
-  return { abi: c.abi, bytecode: "0x" + c.evm.bytecode.object, size };
+  return { abi: c.abi, bytecode: "0x" + c.evm.bytecode.object, size, evm:c.evm };
 }
 
 // a public RPC can answer the receipt before it serves the new code (10-14, v1: "book returned no data"), so retry reads
