@@ -22,7 +22,7 @@ live network of independently operated machines.
 | Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Wallet classification and combiner changes exist; measured membership and release activation remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Live Sia path still has one indexd/PostgreSQL writer |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Provider directory replicas exist; native bootstrap and independent certificate paths remain |
-| Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Ledger administration and dependent governance still need a reviewed disposition |
+| Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
 
 ## Implemented client and session path
 
@@ -92,6 +92,77 @@ and secret-free downgrade, and must not silently fall back to the legacy relay.
 Its chain RPC/bootstrap egress, runtime measurements and host supervisor protocol
 must be activated together. Existing secret deployments remain on their validated
 path until their replacement passes these gates.
+
+## Governance disposition
+
+The live ledger's owner can retire it, raise claim bonds, slash operator bonds,
+restrict new allocations, change runner economics and change proof enforcement.
+Explicit address pins do not remove these powers. Its proof verifier also has
+an owner-controlled proof window. These are global powers, unlike a host owner's
+right to decline work on that owner's machines.
+
+`GovernanceSeal` is an irreversible ownership sink with no forwarding, upgrade,
+recovery, withdrawal or administrative entry point. It commits to the chain,
+target address, target bytecode and an ordered list of getter responses. The
+target's current owner must first nominate it using the target's existing
+two-step handoff; anyone can then finalize, but only while the reviewed target
+code and configuration still match. Nomination alone remains cancellable by the
+current owner. After acceptance there is no administrative recovery path.
+
+Prepare review evidence without a wallet or Enclave API:
+
+```sh
+node scripts/capture-governance-review.mjs \
+  --ledger 0xB1783B61E1FDee6a6163DC3CdaC27bF32E7d117B \
+  --catalog 0x18419ca2b502d423a8de6269aeee171a378626e3 \
+  --out /path/to/new-governance-review.json
+node scripts/build-governance-seal.mjs /path/to/new-seal-artifacts
+```
+
+The capture requires two agreeing RPCs at the same recent block and refuses
+unknown contract revisions, malformed getters and absent dependency bytecode.
+Profiles cover the ledger's 17 configuration getters, the proof verifier's four,
+and the catalog's three; ownership is recorded separately so nomination does not
+invalidate the commitment. It reports unsealed imports, retired/disabled ledger
+settings, missing one-time router bindings and pre-existing nominations. An empty
+blocker list is **not approval to seal**: bytecode identity, linked libraries,
+proxies, dependent governance and the chosen permanent economic parameters still
+require review. Neither command prepares or sends transactions.
+
+Each seal checks its own target only. In particular, a ledger seal does not seal
+its proof verifier, token, oracle or routers. Catalog approval/rejection rows are
+not enumerable configuration commitments; independent consumers must stop using
+those rows as global admission authority, regardless of catalog ownership.
+USDC issuer and underlying chain/oracle authority are external trust assumptions,
+not powers removed by this mechanism.
+
+`GovernanceSeal.hosting.t.sol` uses the real registry, ledger and proof verifier
+to register a new independent runner after sealing, create/fund work, submit a
+signed service checkpoint via an unrelated gas payer, renew, collect earnings,
+and preserve tenant stop/refund/transfer rights. Former governance shutdown,
+slashing, admission restrictions and proof-window changes fail. Its token and
+attested signing key are fixtures; it does not prove live TEE or custody behavior.
+`GovernanceSeal.liveFork.t.sol` repeats that scenario on the actual Base ledger
+and bound contracts, using a local fork and test-only role impersonation:
+
+```sh
+forge test --match-contract GovernanceSealLiveForkTest \
+  --fork-url https://mainnet.base.org --fork-block-number REVIEW_BLOCK -vv
+```
+
+The fork test is skipped on the default non-Base test chain. Fork writes never
+reach production. No production ownership has been changed; activation must
+follow dependency review and must not freeze a configuration still needed by the
+guest/custody transition.
+
+On 2026-10-19, the read-only capture at Base block 52,819,670 found the live
+ledger, proof verifier and catalog still owned by the Enclave wallet, with no
+pending handoff. Imports were sealed, the ledger was active, and its current
+proof/fee/bandwidth dependencies were bound. Seven local seal/hosting tests and
+five review-tool tests passed. The production-code fork scenario passed at that
+same block, including refusal of the former governor's attempt to slash a funded
+runner bond and the runner's subsequent full bond withdrawal. These results
+support the proposed governance change, not completion or activation of it.
 
 ## Storage and production acceptance
 
