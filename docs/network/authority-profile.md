@@ -1,5 +1,12 @@
 # Reviewed Base authority profile
 
+**Scope correction, 2026-10-20:** this is an optional candidate profile, not the
+required production migration target. Reuse current contracts and preserve the
+admin-controlled on-chain address book. Its availability through independent
+RPCs does not depend on Nan. The profile's alternate session factory and custody
+vault must not become defaults merely because their bytecode was verified.
+Fixed bindings need an explicit administrator-directed version migration path.
+
 `contracts/deployments/network-profile-base.json` is a reviewed set of Base
 contract authorities for the owner-committed (new) path. You can check it
 against the chain yourself without asking the mutable `EnclaveAddressBook`.

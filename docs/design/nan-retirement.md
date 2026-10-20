@@ -1,6 +1,14 @@
 # Nan retirement — implementation and cutover gates
 
-Censorship resistance is the acceptance criterion. Moving every service to another Enclave-operated machine is insufficient. Enclave's wallet may decline deployments on its own hosts; a consenting independent host and sufficient independent custody quorum must continue serving. Application TLS remains inside the guest.
+Censorship resistance to external parties and infrastructure failure is the acceptance criterion. Moving every service to one replacement server is insufficient. Preserve platform administration and moderation, host-wallet local restrictions, and private computation. Application TLS remains inside the guest.
+
+**Contract scope correction, 2026-10-20:** reuse the deployed contracts by default.
+The on-chain address book is not a Nan dependency; preserve administrator-directed
+version changes. Historical fixed-binding session/custody proposals below are
+not required production cutovers. Ledger revision 17 is separate lease-race
+hardening, not a prerequisite for retiring Nan. Existing sessions, funds and
+custody must remain compatible. See `decentralized-architecture.md`, “Existing
+contracts first”, for the current acceptance rules.
 
 ### Static-site routing correction, 2026-10-19
 

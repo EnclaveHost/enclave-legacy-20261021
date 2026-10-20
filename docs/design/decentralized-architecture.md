@@ -7,6 +7,29 @@ on their own machines but cannot override platform moderation. Computation remai
 private. Moving Nan's processes to minipc completed server retirement, not removal
 of mandatory centralized infrastructure.
 
+### Existing contracts first
+
+The 2026-10-20 scope review makes reuse of the deployed contracts the default.
+`EnclaveAddressBook` is on Base, not on Nan: reading it through independent RPCs
+does not introduce a mandatory Enclave server. Preserve its administrator's
+version-selection authority. Source/runtime verification and explicit transaction
+review remain useful; freezing every binding forever is not an acceptance gate.
+
+The fixed-binding session factory, alternate custody vault and ledger revision 17
+are not required cutovers for this migration. The ledger proposal addresses a
+separate stale-release race when hosts share an operator key. Keep its existing
+safe refusal and durable pending-release handling until an existing-contract
+solution or a separately justified change preserves that feature safely.
+Do not claim same-operator move parity is solved by deferring the proposal.
+
+The deployed host-ownership extension implements the requested wallet-local
+policy, and the service index advertises discovery candidates. Neither replaces
+the existing ledger/catalog/registry nor overrides platform moderation.
+The historical implementation sections below record candidate capabilities;
+references to migrating factories, custody contracts or immutable bindings are
+not instructions to activate them. Review compatibility with current sessions,
+custody and administrator-directed upgrades before selecting a production path.
+
 Independent operators do not have to exist before this architecture is finished.
 Use separate owner, operator, publisher, custodian and gas-payer identities on test
 infrastructure to establish protocol behavior. Do not describe those tests as a
@@ -17,11 +40,11 @@ live network of independently operated machines.
 | Path | Required behavior under external censorship or service loss | Current gap |
 | --- | --- | --- |
 | Host admission | Accepted host owner applies additional restrictions; platform moderation remains mandatory; payout and operator are not ownership | Windows runtime enabled on its enrolled authority; Linux measured delivery and mirror tests implemented, metal0 enrollment and runtime activation remain |
-| Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
-| Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory deployed and bytecode verified on Base; clients/grants not migrated |
+| Contracts | Clients resolve administrator-selected contracts through agreeing RPCs without Nan | Existing on-chain book retained; current fixed-pin candidates need an admin-directed migration compatibility review |
+| Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Reuse production factory/grants; alternate fixed-binding factory is deployed but not a required migration |
 | Deployments | Explicit release and spending cap reach the ledger without a mandatory centralized API or quote service; on-chain moderation applies | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
 | Guest boot | Measured guest obtains owner-authorized configuration and custody shares without one mandatory online release-signing server | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
-| Custody | Authorized hosts can use a sufficient custodian quorum when endpoints fail | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
+| Custody | Authorized hosts can use a sufficient custodian quorum when endpoints fail | Review current vault handover and wallet classification first; alternate contract activation is not assumed necessary; hardware quorum evidence remains |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Verified multi-adapter publication and cold reads exist; sealed Sia snapshots now recover real artifacts with indexd blocked. Live writes, funding and renewal still depend on the existing service |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Native full-ID access and owner-committed profile reproduction pass with DNS/control blocked; browser naming and production cutover remain |
 | Governance | Enclave admin retains contract migration, catalog moderation and platform admission powers | Admin-removal plans superseded; retain ownership and verify administrative operations and enforcement through migration |
