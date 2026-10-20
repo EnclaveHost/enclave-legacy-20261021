@@ -36,17 +36,63 @@ export function packageCID(hash){
   for(const x of b){value=(value<<8)|x;bits+=8;while(bits>=5){bits-=5;out+=alphabet[(value>>>bits)&31];}}
   if(bits)out+=alphabet[(value<<(5-bits))&31];return out;
 }
+// Owner-committed names (optional; isolation/m2/bootstrap/names.go is the
+// guest's identical check, cross-tested by names-vectors.json). A listed name
+// is only a name the guest will certify for its own key; a CA's DNS validation,
+// through the owner's _acme-challenge delegation, is what proves control.
+// EAB entries name custody secrets; credential values never belong here.
+export const MAX_OWNER_NAMES=10;
+const dnsLabel=/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, nameURL=/^https:\/\/([^/]+)(\/[A-Za-z0-9._~/-]*)?$/, secretName=/^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+export function dnsName(s){
+  if(typeof s!=='string'||s.length<1||s.length>253)return false;
+  const labels=s.split('.');
+  return labels.length>=2&&labels.every(l=>dnsLabel.test(l))&&/[a-z]/.test(labels.at(-1));
+}
+export const ownerHost=s=>dnsName(s)&&s!=='enclave.host'&&!s.endsWith('.enclave.host');
+const httpsName=s=>{if(typeof s!=='string'||s.length>512)return false;const m=nameURL.exec(s);return !!m&&dnsName(m[1]);};
+const noNull=x=>x===null?false:Array.isArray(x)?x.every(noNull):object(x)?Object.values(x).every(noNull):true;
+export function validateNames(n,secretsMode){
+  if(!object(n)||!noNull(n))throw Error('owner names must be an object without nulls');
+  keys(n,['hosts','acme']);
+  if(!Array.isArray(n.hosts)||n.hosts.length<1||n.hosts.length>MAX_OWNER_NAMES)throw Error(`owner names need 1 to ${MAX_OWNER_NAMES} hosts`);
+  n.hosts.forEach((h,i)=>{
+    if(!ownerHost(h))throw Error('owner name is not a lowercase DNS name outside enclave.host');
+    if(i>0&&!(n.hosts[i-1]<h))throw Error('owner names must be strictly ascending and unique');
+  });
+  if(Object.hasOwn(n,'acme')){
+    const a=n.acme;keys(a,['directory','challenge','zone','eab']);
+    if(!httpsName(a.directory)||!httpsName(a.challenge)||!dnsName(a.zone))throw Error('owner ACME selection needs HTTPS directory and challenge URLs and a DNS zone');
+    if('_acme-challenge.'.length+32+1+a.zone.length>253)throw Error('owner ACME challenge zone is too long');
+    if(Object.hasOwn(a,'eab')){
+      keys(a.eab,['kid','hmac']);
+      if(!secretName.test(a.eab.kid??'')||!secretName.test(a.eab.hmac??'')||a.eab.kid===a.eab.hmac)throw Error('owner ACME EAB must name two distinct custody secrets');
+      if(secretsMode!=='custody-v2')throw Error('owner ACME EAB needs custody-v2 secrets');
+    }
+  }
+  return n;
+}
+// The DNS-01 alias label commits to the deployment AND its owner, so a
+// delegation published for one owner stops working when the deployment moves.
+export function challengeLabel(deployment,owner){
+  if(!id32.test(String(deployment))||!nonzero(deployment)||!addr.test(String(owner))||!nonzero(owner))throw Error('challenge label needs a deployment and owner');
+  return createHash('sha256').update(Buffer.concat([Buffer.from('enclave-acme-alias-v1\0'),Buffer.from(deployment.slice(2),'hex'),Buffer.from(owner.slice(2).toLowerCase(),'hex')])).digest('hex').slice(0,32);
+}
+export function challengeAlias(deployment,owner,zone){
+  if(!dnsName(zone))throw Error('challenge alias needs a DNS zone');
+  return `_acme-challenge.${challengeLabel(deployment,owner)}.${zone}`;
+}
 export function verifyPackage(bytes,intent,scope={}){
   bytes=Buffer.from(bytes);if(!bytes.length||bytes.length>MAX_PACKAGE_BYTES)throw Error('startup package size limit');
   const hash=createHash('sha256').update(bytes).digest('hex');
   if(intent?.version!==1||intent.sha256!==hash)throw Error('startup package hash mismatch');
   const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes),m=parseUniqueJSON(text);
-  keys(m,['version','chainId','ledger','deployment','owner','appRef','appId','runtimeId','configText','secretsMode','custody']);
+  keys(m,['version','chainId','ledger','deployment','owner','appRef','appId','runtimeId','configText','secretsMode','custody','names']);
   if(m.version!==1||!Number.isSafeInteger(m.chainId)||m.chainId<=0||!addr.test(m.ledger)||!nonzero(m.ledger)||!addr.test(m.owner)||!nonzero(m.owner)||!id32.test(m.deployment)||!nonzero(m.deployment)||!hex32.test(m.appId)||!nonzero(m.appId)||!hex32.test(m.runtimeId)||!nonzero(m.runtimeId)||typeof m.appRef!=='string'||!m.appRef||typeof m.configText!=='string'||Buffer.byteLength(m.configText)>32768)throw Error('invalid startup package');
   if(m.configText){const c=parseUniqueJSON(m.configText);if(!c||typeof c!=='object')throw Error('startup config must be an object or array');}
   if(m.secretsMode==='public'){if(m.custody!=null)throw Error('public package cannot carry custody');}
   else if(m.secretsMode==='custody-v2'){if(!object(m.custody)||m.custody.v!==2||m.custody.chainId!==m.chainId)throw Error('custody-v2 pointer required');}
   else throw Error('explicit startup secrets mode required');
+  if(Object.hasOwn(m,'names'))validateNames(m.names,m.secretsMode);
   for(const [k,v]of Object.entries(scope)){if(v==null)continue;const fold=['ledger','owner'].includes(k);if((fold?m[k]?.toLowerCase():m[k])!==(fold?String(v).toLowerCase():v))throw Error(`startup ${k} mismatch`);}
   return {manifest:m,bytes,sha256:hash,cid:packageCID(hash)};
 }

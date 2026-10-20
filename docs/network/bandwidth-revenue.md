@@ -106,6 +106,16 @@ with `hostname` (`probe-NAME.enclave.host`), `keyFile`, `certFile`, `tokenFile`
 (64 random lowercase hex characters), `udpPort`, and private `manifestFile`.
 Restrict the manifest to the agent and independent probe operator.
 
+Without Enclave names, set `independent: true` and `probeZone` (the reviewed public
+zone your checkers probe in). The `hostname` is then `probe-NAME.<probeZone>`; an
+Enclave zone is refused. The checker's `qualify-provider.mjs` config then needs its
+own `independent: true`, the same `probeZone`, and an https `outbound` canary. It
+never takes the zone from the host's manifest. See
+`docs/network/open-participation.md`, section 1b. With `direct.probe` set, the agent
+starts the canary and listens on the direct ports at startup, so a checker can reach
+the canary before any app is qualified. A malformed probe stops the start; it is never
+ignored.
+
 `qualification-round.mjs` runs on a separate verifier machine. Its JSON config
 contains `sshHost`, optional `sshConfigFile`, `remoteManifest`, `remoteReport`,
 `hostId`, `operator`, `probeKeyFile`, `connectivity`, and HTTPS Base `rpc`.

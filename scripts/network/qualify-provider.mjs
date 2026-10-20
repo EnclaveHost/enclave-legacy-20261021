@@ -1,18 +1,26 @@
 #!/usr/bin/env node
 // Independent direct-host qualification, with the exact same acceptance list
 // required of TUNA providers. Never consumes host-supplied pass/fail booleans.
+// Independent targets (config.independent === true): the CHECKER's own config names `probeZone` (the reviewed public zone
+// the host's canary must be named in) and `outbound` (the HTTPS egress canary). Both are required, neither defaults to an
+// Enclave name, and neither is taken from the host's manifest: a manifest whose hostname is outside this checker's zone
+// is refused before any probe runs. Without it, the compatibility targets stay (probe-*.enclave.host,
+// config.outbound or https://enclave.host/).
 import fs from 'node:fs/promises';import path from 'node:path';
 import {createPublicClient,createWalletClient,http,parseAbi,keccak256,stringToHex,encodeAbiParameters} from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';import {base} from 'viem/chains';
-import {providerProbes} from '../../network/provider-probes.mjs';
+import {providerProbes,probeTargets} from '../../network/provider-probes.mjs';
 import {qualifyProvider} from '../../network/provider-qualification.mjs';
 const arg=k=>{const i=process.argv.indexOf(k);return i<0?undefined:process.argv[i+1];};
 const file=arg('--config');if(!file)throw Error('usage: qualify-provider.mjs --config PRIVATE_CONFIG [--publish]');
 const config=JSON.parse(await fs.readFile(file,'utf8'));
+const independent=config.independent===true;
+if(!independent&&config.probeZone!==undefined)throw Error('probeZone is for independent qualification (independent: true)');
+const targets=independent?{independent:true,...probeTargets({independent:true,probeZone:config.probeZone,outbound:config.outbound})}:{outbound:config.outbound};
 const signer=privateKeyToAccount((await fs.readFile(config.probeKeyFile,'utf8')).trim());
 const manifest=JSON.parse(await fs.readFile(config.manifestFile,'utf8'));
 const envelope=await qualifyProvider({hostId:config.hostId,operator:config.operator,address:manifest.address,
- signer,probe:providerProbes(manifest,{proxy:config.proxy,outbound:config.outbound}),validForMs:300000});
+ signer,probe:providerProbes(manifest,{proxy:config.proxy,...targets}),validForMs:300000});
 // A fresh on-chain signature binds the report to Base, its deployed verifier,
 // the registry operator and the exact tested public IP.
 const issuedAt=BigInt(Math.floor(envelope.report.issuedAt/1000)),expires=BigInt(Math.floor(envelope.report.expiresAt/1000));

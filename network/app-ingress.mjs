@@ -9,9 +9,12 @@ export function validateAppNames(deploymentId,names) {
     throw new Error('app identity and hostnames required');
   return names;
 }
+// admitName (optional): name -> boolean, consulted only for a name outside `names`, at each ClientHello - the
+// listener's own app's owner-committed names while they are proven (owner-names.mjs). It can only admit to THIS app.
 export async function createAppIngress({deploymentId, host = '127.0.0.1', port = 0,
-  names, authorize, forward, maxConnections = 1024, allowNoSni = false, onError = () => {}}) {
+  names, authorize, forward, admitName = null, maxConnections = 1024, allowNoSni = false, onError = () => {}}) {
   validateAppNames(deploymentId,names);
+  if(admitName!==null&&typeof admitName!=='function')throw new Error('admitName must be a function');
   const allowedNames = new Set(names.map(n => n.toLowerCase()));
   const sockets = new Set();
   const server = net.createServer(socket => {
@@ -25,7 +28,8 @@ export async function createAppIngress({deploymentId, host = '127.0.0.1', port =
       const name = clientHelloName(hello);
       if (name === null) return;
       socket.pause(); socket.removeListener('data', read);
-      if (!(name ? allowedNames.has(name.toLowerCase()) : name === '' && allowNoSni) || !authorize(deploymentId)) return socket.destroy();
+      const named = name && (allowedNames.has(name.toLowerCase()) || (admitName !== null && admitName(name.toLowerCase()) === true));
+      if (!(name ? named : name === '' && allowNoSni) || !authorize(deploymentId)) return socket.destroy();
       socket.setTimeout(0); socket.unshift(hello);
       Promise.resolve().then(() => forward(socket, deploymentId)).catch(e => {onError(e);socket.destroy();});
     };

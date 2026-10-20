@@ -191,8 +191,11 @@ export async function runPrivacy(configFile){
   const guestd=cfg.guestd?new GuestdIngress({...cfg.guestd,expected:id=>apps.find(a=>a.deploymentId===id)?.expected}):
     cfg.shield?.ingress?new ShieldIngress({...cfg.shield.ingress,expected:id=>apps.find(a=>a.deploymentId===id)?.expected,key:id=>agent?.admission.proofs.get(id)?.spkiSha256}):null;
   const scheduleProbe=createProbeScheduler();
-  let wgControl=null,paid=null;
-  const close=()=>{hostProof?.close();void Promise.all([agent?.close(),wgControl?.close()]).then(()=>paid?.close()).catch(e=>log(e.message));};
+  let wgControl=null,paid=null,stopping=false;
+  // The network host is closed LAST and always (enclave-network-host.mjs close(), idempotent): its direct runtime and the
+  // qualification canary hold public listeners from startup, and a daemon that keeps them cannot exit.
+  const closeNetwork=()=>Promise.resolve(networkHost?.close()).catch(e=>log('network host: '+e.message));
+  const close=()=>{stopping=true;hostProof?.close();void Promise.all([agent?.close(),wgControl?.close()]).then(()=>paid?.close()).catch(e=>log(e.message)).finally(closeNetwork);};
   process.once('SIGTERM',close);process.once('SIGINT',close);
   // SIGHUP re-reads the app list: each app's expectation, names and mirror
   // flag, and any new app, and the operator's host-egress offer (enclaveNetwork.hostEgress). Everything is validated before anything changes; no
@@ -239,8 +242,13 @@ export async function runPrivacy(configFile){
   const networkFetch=createNetworkFetch({bootstrap,control:()=>wgControl,controlRequired:cfg.enclaveNetwork.controlRequired,fetch:directFetch});
   const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,authorityPins:cfg.chain?.authorityPins,
     leaseReader,providerReader,directory:cfg.directory,log,fetch:networkFetch,
-    authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
+    authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),
+    // owner-name routing pins the key of the CURRENT attested local proof (enclave-network-host.mjs direct.ownerNames)
+    attestedKey:id=>!agent?.closed&&agent?.admission.allows(id)?agent.admission.proofs.get(id)?.spkiSha256||null:null,forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
   networkHost=network;
+  // a stop that arrived while the host was being created, or a step below that fails, must not leave its listeners open
+  if(stopping){await closeNetwork();throw new Error('privacy agent stopped during startup');}
+  try{
   if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,
     probeUrls:(cfg.enclaveNetwork.directories||[cfg.enclaveNetwork.relay]).map(origin=>new URL('/v1/network/providers',origin).href),log});await wgControl.start();}
   // paid providers (enclaveNetwork.paid): the lease must carry the on-chain connectivity authorization
@@ -287,7 +295,9 @@ export async function runPrivacy(configFile){
       ...(!circuit&&pvm?{pvm}:!circuit&&windows?{shield,hostSession:await hostProof.get()}:!circuit?{linux:{...linux,measurement:expected.measurement,release:expected.release},verifySnp}:{}),
       ...(circuit?{address:circuit.address,direct:circuit.transport==='direct',proxy:circuit.transport==='direct'?undefined:circuit.isolation.guardAddress,domainIndependent:circuit.transport!=='direct'&&apps.find(a=>a.deploymentId===id)?.startupEgress===true}:apps.find(a=>a.deploymentId===id)?.startupEgress===true?{openApp:starting,startupEgress:true}:guestd?{openApp:id=>guestd.open(id)}:pvm?{openApp:()=>openPvmApp(pvm.appPort)}:{localUpstream:cfg.upstream})});
     })});
-  try{await agent.start();}catch(e){hostProof?.close();await agent.close();await wgControl?.close();throw e;}
+  }catch(e){await closeNetwork();throw e;}
+  try{if(stopping)throw new Error('privacy agent stopped during startup');await agent.start();}
+  catch(e){try{hostProof?.close();await agent.close();await wgControl?.close();}finally{await closeNetwork();}throw e;}
   return agent;
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){

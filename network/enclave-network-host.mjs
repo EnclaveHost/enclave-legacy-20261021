@@ -19,6 +19,8 @@ import {verifyOwnerSignature} from './owner-signature.mjs';
 import {canonical} from './route-record.mjs';
 import {guardedFetch} from './guarded-fetch.mjs';
 import {DirectRuntime} from './direct-runtime.mjs';
+import {createProviderCanary,canaryHostname} from './provider-canary.mjs';
+import {ownerNameSource,leaseNameScope} from './owner-names.mjs';
 import {verifyQualification} from './provider-qualification.mjs';
 import {HostEgress} from './host-egress.mjs';
 import fs from 'node:fs/promises';
@@ -26,6 +28,22 @@ import {DirectoryClient} from './directory-client.mjs';
 import {validateNetworkAuthorities} from './network-authorities.mjs';
 import {egressProbeUrls,probeEgressUrls} from './egress-probes.mjs';
 
+
+// cfg.enclaveNetwork.direct.probe -> the provider canary's configuration (provider-canary.mjs), checked before anything is
+// bound or read: {hostname, keyFile, certFile, tokenFile, udpPort, manifestFile, bindHost?, independent?, probeZone?}.
+// independent:true names the operator's reviewed probe zone (probe-<label>.<probeZone>); otherwise probe-*.enclave.host.
+const PROBE_KEYS=['hostname','keyFile','certFile','tokenFile','udpPort','manifestFile','bindHost','independent','probeZone'];
+export function directProbeConfig(p){
+ if(!p||typeof p!=='object'||Array.isArray(p))throw new Error('Enclave network: direct.probe must be an object');
+ const extra=Object.keys(p).filter(k=>!PROBE_KEYS.includes(k));
+ if(extra.length)throw new Error('Enclave network: direct.probe has unknown field(s): '+extra.join(', '));
+ for(const k of ['keyFile','certFile','tokenFile','manifestFile'])if(typeof p[k]!=='string'||!path.isAbsolute(p[k]))throw new Error(`Enclave network: direct.probe.${k} must be an absolute path`);
+ if(!Number.isInteger(p.udpPort)||p.udpPort<1024||p.udpPort>65535)throw new Error('Enclave network: direct.probe.udpPort must be 1024-65535');
+ if(p.bindHost!==undefined&&!ipKind(p.bindHost))throw new Error('Enclave network: direct.probe.bindHost must be an IP address');
+ if(p.independent!==undefined&&typeof p.independent!=='boolean')throw new Error('Enclave network: direct.probe.independent must be true or false');
+ try{canaryHostname(p);}catch(e){throw new Error('Enclave network: direct.probe: '+e.message);}
+ return {...p};
+}
 
 // cfg.enclaveNetwork.hostEgress -> {apps, own} or null (absent); a malformed block throws
 export function hostEgressOffer(h){
@@ -35,7 +53,10 @@ export function hostEgressOffer(h){
  return {apps:h.apps==='all'?'all':[...h.apps],own:[...(h.own||[])]};
 }
 
-export async function createNetworkHost({config:c,account,runner,rpc,addressBook,authorityPins,leaseReader,providerReader=leaseReader,directory,authorize,forward,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
+// attestedKey(id) -> sha256 hex of the TLS key the host's CURRENT attested guest proof bound (or null): required for
+// owner-committed custom names on direct hosting (c.direct.ownerNames), never consulted otherwise. ownerNameRoots is a
+// code-level override of the public root store for embedders and tests; no configuration file can set it.
+export async function createNetworkHost({config:c,account,runner,rpc,addressBook,authorityPins,leaseReader,providerReader=leaseReader,directory,authorize,forward,attestedKey=null,ownerNameRoots,fetch=globalThis.fetch,now=Date.now,log=()=>{}}){
  if(!c||typeof c!=='object')throw new Error('Enclave network configuration required');
  if(c.relay!==undefined){
   const u=new URL(c.relay);
@@ -128,12 +149,26 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
  let direct=null;
  if(c.direct){
   if(!c.direct.address||!path.isAbsolute(c.direct.qualificationFile||''))throw new Error('Enclave network: direct hosting needs an address and a qualification file');
+  // the qualification canary: judged now, started last (below), so a malformed probe is never ignored and nothing is
+  // bound while any other part of this configuration can still be refused
+  const probe=c.direct.probe===undefined?null:directProbeConfig(c.direct.probe);
   const envelope=async()=>JSON.parse(await fs.readFile(c.direct.qualificationFile,'utf8'));
   const qualification=async()=>{const env=await envelope();const q=await verifyQualification(env,{hostId:runner,operator:account.address,address:c.direct.address,probeSigners:c.checkers,now:now()});return {...q,envelope:env};};
-  const runtimeD=new DirectRuntime({address:c.direct.address,bindHost:c.direct.bindHost||'0.0.0.0',httpsPort:c.direct.httpsPort||443,httpPort:c.direct.httpPort||80,authorize,forward,log,
+  // Owner-committed custom names (c.direct.ownerNames = {gateways:[...]}, docs/network/independent-name-routing.md): the
+  // committed package from the operator's explicit gateways, scoped by the lease this host reads, each name routed only
+  // while the guest proves a public certificate for it on its attested key. Absent: platform labels only, as before.
+  let ownerNames=null;
+  if(c.direct.ownerNames!==undefined){
+   const o=c.direct.ownerNames;
+   if(!o||typeof o!=='object'||Object.keys(o).some(k=>k!=='gateways'))throw new Error('Enclave network: direct.ownerNames takes only explicit gateways');
+   if(typeof attestedKey!=='function'||typeof leaseReader?.get!=='function')throw new Error('Enclave network: owner names need the attested guest key and the lease reader');
+   const lease=id=>{const l=leaseReader.get(id);return l&&l.runner===runner?l:null;};
+   ownerNames={hosts:ownerNameSource({lease,gateways:o.gateways,fetchImpl:fetch}),scope:id=>leaseNameScope(lease(id)),attestedKey:id=>attestedKey(id)||null,ca:ownerNameRoots};
+  }
+  const runtimeOptions={address:c.direct.address,bindHost:c.direct.bindHost||'0.0.0.0',httpsPort:c.direct.httpsPort||443,httpPort:c.direct.httpPort||80,authorize,forward,log,ownerNames,
    terms:async()=>{const q=await qualification();return {pricePerGiB6:0,selfHosted:false,expiresAt:q.expiresAt};},
-   meter:async()=>({consume(){}})});
-  direct={runtime:runtimeD,qualification,envelope};
+   meter:async()=>({consume(){}})};
+  direct={runtime:null,runtimeOptions,probe,qualification,envelope};
  }
  // Host egress: the operator's opt-in to let named apps (or all) leave through this host's own connection. Their
  // destinations see this host's address; the entry refuses private and reserved ranges, SMTP and the host's own addresses.
@@ -149,6 +184,26 @@ export async function createNetworkHost({config:c,account,runner,rpc,addressBook
   update(h){const next=hostEgressOffer(h);if(JSON.stringify(next)===JSON.stringify(offer))return false;offer=next;if(egress&&next)egress.own=next.own;return true;},
   get offered(){return offer?{apps:offer.apps,own:[...offer.own]}:null;},
  };
+ // Direct hosting starts LAST, after every check above has passed. With a canary (direct.probe) the runtime listens on
+ // its public ports now: a checker must reach the canary before any app can be qualified to run here. Without one the
+ // runtime listens on the first direct app, as before. Anything already bound is closed if a step fails.
+ let closing=null;
+ if(direct){
+  const {runtimeOptions,probe}=direct;let canary=null,runtimeD=null;
+  try{
+   if(probe)canary=await createProviderCanary(probe,{address:c.direct.address,ownAddresses:hostEgressOffer(c.hostEgress)?.own||[]});
+   runtimeD=new DirectRuntime(canary?{...runtimeOptions,canary}:runtimeOptions);
+   if(canary){await runtimeD.listen();log(`direct hosting: qualification canary ${canary.hostname} on ${c.direct.address}`);}
+  }catch(e){
+   if(runtimeD)await runtimeD.close().catch(()=>{});else await canary?.close().catch(()=>{});
+   throw e;
+  }
+  direct={runtime:runtimeD,qualification:direct.qualification,envelope:direct.envelope};
+ }
  // localRoutes: apps on this host reach each other's websites here (local-app-router.mjs); false turns it off
- return {onNetwork,policyFor,providers,byoConfig,runtime,probeEgress,grants,direct,hostEgress,localRoutes:c.localRoutes!==false};
+ return {onNetwork,policyFor,providers,byoConfig,runtime,probeEgress,grants,direct,hostEgress,localRoutes:c.localRoutes!==false,
+  // releases what this host bound itself: the direct runtime's listeners and its canary (the circuit runtime and host
+  // egress keep their own lifecycles)
+  // (idempotent: the agent's shutdown and a failed start may both ask)
+  close(){return closing||=Promise.resolve(direct?.runtime?.close());}};
 }
