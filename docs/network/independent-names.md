@@ -168,6 +168,68 @@ The responder does not read the chain. It relies on the pinned measured code
 having verified the owner, lease and startup commitment against its own RPC
 quorum before it asks. Its operator's trust is the list of pinned measurements.
 
+**Request bounds.** Every request is answered exactly once.
+
+- `/v1/txt`:
+  - a 64 KiB body cap: a declared or streamed body over it gets 413;
+  - `ATTESTED_PUSH_READ_MS` (default 10 s; 1 to 60 s) for the body to arrive, then 408;
+  - at most 16 verifications at once across all peers (503 with `retry-after: 1`);
+  - a per-peer rate limit.
+- An unknown route is a JSON 404. A slot is returned on every outcome,
+  including a client disconnect.
+
+`ADDRESS_BOOK_ADDRESS` and `BASE_RPC` are among the settings that refuse
+startup.
+
+### Enclave Shield guests (separate opt-in)
+
+`ATTESTED_SHIELD_POLICY` admits Enclave Shield (T0-hv) guests: an
+`enclave-shield-app-policy/1` document of TPM roots, platforms and (VBS launch
+digest, RuntimeID) pairs. Every verdict says tier `hv-node`, `hostExcluded:
+false`. It is never SEV-SNP operator exclusion. It also requires:
+
+```sh
+ATTESTED_SHIELD_PROFILE=contracts/deployments/network-profile-base.json   # a reviewed authority profile
+ATTESTED_SHIELD_PROFILE_DIGEST=sha256:ee957827032cf7208434e4c73f9e859a27e4fc5c6cab5f4a2153308c09eb4cb8
+ATTESTED_SHIELD_RPCS=https://<rpc one>,https://<rpc two>                 # distinct hosts
+# optional: ATTESTED_SHIELD_PINS=<contract-pins.json>, which must name the profile's registry
+```
+
+**Registry reads.**
+- The node's operator attests its TPM boot at `POST /v1/shield-session/challenge`
+  and `POST /v1/shield-session/attest`.
+- For every registry read, two distinct RPCs must agree at one block on the raw
+  facts: the registry's runtime code hash and length, `registrySchema()` and
+  `get(hostId)`.
+- Only then are the facts judged against the profile's registry pin. Today that
+  pin is `0x868e…ccac`, schema 4, code `0x39911d6f…`, 5892 bytes.
+- The responder decodes get() layouts 4 and 5 only. Other code or another
+  schema refuses the host.
+- The entry must name this endpoint, with the signer as its operator, and be
+  active.
+
+**Session lifecycle.**
+- A host session lasts 10 minutes.
+- One TPM endorsement key may hold at most 4 live sessions.
+- A push is checked against every live session (at most 128):
+  - each session's own IDKS selects the one that signed the guest's report;
+  - only that session runs the full host and app verification.
+
+  Measured cost: about 2 to 7 ms per accepted push and 5 ms for a refused one
+  with 128 live sessions.
+- When the matched host's registry check is older than 60 seconds, it is read
+  again:
+  - an agreed transfer, deactivation or refused registry ends the session (403);
+  - an RPC outage is 503 and keeps the session until its expiry.
+
+**Trust boundary.** The responder trusts:
+- the operator's policy pins;
+- the reviewed profile, pinned by its digest;
+- its two or more RPCs (two must agree);
+- the pinned Shield image's own chain checks.
+
+It consults no address book, fleet, relay or default RPC.
+
 ## Lifecycle and state
 
 - Names apply only while the guest's authorization is current.
