@@ -1,0 +1,376 @@
+{
+  "at": "2026-10-20T02:33:39.304460+00:00",
+  "status": "candidate-built-not-hardware-validated",
+  "sourceCommit": "0ed5a8ba",
+  "candidate": {
+    "binSha": "c7084346a908465404fdf6de332a76b3c2ca844101eb9e8071aa8a1468f197ec",
+    "bytes": 77056796,
+    "vbsSha": "92f7fd46f3c4dfdc4350385d6e13cfc377b43b646cfc11257375475c61e6e25c",
+    "digest": "6A3135A9378688805A36905C5E0F1443BB65031014618F390A6E3D6E2D90B86A",
+    "deterministic": true,
+    "sameAsCurrent": false,
+    "strings": {
+      "mustContain": [
+        [
+          "OPENHCL_FORCE_LOAD_VTL0_IMAGE=linux",
+          true
+        ],
+        [
+          "console=ttyS0 rdinit=/init loglevel=3 report_host=9001",
+          true
+        ]
+      ],
+      "mustNotContain": [
+        [
+          "OPENHCL_CONFIDENTIAL_DEBUG=1",
+          false
+        ]
+      ]
+    }
+  },
+  "runtime": {
+    "name": "wasmtime",
+    "version": "49.0.0",
+    "execution": "jit",
+    "targetIsa": "x86_64",
+    "hostIsa": "x86_64",
+    "cpuFeatures": "host-detected",
+    "wx": "enforced",
+    "cache": "none"
+  },
+  "runtimeId": "297b6c2c0aee68c38ed612972afd11b12865e21ee39c01f4336e8721b3ef02f8",
+  "inputs": {
+    "linux_initrd": "22c9666b5817ef651365892bf836c68a5c285b8ff94cdd3ad3e30f2bee1d7eaf",
+    "linux_kernel": "6bbd7340f7505cffb4d00cfa84604052b394f2d6467918e24d4c44935783e0c0",
+    "underhill_initrd": "71a91101f8f9b870199946076db2b220c68167e029539d4619a6b7600432124e",
+    "recipeManifest": "23a41fbd3babf52b29793f1d39f30a06ec707f6ce3fed06800913a72661dedce",
+    "sourceCommit": "0ed5a8ba",
+    "manifest": "0ce9d8a87582bb5d60200d7f98c67ee357dbd042aec7338649c981753753df61",
+    "igvmfilegen": "81647f66a88559d68c4d7565dfdcc355305c00cc842b49403a3c5188c36e1a1c"
+  },
+  "sourceArchiveSha256": "40291a5bb3f5a59cf667f61ffab2a22cd7a16647575546f13bb1d90ecef0c725",
+  "initrd": {
+    "sourceCommit": "0ed5a8ba",
+    "sourceArchiveSha256": "40291a5bb3f5a59cf667f61ffab2a22cd7a16647575546f13bb1d90ecef0c725",
+    "baselineInitrdSha256": "f86fb512a552554217769a347c8f5b1e3eb5b3a95dfecd9d3a5d0680e808d227",
+    "initrdSha256": "22c9666b5817ef651365892bf836c68a5c285b8ff94cdd3ad3e30f2bee1d7eaf",
+    "initrdBytes": 23466702,
+    "assemblyRepeatable": true,
+    "compilerReproductionIndependent": false,
+    "goToolchain": "go version go1.27.2-X:nodwarf5 linux/amd64",
+    "gcc": "gcc (GCC) 16.2.1 20260810",
+    "frontBuildTags": [
+      "bootstrapdirect",
+      "shielddirect"
+    ],
+    "preservedBaselineFiles": 24,
+    "hardwareActivated": false
+  },
+  "files": [
+    {
+      "path": ".",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "dev",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "domains",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "enclave_openhcl_tpm.ko",
+      "mode": "0o100644",
+      "bytes": 305680,
+      "sha256": "b1bedd82412789580a1fd85aa650ccbe9c79d51913ab05c8eda306ecc730d31d",
+      "baselineSha256": "b1bedd82412789580a1fd85aa650ccbe9c79d51913ab05c8eda306ecc730d31d",
+      "recompiled": false
+    },
+    {
+      "path": "init",
+      "mode": "0o100755",
+      "bytes": 861912,
+      "sha256": "e228941bcc2fbf66816412baca1d99adaee65178a0a8c0690db1ec60cf3f5d44",
+      "baselineSha256": "c723cbfa58c61762ad929f7cfaa30f4bf6885032dd5996100daa243a4c231cbd",
+      "recompiled": true
+    },
+    {
+      "path": "monitor",
+      "mode": "0o100755",
+      "bytes": 4137084,
+      "sha256": "1f00d22d0903e946a5dcdc5b5e338f84d6d79be20680afca39e13f9e753a29a4",
+      "baselineSha256": "82af9d870678f42505791c619b5962e27e2c24dc3c5bfdbd76427fc346925181",
+      "recompiled": true
+    },
+    {
+      "path": "plat",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "plat/domexec",
+      "mode": "0o100755",
+      "bytes": 1052128,
+      "sha256": "d2774484ec192b6ad9b635c69e0ef61342327c59ac26c744128928c5893c9fdb",
+      "baselineSha256": "fa68aa230d9df25c2eb978779ff283523f0043b5ac11515605da3ed3cc707b2e",
+      "recompiled": true
+    },
+    {
+      "path": "plat/domprobe",
+      "mode": "0o100755",
+      "bytes": 863152,
+      "sha256": "650caedea6d2fe3d5bfbd77884789322a7d6cd89fab78db52cd1d241134d55ba",
+      "baselineSha256": "650caedea6d2fe3d5bfbd77884789322a7d6cd89fab78db52cd1d241134d55ba",
+      "recompiled": false
+    },
+    {
+      "path": "plat/front",
+      "mode": "0o100755",
+      "bytes": 9576572,
+      "sha256": "13d139ae48288f353b7e511e4bce6d7f5bc27759b336e8ab2b6b8f5745e42ad6",
+      "baselineSha256": "206de185f5fa81197c666f5c1f075fb0ec287af9bc5b51dd64cd7a3b68370d04",
+      "recompiled": true
+    },
+    {
+      "path": "plat/rt",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/ld-linux-x86-64.so.2",
+      "mode": "0o100755",
+      "bytes": 263152,
+      "sha256": "d011113b7054c641c8ca064f58bcc23804fd2654a3dff2444dad06ddeda61bfb",
+      "baselineSha256": "d011113b7054c641c8ca064f58bcc23804fd2654a3dff2444dad06ddeda61bfb",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/libc.so.6",
+      "mode": "0o100755",
+      "bytes": 2215072,
+      "sha256": "e221b10fee9ee4776d8f0f1701253bc06817f7a4dbe6c5292487277d0bf8ffff",
+      "baselineSha256": "e221b10fee9ee4776d8f0f1701253bc06817f7a4dbe6c5292487277d0bf8ffff",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/libgcc_s.so.1",
+      "mode": "0o100644",
+      "bytes": 182512,
+      "sha256": "e618cb9c90c2eb3a1dad1cfea5b6c1eebcf2e799ad805976f4ae47bdd61c716a",
+      "baselineSha256": "e618cb9c90c2eb3a1dad1cfea5b6c1eebcf2e799ad805976f4ae47bdd61c716a",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/libm.so.6",
+      "mode": "0o100755",
+      "bytes": 1268336,
+      "sha256": "965106704753eefe8c31ae7da6daba3ead3d18c52b19b5fcc41178bcc4aa999d",
+      "baselineSha256": "965106704753eefe8c31ae7da6daba3ead3d18c52b19b5fcc41178bcc4aa999d",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/mem64.enabled",
+      "mode": "0o100644",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "baselineSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/runtime.json",
+      "mode": "0o100644",
+      "bytes": 158,
+      "sha256": "c60712e8d90b2b8c3e23e98f62c25f5278bcbffacb26113729a1bd6600b720d0",
+      "baselineSha256": "c60712e8d90b2b8c3e23e98f62c25f5278bcbffacb26113729a1bd6600b720d0",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/set.enabled",
+      "mode": "0o100644",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "baselineSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "recompiled": false
+    },
+    {
+      "path": "plat/rt/wasmtime",
+      "mode": "0o100755",
+      "bytes": 57045080,
+      "sha256": "485d6d734a0d1a2d0c1f2d7bc2ab992f018d79b1da138bb6c563eca7ecc8f642",
+      "baselineSha256": "485d6d734a0d1a2d0c1f2d7bc2ab992f018d79b1da138bb6c563eca7ecc8f642",
+      "recompiled": false
+    },
+    {
+      "path": "plat/secretrun",
+      "mode": "0o100755",
+      "bytes": 2879612,
+      "sha256": "5d6e70b483213dbd95600c4c94cecabd14670cf8d811798724f829ab449e409e",
+      "baselineSha256": "4e2f5bedfeba878e0eab424f7a1ba0ee293e72269a9b8ddba350d1739bdfefaa",
+      "recompiled": true
+    },
+    {
+      "path": "proc",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "run",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "sev-guest.ko.zst",
+      "mode": "0o100644",
+      "bytes": 9294,
+      "sha256": "528c57721813d4cf7dd74f65d9deea82cee7af0bc4d6b15f15064370ef84caa0",
+      "baselineSha256": "528c57721813d4cf7dd74f65d9deea82cee7af0bc4d6b15f15064370ef84caa0",
+      "recompiled": false
+    },
+    {
+      "path": "sys",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "tmp",
+      "mode": "0o40755",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "baselineSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "recompiled": false
+    },
+    {
+      "path": "tsm_report.ko.zst",
+      "mode": "0o100644",
+      "bytes": 6983,
+      "sha256": "41f36ca242ed64095f140303ae6c05066d043ef37d1c9f6841216469bb009151",
+      "baselineSha256": "41f36ca242ed64095f140303ae6c05066d043ef37d1c9f6841216469bb009151",
+      "recompiled": false
+    },
+    {
+      "path": "vmw_vsock_virtio_transport.ko.zst",
+      "mode": "0o100644",
+      "bytes": 10496,
+      "sha256": "6fe99263330f3abe3371eebb5ad8f9be35a47e57faab0f96c0729c29cb95bcc9",
+      "baselineSha256": "6fe99263330f3abe3371eebb5ad8f9be35a47e57faab0f96c0729c29cb95bcc9",
+      "recompiled": false
+    },
+    {
+      "path": "vmw_vsock_virtio_transport_common.ko.zst",
+      "mode": "0o100644",
+      "bytes": 22109,
+      "sha256": "4b9aee6ec87e6b5322df1f2fbff60ccd8862df113e5010e006e563971a083991",
+      "baselineSha256": "4b9aee6ec87e6b5322df1f2fbff60ccd8862df113e5010e006e563971a083991",
+      "recompiled": false
+    },
+    {
+      "path": "vsock.ko.zst",
+      "mode": "0o100644",
+      "bytes": 27051,
+      "sha256": "d41ae5d80296ef9220531413899abd4e95d1d877e7957d80e035c621aa8f1aaa",
+      "baselineSha256": "d41ae5d80296ef9220531413899abd4e95d1d877e7957d80e035c621aa8f1aaa",
+      "recompiled": false
+    }
+  ],
+  "reproduceCurrent": {
+    "binSha": "b7ba7731240ec9025f8c92651be17ecf8af17764e2c3eb0bd20af60f00923748",
+    "digest": "56FBB27F363A7FEDC83FD56CB4FF39C5411140300BB8F8496C35893A061077E1",
+    "ok": true
+  },
+  "twinProof": {
+    "digest": "77C6616040679733D26D561D861B9124191D8B08A4DB4C6626CF04CCAD9A2CE1",
+    "ok": true
+  },
+  "debugTwin": {
+    "binSha": "d715afadc1d601787cb746d6f2b6fd555030cc90ab366dd9d22bc11033d283cc",
+    "bytes": 77056796,
+    "digest": "815477D872338519D5D22B75ADFFFB78862685E906BBD8884C3A41027C081B47",
+    "strings": [
+      [
+        "OPENHCL_FORCE_LOAD_VTL0_IMAGE=linux OPENHCL_CONFIDENTIAL_DEBUG=1",
+        true
+      ]
+    ]
+  },
+  "mutations": [
+    {
+      "name": "one byte of the VTL0 kernel",
+      "digest": "09CF67FA0F9F2469ADB99BB3F8E2764D69615EED8930FD446614AF644E1378C4",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    },
+    {
+      "name": "one byte of the VTL0 initrd",
+      "digest": "CB4D2EF299F21F19327A6D93E4F7F93BE81E8B7D27AA8ECDF8B413FDFE8249AE",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    },
+    {
+      "name": "the VTL0 command line",
+      "digest": "7DACE698DA7654E3764E5E7C7DB403ED1AE01CBEC8FBA57005862FDEAB7A0F11",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    },
+    {
+      "name": "the static paravisor command line",
+      "digest": "4BDD390CA2DDE991AE01953E491FF2CF0E1915A4D09C5D3D5F839E7932DAFF51",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    },
+    {
+      "name": "static_command_line=false",
+      "digest": "EAB040132C5EA25131E77A74287E0EEBEFFE9DDE4F4F9C9716EE4D3477A9C4C2",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    },
+    {
+      "name": "one byte of patched OpenHCL initrd",
+      "digest": "A56E154F2822B414F72C5062132BBE55BF12821BD79FA8179754A7F8991ACBC4",
+      "changed": true,
+      "sameAsPinnedMutation": false
+    }
+  ],
+  "compilePeakBytes": 253263872,
+  "imageScopePeakBytes": 1073741824,
+  "scripts": {
+    "compile.sh": "bf2bea81333c193f46f382b14f4f7e12d22984ee9020c77ff688fbe41593a88f",
+    "pack.py": "b8921519e3176ec5a0475897b9f85f8bf0ecc3768938a5d808af4c647140733a",
+    "build-image.mjs": "657c80a567ed2b0acb136ce06fa9c71e81aa836eb0db9a047154a4e3bb2d6fef"
+  },
+  "hardwareActivated": false,
+  "limits": [
+    "Image assembly repeatability on one builder; not independent full toolchain/source reproduction.",
+    "TPM report input, real vsock9445/9446, direct public/naming/custody startup and crash cleanup require hardware tests.",
+    "Separate legacy/direct/GPU image selection must pass before production activation.",
+    "Custodian image and owner code-approval are separate and pending.",
+    "No operator-independence or censorship-refusal proof is implied."
+  ]
+}
