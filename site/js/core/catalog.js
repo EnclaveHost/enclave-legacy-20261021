@@ -238,7 +238,7 @@ const cleanCid = (c) => (typeof c === "string" && /^[a-zA-Z0-9]{10,100}$/.test(c
 // only renders in image contexts under an exact image/svg+xml content-type,
 // which the Kubo gateway derives from the ?filename extension; bare raster
 // CIDs content-sniff fine without it.
-export const mediaUrl = (cid, svg) => IPFS_IMG_GATEWAY + encodeURIComponent(cid) + (svg ? "?filename=i.svg" : "");
+export const mediaUrl = (cid, svg) => IPFS_IMG_GATEWAY + encodeURIComponent(cid) + (svg ? "?filename=enclave-logo.svg" : "");
 export function mediaOf(version){
   if (!version || !version.config) return {};
   try {
