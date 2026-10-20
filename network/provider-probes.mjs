@@ -4,11 +4,28 @@ import {connectSOCKS,SocksHttpsAgent} from './socks-connect.mjs';
 import {publicProviderAddress} from './provider-qualification.mjs';
 // Run on the independent verifier. proxy is an SSH loopback forward to the
 // host's private per-probe SOCKS endpoint; public ingress is tested directly.
-export function providerProbes(manifest,{proxy=manifest.proxy,outbound='https://enclave.host/',timeout=20000,testPorts}={}) {
+// Targets. With `independent: true` the CHECKER names both: `probeZone` (the zone the canary hostname must be
+// probe-<label>.<zone> in) and `outbound` (the HTTPS egress canary); neither defaults to an Enclave name, and neither
+// comes from the host's manifest. Without it, the compatibility defaults stay: probe-*.enclave.host and
+// https://enclave.host/ (callers that already pass `outbound` keep it).
+const ZONE=/^(?=.{1,240}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export function probeTargets({independent=false,probeZone,outbound}={}){
+ if(!independent)return {probeZone:'enclave.host',outbound:outbound??'https://enclave.host/'};
+ if(typeof probeZone!=='string'||!ZONE.test(probeZone))throw Error('independent probes need the checker\'s probe zone');
+ if(probeZone==='enclave.host'||probeZone.endsWith('.enclave.host'))throw Error('independent probes: the probe zone must not be an Enclave zone');
+ let u;try{u=new URL(String(outbound));}catch{throw Error('independent probes need an https outbound canary');}
+ if(u.protocol!=='https:'||u.username||u.password)throw Error('independent probes need an https outbound canary');
+ return {probeZone,outbound:u.href};
+}
+export function providerProbes(manifest,{proxy=manifest.proxy,outbound,independent=false,probeZone,timeout=20000,testPorts}={}) {
+ const targets=probeTargets({independent,probeZone,outbound});outbound=targets.outbound;
  const {address,hostname,token,certificateSha256,udpPort}=manifest;
  if(!Number.isInteger(udpPort)||udpPort<1||udpPort>65535)throw Error('invalid UDP canary port');
  if(!testPorts&&!publicProviderAddress(address))throw Error('public provider IP required');
- if(!/^[0-9a-f]{64}$/.test(token)||!/^probe-[a-z0-9-]+\.enclave\.host$/.test(hostname)||!/^([0-9a-f]{64})$/.test(certificateSha256))throw Error('invalid independent probe manifest');
+ const label=String(hostname).endsWith('.'+targets.probeZone)?String(hostname).slice(0,-targets.probeZone.length-1):'';
+ // the same name rule as provider-canary.mjs canaryHostname: legacy as before; independent bounded to one DNS label
+ const labelOk=independent?/^probe-[a-z0-9-]{1,57}$/.test(label)&&!label.endsWith('-'):/^probe-[a-z0-9-]+$/.test(label);
+ if(!/^[0-9a-f]{64}$/.test(token)||!labelOk||!/^([0-9a-f]{64})$/.test(certificateSha256))throw Error('invalid independent probe manifest');
  const request=(url,options={})=>new Promise((resolve,reject)=>{
   const u=new URL(url);const req=(u.protocol==='https:'?https:http).get(u,options,res=>{let body='';res.on('data',b=>{body+=b;if(body.length>1048576)req.destroy(Error('probe response too large'));});res.once('end',()=>resolve({status:res.statusCode,body}));res.once('error',reject);});
   req.setTimeout(timeout,()=>req.destroy(Error('probe timed out')));req.once('error',reject);

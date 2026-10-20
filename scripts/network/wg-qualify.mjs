@@ -4,6 +4,16 @@
 //        [--rpc https://… --book 0x…]   (a community provider that passes also gets an on-chain attestation, for paid service)
 //   node scripts/network/wg-qualify.mjs --key-file k --wg w --records records.json --out results.json      (tests)
 // --directories-file PUBLIC_JSON_ARRAY avoids shell-specific JSON quoting for service launchers.
+//
+// INDEPENDENT (no Enclave default anywhere; docs/network/open-participation.md):
+//   node scripts/network/wg-qualify.mjs --independent --key-file checker.key --wg /path/enclave-wg
+//        --directories-file dirs.json --pins authority-pins.json --rpc https://a --rpc https://b [--rpc ...]
+//        --outbound https://canary.example.org/ --dns 9.9.9.9,1.1.1.1 (--smtp ip:25 | --smtp-domain example.org) [--loop 240]
+//   Records come from the named directories only (no relay fallback); registry and connectivity are the pinned ones (no
+//   address book); every chain read - a community host's registry operator, and the on-chain digest this key signs - is
+//   one whole snapshot that two of the RPCs return at one block (network/service-index.mjs agreedRead), so one lying RPC
+//   can neither make this checker sign another digest nor block it. The probe targets are the operator's. Without
+//   --independent the checker behaves exactly as before (compatibility: --relay, the address book, example.com, gmail MX).
 // For every provider record: ask it for this checker's own probe peers (exit, and guard when it offers guard), run every
 // check through the real WireGuard path (enclave-wg check), sign the verdict (valid 10 minutes) and publish it. A provider
 // that cannot be checked, or fails any check, gets a verdict that says so: hosts treat it as not eligible.
@@ -21,19 +31,27 @@ import {createPublicClient,http,parseAbi,stringToHex} from 'viem';
 import {hostABI} from '../../network/registry-abi.mjs';
 import {base} from 'viem/chains';
 import {DirectoryClient} from '../../network/directory-client.mjs';
+import {resolveCheckerBootstrap,agreedRead,rpcLabel} from '../../network/service-index.mjs';
 
 const arg=(n,d)=>{const i=process.argv.indexOf('--'+n);return i>0?process.argv[i+1]:d;};
+const args=n=>process.argv.flatMap((a,i)=>a==='--'+n&&process.argv[i+1]!==undefined?[process.argv[i+1]]:[]);
+const independent=process.argv.includes('--independent');
 const account=privateKeyToAccount((await fs.readFile(arg('key-file'),'utf8')).trim());
 if(process.argv.includes('--print-address')){console.log(account.address.toLowerCase());process.exit(0);}
 const wgBinary=arg('wg'),relay=arg('relay'),log=m=>console.log(new Date().toISOString(),m);
 if(arg('directories-file')&&arg('directories'))throw Error('choose directories or directories-file, not both');
 const origins=arg('directories-file')?JSON.parse(await fs.readFile(arg('directories-file'),'utf8')):arg('directories')?JSON.parse(arg('directories')):relay?[relay]:null;
+const boot=independent?resolveCheckerBootstrap({directories:origins,pins:arg('pins')?JSON.parse(await fs.readFile(arg('pins'),'utf8')):null,rpc:args('rpc'),
+ chainId:Number(arg('chain-id',8453)),relay,book:arg('book'),outbound:arg('outbound'),dns:arg('dns'),smtp:arg('smtp'),smtpDomain:arg('smtp-domain')}):null;
 const directories=arg('directories-file')||arg('directories')||relay?new DirectoryClient({origins,timeoutMs:15000}):null;
 const zero='0x'+'0'.repeat(64);
-const chain=arg('rpc')?createPublicClient({chain:base,transport:http(arg('rpc'),{timeout:15000})}):null;
+// Independent: an agreeing quorum of the operator's RPCs; its readContract answers only with what two of them return at one block.
+const peers=boot?boot.rpc.map((u,i)=>({label:`${rpcLabel(u)}#${i+1}`,client:createPublicClient({transport:http(u,{timeout:8000,retryCount:0})})})):null;
+const agreedCall=async q=>(await agreedRead({peers,chainId:boot.chainId,read:async(c,blockNumber,call)=>({v:await call(q.functionName,()=>c.readContract({...q,blockNumber}))})})).value.v;
+const chain=boot?{readContract:agreedCall}:arg('rpc')?createPublicClient({chain:base,transport:http(arg('rpc'),{timeout:15000})}):null;
 const book=arg('book','0xab214342d5A490150A4A977063A2f88E21F80907');
-// a community provider must be the operator of an active registry host (the registry the address book publishes)
-let registry=null;
+// a community provider must be the operator of an active registry host (the pinned registry, or the one the address book publishes)
+let registry=boot?boot.pins.registry:null;
 const hostOperator=async hostId=>{if(!chain)return null;
  registry||=await chain.readContract({address:book,abi:parseAbi(['function addr(bytes32) view returns (address)']),functionName:'addr',args:[stringToHex('registry',{size:32})]});
  const h=await chain.readContract({address:registry,abi:hostABI,functionName:'get',args:[hostId]});return h.active?h.operator:null;};
@@ -58,7 +76,7 @@ function runCheck(input){
 // a public mail exchanger that accepts on 25 (resolved by this checker, outside any tunnel), or --smtp ip:port
 async function smtpTarget(){
  if(arg('smtp'))return arg('smtp');
- const mx=(await dns.promises.resolveMx(arg('smtp-domain','gmail.com'))).sort((a,b)=>a.priority-b.priority)[0];
+ const mx=(await dns.promises.resolveMx(boot?boot.smtpDomain:arg('smtp-domain','gmail.com'))).sort((a,b)=>a.priority-b.priority)[0];
  const [a]=await dns.promises.resolve4(mx.exchange);return `${a}:25`;
 }
 async function qualify(rec,all){
@@ -71,9 +89,9 @@ async function qualify(rec,all){
   if(!exit)throw new Error('a guard-only provider is checked through an exit role too; none offered');
   const other=all.find(p=>p.providerId!==rec.providerId&&p.address!==rec.address&&p.roles.some(r=>r!=='guard'));
   result=await runCheck({
-   exit:{peer:{privateKey:exit.keys.privateKey,publicKey:exit.grant.providerPublicKey,endpoint:exit.grant.endpoint,addresses:[exit.grant.clientAddress],dns:(arg('dns')||'1.1.1.1,9.9.9.9').split(','),mtu:1340,keepalive:5},probeName:exit.grant.names[0]},
+   exit:{peer:{privateKey:exit.keys.privateKey,publicKey:exit.grant.providerPublicKey,endpoint:exit.grant.endpoint,addresses:[exit.grant.clientAddress],dns:boot?boot.dns:(arg('dns')||'1.1.1.1,9.9.9.9').split(','),mtu:1340,keepalive:5},probeName:exit.grant.names[0]},
    ...(guard?{guard:{peer:{privateKey:guard.keys.privateKey,publicKey:guard.grant.providerPublicKey,endpoint:guard.grant.endpoint,addresses:[guard.grant.clientAddress],mtu:1420,keepalive:5},allowed:other?`${other.address}:${other.ports.control}`:''}}:{}),
-   publicAddress:rec.address,exitPort:rec.ports.exit,outboundURL:arg('outbound','https://example.com/'),payloadBytes:Number(arg('payload',4<<20)),smtpTarget:await smtpTarget()});
+   publicAddress:rec.address,exitPort:rec.ports.exit,outboundURL:boot?boot.outbound:arg('outbound','https://example.com/'),payloadBytes:Number(arg('payload',4<<20)),smtpTarget:await smtpTarget()});
  }catch(e){result=failed(e.message);}
  const now=Date.now();
  const q={version:1,providerId:rec.providerId,operator:rec.operator,address:rec.address,wgExitKey:rec.wgExitKey,wgGuardKey:rec.wgGuardKey,roles:rec.roles,
@@ -87,7 +105,7 @@ async function round(){
   recs=[];for(const e of d.providers||[]){try{recs.push(await verifyProviderRecord(e.record,{hostOperator}));}catch(err){log(`skip ${e.record?.record?.providerId?.slice(0,8)}: ${err.message}`);}}}
  const out=[];
  // paid (community) providers also need this checker's attestation on chain; none while no connectivity contract is published
- let connectivity=null;if(chain&&recs.some(r=>r.kind==='community'))connectivity=await connectivityAddress(chain,book).catch(e=>{log('connectivity: '+e.message);return null;});
+ let connectivity=null;if(chain&&recs.some(r=>r.kind==='community'))connectivity=boot?boot.connectivity:await connectivityAddress(chain,book).catch(e=>{log('connectivity: '+e.message);return null;});
  for(const rec of recs){
   const {env,details}=await qualify(rec,recs);
   const passed=Object.values(env.qualification.checks).every(Boolean);
@@ -104,7 +122,7 @@ async function round(){
 const passed_=new Map(),passed=passed_;
 async function refreshOnchain(){
  if(!chain||!directories||!passed.size)return;
- const connectivity=await connectivityAddress(chain,book);if(!connectivity)return;
+ const connectivity=boot?boot.connectivity:await connectivityAddress(chain,book);if(!connectivity)return;
  for(const [pid,{rec,env}] of passed){
   if(env.qualification.expiresAt<=Date.now()+60000){passed.delete(pid);continue;}
   const onchain=await signOnchainQualification({account,client:chain,connectivity,record:rec});
