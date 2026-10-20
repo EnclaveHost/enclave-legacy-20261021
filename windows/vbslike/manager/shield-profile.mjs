@@ -64,9 +64,59 @@ export async function probeWorker(port = 19595) {
 export class ProfileLauncher {
   constructor(cpu, gpu) { this.cpu=cpu; this.gpu=gpu; }
   get boundary() { return this.cpu.boundary; }
+  get marker() { return this.cpu.marker; }
+  get prefix() { return this.cpu.prefix; }
   preflight() { return this.cpu.preflight(); }
   survey() { return this.cpu.survey(); }
   teardown() { return this.cpu.teardown(); }
   start(mapping, opts) { return (mapping.record.inference ? this.gpu : this.cpu).start(mapping, opts); }
   stop(handle) { return this.cpu.stop(handle); }
+}
+
+/**
+ * PER-SPAWN PINNED IMAGE SELECTION (F3; work/shield-image-selection-interface.txt). Up to three launchers, each pinned to
+ * its own image, and ONE rule on what the manager itself verified:
+ *   opts.bootstrap            -> the Shield-direct image (owner-committed packages only), or refused
+ *   mapping.record.inference  -> the GPU image, or refused
+ *   otherwise                 -> the legacy image: public, relay-secret V6/V7 and the readiness witness, as before
+ * A missing package can only ever cause a refusal, and no image runs a spawn of the other kind (each launcher refuses it
+ * again). Inventory is shared: one VM prefix and Notes marker, and stop is by VM id, so survey, teardown and stop go to the
+ * legacy launcher. Preflight reports the direct image's own checks too (its 9446/9445 services), prefixed.
+ */
+export class ImageLauncher {
+  constructor({ legacy, shieldDirect = null, gpu = null }) {
+    if (!legacy) throw new Error("an image launcher needs the legacy launcher (the witness and every legacy spawn run there)");
+    if (shieldDirect && shieldDirect.imageRole !== "shield-direct") throw new Error("the Shield-direct launcher must be pinned as imageRole shield-direct");
+    if (legacy.imageRole && legacy.imageRole !== "legacy") throw new Error("the legacy launcher must be pinned as imageRole legacy");
+    this.legacy = legacy; this.shieldDirect = shieldDirect; this.gpu = gpu;
+  }
+  get boundary() { return this.legacy.boundary; }
+  get marker() { return this.legacy.marker; }
+  get prefix() { return this.legacy.prefix; }
+  async preflight() {
+    const a = await this.legacy.preflight();
+    if (!this.shieldDirect) return a;
+    const b = await this.shieldDirect.preflight();
+    const seen = new Set((a?.checks || []).map((c) => c.name));
+    const extra = (b?.checks || []).filter((c) => !seen.has(c.name) || c.ok !== true).map((c) => ({ ...c, name: `shield-direct image: ${c.name}` }));
+    return { ok: a?.ok === true && b?.ok === true, checks: [...(a?.checks || []), ...extra] };
+  }
+  survey() { return this.legacy.survey(); }
+  teardown() { return this.legacy.teardown(); }
+  /** Which image a spawn runs on: the same rule start() applies. */
+  roleFor(mapping, opts = {}) { return opts.bootstrap ? "shield-direct" : mapping?.record?.inference ? "gpu" : "legacy"; }
+  start(mapping, opts = {}) {
+    const role = this.roleFor(mapping, opts);
+    if (role === "shield-direct") {
+      if (!this.shieldDirect) return Promise.reject(new Error("this manager has no Shield-direct image: an owner-committed package is refused, never started on another image"));
+      if (mapping?.record?.inference) return Promise.reject(new Error("an owner-committed package does not start a GPU inference domain"));
+      return this.shieldDirect.start(mapping, opts);
+    }
+    if (role === "gpu") {
+      if (!this.gpu) return Promise.reject(new Error("this manager has no GPU image"));
+      return this.gpu.start(mapping, opts);
+    }
+    return this.legacy.start(mapping, opts);
+  }
+  stop(handle) { return this.legacy.stop(handle); }
 }

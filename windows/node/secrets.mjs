@@ -245,3 +245,61 @@ export async function secretsExist({ id, base = "https://api.enclave.host" } = {
   }
   throw new Error(`secrets: whether ${idL} has staged secrets is not known (${last})`);
 }
+
+// ---- owner-committed custody-v2 (the transport boundary for a Shield guest) ------------------------------------------
+//
+// A deployment started from an owner-committed package (shield-startup.mjs) never uses the relay pull above. Its secrets,
+// when it has any, are custody-v2's: the GUEST proves itself to the owner's committee and opens the shares with a key that
+// never leaves it. This host's only part is the one the Linux host has (supervisor.js authorizeCustody, v2): as the lease
+// holder's registered operator it signs the guest's release binding - a hash - for the exact vault the owner committed.
+// It never sees a share, a bundle key or a value, and it signs for nothing else.
+//
+// ACTIVE ONLY behind the manager's supports.custodyV2 (a stated custody image, windows/vbslike/manager/custody-transport.mjs):
+// shield-startup.mjs refuses a custody-v2 package otherwise. The node's pump (shield-custody.mjs) re-verifies the startup
+// and this host's lease before it calls this, and each custodian challenges this node's TPM itself (shield-sessions.mjs).
+// The message is custody/v2/protocol.mjs operatorMessage's, byte for byte.
+export const CUSTODY_SIG_TTL_SEC = 300;
+export const custodyOperatorMessageV2 = ({ chainId, vault, id, endpoint, binding, expiry }) =>
+  `enclave-custody-release-v2:${chainId}:${String(vault).toLowerCase()}:${id}:${endpoint}:${binding}:${expiry}`;
+const CUSTODY_ID = /^0x[0-9a-f]{64}$/;
+/**
+ * custodyAuthorization({ startup, record, instance, request, endpoint, sign, chainId, now }) -> { binding, endpoint, sig, expiry }
+ *   startup   the FRESHLY verified startup (secretsMode custody-v2, custody: the package's pointer, deployment: its id)
+ *   record    the host's record for that deployment (record.id must BE startup.deployment): starting, provisioning or running
+ *   instance  the manager's view of the exact partition asking: this deployment's, on this package, app and runtime
+ *   request   { v: 2, vault, id?, binding } as the guest stated it through the manager
+ * Throws, naming the refusal, for anything else. One deployment's pointer can never sign for another's record or partition.
+ */
+export async function custodyAuthorization({ startup, record, instance, request, endpoint, sign, chainId = 8453, now = () => Date.now() }) {
+  if (!startup || startup.secretsMode !== "custody-v2" || !startup.custody) throw new Error("custody: the deployment's package does not keep secrets in custody-v2");
+  const vault = String(startup.custody.vault || "").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(vault) || Number(startup.custody.chainId) !== chainId) throw new Error("custody: the package's custody pointer names no vault on this chain");
+  // ONE deployment throughout: the verified startup's, exactly, with no fallback between the record and the pointer
+  const id = typeof startup.deployment === "string" ? startup.deployment : "";
+  if (!CUSTODY_ID.test(id)) throw new Error("custody: the verified startup names no deployment");
+  if (!record || record.id !== id) throw new Error("custody: the host record is another deployment's than the verified startup's");
+  if (!["starting", "provisioning", "running"].includes(record.status))
+    throw new Error("custody: no partition of this deployment is starting or running here");
+  const v = instance;
+  if (!v || typeof v !== "object" || v.name !== id || v.secretDeployment !== id || v.recovered === true || !["starting", "running"].includes(v.status))
+    throw new Error("custody: the asking partition is not this deployment's live secret domain");
+  if (v.bootstrapSha256 !== startup.sha256 || v.appId !== startup.appId || v.runtimeId !== startup.runtimeId)
+    throw new Error("custody: the asking partition does not run the verified package, app and runtime");
+  if (String(v.custody?.vault || "") !== vault) throw new Error("custody: the asking partition's channel is for another vault");
+  // on the Shield-direct image whose IGVM is THIS node's pin (F3), never on another image that happens to share the RuntimeID
+  if (v.imageRole !== "shield-direct" || !startup.imageSha256 || v.igvmSha256 !== startup.imageSha256)
+    throw new Error("custody: the asking partition is not on this host's pinned Shield-direct image");
+  const held = record.isolation?.instance ?? record.isolationHeld ?? null;
+  if (held && held !== v.id) throw new Error("custody: the host record holds another partition of this deployment");
+  if (!request || request.v !== 2 || String(request.vault || "").toLowerCase() !== vault) throw new Error("custody: the guest asked for a vault its owner did not commit");
+  if (request.id !== undefined && request.id !== id) throw new Error("custody: the guest asked for another deployment");
+  const binding = String(request.binding || "");
+  if (!/^[0-9a-f]{64}$/.test(binding)) throw new Error("custody: the guest's release binding is not 32 bytes of hex");
+  const ep = String(endpoint || "").replace(/\/+$/, "");
+  if (!/^https?:\/\//.test(ep)) throw new Error("custody: endpoint must be this box's registered origin");
+  if (typeof sign !== "function") throw new Error("custody: no operator sign function was passed");
+  const expiry = Math.floor(now() / 1000) + CUSTODY_SIG_TTL_SEC;
+  const sig = String(await sign(custodyOperatorMessageV2({ chainId, vault, id, endpoint: ep, binding, expiry })) || "");
+  if (!/^0x[0-9a-fA-F]{130}$/.test(sig)) throw new Error("custody: sign() did not return a 65-byte personal_sign hex");
+  return { binding, endpoint: ep, sig, expiry };
+}

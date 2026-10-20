@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import { createShieldAppVerifier } from './shield-app-verifier.mjs';
 import { shieldHostAdmitted } from './shield-app-policy.mjs';
+import { pinnedWitness, readinessInput } from './shield-market-evidence.mjs';
 
 const TTL = 300000, REFRESH = 60000;
 // Failures that say nothing about the app: the chain read, this verifier being
@@ -27,10 +28,7 @@ export function createShieldMarketplace({ hub, policyFile = '', policy: supplied
       !policy.ekRoots || !policy.cpu?.runtimeId)) throw new Error('invalid Shield marketplace policy');
   const configured = name => shieldHostAdmitted(policy, name);
   const verify = policy ? createShieldAppVerifier({ hub, policy, readCatalog, readConfig, fetchVerified, hasSecrets }) : null;
-  const witness = policy?.witness;
-  if (witness && (!/^[0-9a-f]{64}$/.test(witness.appSha256 || '') ||
-      !/^[0-9a-f]{64}$/.test(witness.runtimeId || '') || witness.runtimeId !== policy.cpu.runtimeId))
-    throw Error('invalid pinned Shield readiness witness');
+  const witness = pinnedWitness(policy);
   const states = new Map();
   let refreshing = false;
   const session = row => row?.mode === 'hv-node' && configured(row.name) ? hub.shieldSessionId(row.name) : null;
@@ -89,11 +87,7 @@ export function createShieldMarketplace({ hub, policyFile = '', policy: supplied
     try {
       const nonce = randomBytes(32);
       const proof = await hub.fetchJson(`tunnel://${host.name}`, `/v1/shield/readiness?nonce=${nonce.toString('hex')}`);
-      if (!proof || typeof proof.handshakeSpki !== 'string' || proof.handshakeSpki.length > 5500)
-        throw Error('no bounded readiness proof');
-      const verdict = await hub.verifyShieldApp(host.name, {doc:proof.doc,
-        handshakeSpki:Buffer.from(proof.handshakeSpki,'base64'), nonce,
-        expectedAppSha256:witness.appSha256, expectedRuntimeId:witness.runtimeId}, policy);
+      const verdict = await hub.verifyShieldApp(host.name, readinessInput(proof, nonce, witness), policy);
       if (!verdict.ok) throw Error(verdict.reason);
       if (session(host) !== sid) throw Error('Shield attachment changed during readiness verification');
       stateFor(host).until = now()+TTL;

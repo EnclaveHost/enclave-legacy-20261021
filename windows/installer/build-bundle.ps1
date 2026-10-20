@@ -65,13 +65,20 @@ New-Item -ItemType Directory -Force $B, (Join-Path $Out "dl") | Out-Null
 tar.exe -xzf $Control -C $B
 if ($LASTEXITCODE) { Die "tar could not expand $Control" }
 $n = 0
+$sourceIdentityChecked = $false
 foreach ($line in Get-Content $Manifest) {
   if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { continue }
   $p = Join-Path $B ($Matches[2] -replace '/', '\')
   if (-not (Test-Path -LiteralPath $p)) { Die "missing from the control archive: $($Matches[2])" }
   if ((Sha $p) -ne $Matches[1]) { Die "hash mismatch in the control archive: $($Matches[2])" }
+  if ($Matches[2] -ceq 'control-source.json') { $sourceIdentityChecked = $true }
   $n++
 }
+if (-not $sourceIdentityChecked) { Die 'the control manifest must hash control-source.json with the full source commit' }
+$sourceIdentity = Get-Content -LiteralPath (Join-Path $B 'control-source.json') -Raw | ConvertFrom-Json
+if ($sourceIdentity.format -cne 'enclave-control-source/1' -or $sourceIdentity.commit -cnotmatch '^[0-9a-f]{40}$') { Die 'invalid control source identity' }
+$c8 = [IO.Path]::GetFileNameWithoutExtension($Control) -replace '^control-', '' -replace '\.tar$', ''
+if ($c8 -cnotmatch '^[0-9a-f]{8}$' -or -not $sourceIdentity.commit.StartsWith($c8, [StringComparison]::Ordinal)) { Die 'control archive name differs from its full source commit' }
 "control: $n files match their manifest"
 
 # --- 2. the prebuilt binaries, each against its pin -------------------------------------------------------------------
@@ -163,8 +170,7 @@ Remove-Item $setup -Recurse -Force
 # --- 5. manifest, zip, sums -------------------------------------------------------------------------------------------
 $files = Get-ChildItem $B -Recurse -File | Sort-Object FullName
 $entries = foreach ($f in $files) { [ordered]@{ path = $f.FullName.Substring($B.Length + 1).Replace('\', '/'); sha256 = (Sha $f.FullName); bytes = $f.Length } }
-$commit = ((Get-Content $Manifest -TotalCount 0) -join ""); $c8 = [IO.Path]::GetFileNameWithoutExtension($Control) -replace '^control-', '' -replace '\.tar$', ''
-[ordered]@{ product = "Enclave host for Windows"; version = $Version; control = $c8; files = @($entries) } |
+[ordered]@{ product = "Enclave host for Windows"; version = $Version; control = $c8; commit = $sourceIdentity.commit; controlManifestSha256 = (Sha $Manifest); files = @($entries) } |
   ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $B "manifest.json")
 # the staged files carry mtime 0 (deterministic tar); a zip cannot hold dates before 1980, so give every file one fixed date
 $stamp = [datetime]::new(2026, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)

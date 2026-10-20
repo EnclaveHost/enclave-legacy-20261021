@@ -10,7 +10,10 @@
 //
 // Configuration (environment, all optional except the model):
 //   NODE_NAME            the tunnel name (x-metal-name), default the hostname lower-cased
-//   RELAY_URL            wss://api.enclave.host/v1/fleet-tunnel
+//   RELAY_URL            wss://api.enclave.host/v1/fleet-tunnel, or none
+//   ENCLAVE_IDENTITY_MODE  relay (default: every Enclave service as before) or independent: nothing defaults to an Enclave
+//                        service, and PUBLIC_URL, IPFS_GATEWAYS and ENCLAVE_CONTRACT_PINS_FILE are required
+//                        (host-identity.mjs; docs/network/independent-windows.md)
 //   REFERRAL_CODE        the referral code this machine was installed with (x-metal-referral; the relay records it against
 //                        this name once the attach proves it: relay/referrals.mjs). Attribution only.
 //   NODE_DIR             where the binaries live (default: this file's directory)
@@ -47,6 +50,7 @@ import { tunnelHandover } from './tunnel-handover.mjs';
 import { CONTRACT_PINS, addressBook, addresses as chainAddresses, publicClient } from './chain.mjs';
 import { createSessionApiAuth, apiBases, envList, DEFAULT_API_HOSTS, DEFAULT_FACTORIES } from './session-api-auth.mjs';
 import { measureGflops } from './compute-measure.mjs';
+import { resolveIdentity } from './host-identity.mjs';
 const WAF_TRACE = /^(1|true|yes)$/i.test(String(process.env.WAF_TRACE || ''));
 // SIWE, byte-compatible with the platform's own routes so the console signs what this box issues
 // and posts it back unchanged. The session it mints is for THIS box only (session.mjs).
@@ -59,8 +63,12 @@ const WebSocket = createRequire(import.meta.url)('ws');
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIR = process.env.NODE_DIR || HERE;
-const NAME = (process.env.NODE_NAME || os.hostname()).toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 64);
-const RELAY_URL = process.env.RELAY_URL || 'wss://api.enclave.host/v1/fleet-tunnel';
+// WHO THIS HOST IS and which outside services it uses, resolved once (host-identity.mjs). In relay mode (the default)
+// every value is what it always was; in independent mode nothing falls back to an Enclave service, and what only the
+// relay provided is listed as unavailable at start rather than reached for.
+const ID = resolveIdentity(process.env, { pins: CONTRACT_PINS });
+const NAME = ID.name;
+const RELAY_URL = ID.relayUrl;
 const REFERRAL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(process.env.REFERRAL_CODE || '') ? process.env.REFERRAL_CODE : '';
 const MODEL = process.env.MODEL, CALIB = process.env.CALIB;
 const WORKER_EXE = process.env.WORKER_EXE || path.join(DIR, 'shielded-worker.exe');
@@ -73,20 +81,25 @@ const TPMATTEST_EXE = process.env.TPMATTEST_EXE || path.join(DIR, 'tpmattest.exe
 // self-routed URL), the registry entry, and therefore keccak256(it) = the enclave id the ledger
 // records as a deployment's runner. Get it wrong and every app this box holds reads "claimed"
 // forever (relay/tunnel.js selfRoutedUrl, api-relay.js runnerIsLive).
-const PUBLIC_URL = process.env.PUBLIC_URL || `https://api.enclave.host/t/${NAME}`;
+const PUBLIC_URL = ID.publicUrl;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), '[node]', ...a);
+log(`identity: ${ID.mode} mode, ${PUBLIC_URL}, ${RELAY_URL === 'none' ? 'no fleet tunnel' : `tunnel ${RELAY_URL}`}`
+  + `${ID.relayBase ? `, relay services ${ID.relayBase}` : ', no relay services'}, artifacts from ${ID.gateway}`);
+for (const w of ID.warnings) log(`identity: WARNING ${w}`);
+for (const u of ID.unavailable) log(`identity: unavailable without an Enclave relay: ${u}`);
 // WALLET SESSIONS as the owner's credential (session-api-auth.mjs, shared with supervisor.js): a restart and a private
 // deployment's requests accept `Authorization: EnclaveSession v1 ...` beside this box's own SIWE session, verified on
 // Base - the vault's factory, the session's key, liveness and scope, and the record rule - never on the relay's word.
 // What a client signs is host + path + query of the URL it called: the relay forwards with the path untouched, or with
 // /t/<name> stripped, so the bases are each API front door (SESSION_API_HOSTS, default api.enclave.host) as is and with
-// /t/<NAME>, and PUBLIC_URL; an app's own hostnames are added for its data path (host.proxy).
+// /t/<NAME>, and PUBLIC_URL; an app's own hostnames are added for its data path (host.proxy). An independent host adds
+// no Enclave front door and no tunnel name unless its operator lists them (SESSION_API_HOSTS, an explicit RELAY_URL).
 const sessionApi = createSessionApiAuth({
   authorityPins: CONTRACT_PINS,
   pc: publicClient(), book: addressBook, ledger: () => chainAddresses.deployments || null,
   factories: envList(process.env.SESSIONS_FACTORIES).length ? envList(process.env.SESSIONS_FACTORIES) : DEFAULT_FACTORIES,
-  bases: () => apiBases({ hosts: envList(process.env.SESSION_API_HOSTS).length ? envList(process.env.SESSION_API_HOSTS) : DEFAULT_API_HOSTS,
-    tunnelNames: [NAME, ...envList(process.env.SESSION_API_TUNNEL_NAMES)], publicUrls: [PUBLIC_URL] }),
+  bases: () => apiBases({ hosts: ID.sessionApiHosts.length ? ID.sessionApiHosts : ID.mode === 'relay' ? DEFAULT_API_HOSTS : [],
+    tunnelNames: RELAY_URL === 'none' && ID.mode !== 'relay' ? [] : [NAME, ...envList(process.env.SESSION_API_TUNNEL_NAMES)], publicUrls: [PUBLIC_URL] }),
   log: (m) => log(`session auth: ${m}`),
 });
 // Hosting apps (APPS=1): this box holds a lease on the ledger and runs that deployment's app under
@@ -155,7 +168,7 @@ try {
   log(`compute NOT measured (${e.message}): publishing the 62.5-per-vCPU convention, ${COMPUTE.gflops} GFLOPS`);
 }
 const host = new Host({
-  dir: DIR, endpoint: process.env.PUBLIC_URL || `https://api.enclave.host/t/${NAME}`, name: NAME,
+  dir: DIR, endpoint: PUBLIC_URL, name: NAME,
   appsEnabled: APPS, ownerWallet: process.env.OWNER_WALLET || '',
   // No engine: only isolated deployments run, anything else is HELD (host.mjs heldReason), never released.
   engineRetired: !LEGACY_ENGINE,
@@ -216,7 +229,9 @@ const host = new Host({
   enclaveAppAbi: 0,
   enclaveAppWorlds: 0,          // the bitmask the runtime reports: 1 enclave:app | 2 wasi:http | 4 wasi:cli
   enclaveAppFeatures: 0,        // and the WASM features it enables: 1 mem64 | 2 set | 4 p3 | 8 coop threads
-  relayBase: process.env.RELAY_BASE || 'https://api.enclave.host',
+  // relay mode: RELAY_BASE or api.enclave.host as always; independent: only a RELAY_BASE the operator named, else "" (the
+  // secrets, certificate and domain fetches are then off: secrets.mjs, apptls.mjs, domains.mjs)
+  relayBase: ID.relayBase,
   // The zone the platform gives an app its own hostname in: <label>.app.enclave.host.
   appZone: process.env.APP_ZONE || 'app.enclave.host',
   // Serve the hostnames a customer attached to their deployment. Off only if an operator
@@ -244,7 +259,7 @@ const host = new Host({
   maxBodyMb: Number(process.env.ENCLAVE_APP_MAX_BODY_MB) || 64,
   wasmtime: process.env.WASMTIME_BIN || path.join(DIR, 'wasmtime.exe'),
   python: process.env.PYTHON_BIN || 'python',
-  gateway: process.env.IPFS_GATEWAYS || process.env.IPFS_GATEWAY || 'https://ipfs.enclave.host',
+  gateway: ID.gateway,
   portBase: Number(process.env.APP_PORT_BASE || 9700),
   appSlots: Number(process.env.APP_SLOTS || 4),
   // The owner's hosting caps (hosting.mjs), beside the node's other state unless set.
@@ -816,9 +831,11 @@ async function startHostingControls() {
     nodeKey = loadOrCreateNodeKey(DIR);
     // a NEW box's first registration, paid by the host paymaster once the relay has verified this TPM (sponsor.mjs);
     // the relay vouches only for the operator key this attach named, so it is asked with the key the relay saw
-    host.sponsorRegister = async (args) => {
+    // Only through a relay this node attaches to: the paymaster pays on that relay's word about this TPM. An independent host
+    // without one pays its own registration from the operator key.
+    if (ID.sponsor) host.sponsorRegister = async (args) => {
       const chainMod = await import('./chain.mjs');
-      return sponsoredRegister({ relayBase: RELAY_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/v1\/fleet-tunnel$/, ''),
+      return sponsoredRegister({ relayBase: ID.relayHttp,
                                  name: NAME, transportKey: nodeKey.privateKey, operator: chainMod.operatorAccount(),
                                  client: chainMod.publicClient(), registry: chainMod.addresses.registry, args,
                                  log: (m) => log('[sponsor]', m) });
@@ -880,30 +897,104 @@ async function startHostingControls() {
       });
       tickWitness(); setInterval(tickWitness, 30000).unref?.();
     }
+    // THE SHIELD MARKET FROM OPERATOR-SELECTED VERIFIERS (shield-verdict.mjs), beside or instead of a relay's verdict: only
+    // with ENCLAVE_SHIELD_VERIFIERS_FILE (no built-in verifier, Enclave's included) and the pinned readiness witness they
+    // check. Each round opens at most a five-minute window, on a threshold of verdicts bound to this round; below it the
+    // node stays owner-only, as it does without a relay.
+    if (process.env.ENCLAVE_SHIELD_VERIFIERS_FILE && !LEGACY_ENGINE && APPS) {
+      try {
+        const { loadVerifierSet, createVerifierMarketClient } = await import('./shield-verdict.mjs');
+        const set = loadVerifierSet(process.env.ENCLAVE_SHIELD_VERIFIERS_FILE), sign = await operatorSigner();
+        if (!shieldWitness) throw new Error('the verifiers check the pinned readiness witness, and SHIELD_WITNESS_CONFIG is not set');
+        if (!sign || !nodeKey) throw new Error('no operator key or transport key to answer a verifier with');
+        host.cfg.shieldVerifiers = true;
+        const market = createVerifierMarketClient({ set, hostId: host.enclaveId, endpoint: PUBLIC_URL, nodeKey, tpm: tpmCmd, keysFrame,
+          managerHealth: isolationHealth, platform: platformInfo, readiness: (n) => shieldWitness.evidence(n), sign,
+          open: (until, keyIds) => host.openVerifierMarket(until, keyIds), log: (m) => log(m) });
+        const tickMarket = () => { if (host.registered) market.round().catch((e) => log(`shield market (selected verifiers): ${e.message}`)); };
+        setTimeout(tickMarket, 30_000).unref?.(); setInterval(tickMarket, 120_000).unref?.();
+        log(`shield market: ${set.threshold} of ${set.verifiers.length} operator-selected verifier(s) decide market admission`);
+      } catch (e) { log(`shield market (selected verifiers): off: ${e.message}`); }
+    }
+    // OWNER-COMMITTED NAMES ON SHIELD (shield-sessions.mjs): this host's TPM session at each DNS-01 responder a running
+    // owner-committed package names, so that responder can verify the guest's own VBS report on its ACME push. Public
+    // evidence and a signature over a hash only; the push itself is the guest's, over TLS that ends in the guest.
+    if (APPS && !LEGACY_ENGINE && host.cfg.isolationManager) {
+      const sign = await operatorSigner();
+      if (sign && nodeKey) {
+        // ...and at each custodian a running direct custody package names (custodianSessionTargets): the same exchange, the
+        // custodian's own challenge. One refresh keeps both kinds, since it forgets what it is not given.
+        const { createResponderSessions, sessionTargets } = await import('./shield-sessions.mjs');
+        const responders = createResponderSessions({ hostId: host.enclaveId, endpoint: PUBLIC_URL, nodeKey, tpm: tpmCmd, keysFrame,
+          managerHealth: isolationHealth, platform: platformInfo, sign, log: (m) => log(m) });
+        const tickResponders = () => { const t = sessionTargets(host.records.values()); if (t.length) responders.refresh(t).catch((e) => log(`shield responder sessions: ${e.message}`)); };
+        setTimeout(tickResponders, 45_000).unref?.(); setInterval(tickResponders, 120_000).unref?.();
+        // DIRECT SHIELD CUSTODY (shield-custody.mjs): only with the manager's callback key (ENCLAVE_CUSTODY_CALLBACK_KEY_FILE,
+        // the file the manager reads too). Each request is answered only after a fresh quorum read re-verifies the startup
+        // and this host's lease, with the custodians' sessions refreshed first. Without the key nothing is answered.
+        const keyFile = String(process.env.ENCLAVE_CUSTODY_CALLBACK_KEY_FILE || '').trim();
+        if (keyFile) {
+          try {
+            // private to SYSTEM and Administrators on win32 (its DACL and owner), owner-only on POSIX; checked, never altered
+            const { readCustodyCallbackKey } = await import('../vbslike/manager/custody-key-file.mjs');
+            const callbackKey = readCustodyCallbackKey(keyFile);
+            const { createShieldCustody } = await import('./shield-custody.mjs');
+            const custody = createShieldCustody({ base: host.cfg.isolationManager, callbackKey, endpoint: host.cfg.endpoint, sign,
+              records: () => host.records,
+              verify: async (id) => {
+                const authority = host.startupAuthority;
+                if (!authority) throw new Error('owner-committed startup is not configured on this host');
+                const manager = await isolationHealth();
+                if (!manager) throw new Error("the partition manager's /health is not known here");
+                return authority.materialize(id, { manager, runtimeId: host.cfg.isolationRuntimeId, enclaveId: host.enclaveId, needLease: true,
+                  walletRefusal: (row) => host.walletPolicyRefusal(row) });
+              },
+              ensureSessions: () => responders.refresh(sessionTargets(host.records.values())),
+              log: (m) => log(m) });
+            setInterval(() => { custody.pass().catch((e) => log(`shield custody: ${e.message}`)); }, 2000).unref?.();
+            log('shield custody: answering direct custody requests through the manager callback');
+          } catch (e) { log(`shield custody: off: the callback key file ${keyFile}: ${e.message}`); }
+        }
+      }
+    }
     // UPDATES: a new release starts installing within a minute of going live (update-watch.mjs). Only on an installed
     // host (Program Files\Enclave\manifest.json beside this control tree) on Windows, where \Enclave\Update exists.
+    // A host with a release policy (NODE_DIR\release-policy.json, release-channel.mjs) is told only of releases its pinned
+    // key(s) signed, from its own mirrors; without one it reads the legacy unsigned latest.json. A policy that is present
+    // but unreadable stops the watch (and update-host.ps1 refuses too): it never falls back to the unsigned channel.
     if (process.platform === 'win32') {
       let installed = null;
       // written by PowerShell (Set-Content -Encoding UTF8): it starts with a byte-order mark, which JSON.parse refuses
       try { installed = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', '..', 'manifest.json'), 'utf8').replace(/^\uFEFF/, '')).version || null; }
       catch (e) { log(`update: the installed version could not be read (${e.message}); updates come from the hourly task only`); }
+      // An independent host never follows the unsigned Enclave channel: with no release policy it does not update itself.
+      if (installed && ID.mode !== 'relay' && !fs.existsSync(path.join(DIR, 'release-policy.json'))) {
+        log('update: off: an independent host updates only from a signed release policy (release-channel.mjs install-policy), and none is installed');
+        installed = null;
+      }
       if (installed) {
         const { createUpdateWatch } = await import('./update-watch.mjs');
         const { execFile } = await import('node:child_process');
+        const policyFile = path.join(DIR, 'release-policy.json');
+        const signed = fs.existsSync(policyFile);
         const downloads = (process.env.ENCLAVE_DOWNLOADS || 'https://get.enclave.host/windows/').replace(/\/?$/, '/');
+        const { createSignedLatest } = await import('./release-channel.mjs');
         const watch = createUpdateWatch({ installed, log: (m) => log(m),
-          fetchLatest: async () => { const r = await fetch(`${downloads}latest.json`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
-                                     if (!r.ok) throw new Error(`latest.json: HTTP ${r.status}`); return r.json(); },
+          fetchLatest: signed ? createSignedLatest({ policyFile, log: (m) => log(m) })
+            : async () => { const r = await fetch(`${downloads}latest.json`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+                            if (!r.ok) throw new Error(`latest.json: HTTP ${r.status}`); return r.json(); },
           trigger: () => new Promise((res, rej) => execFile('schtasks.exe', ['/Run', '/TN', '\\Enclave\\Update'], { windowsHide: true, timeout: 30000 },
             (e, so, se) => (e ? rej(new Error(`schtasks: ${String(se || e.message).trim()}`)) : res()))) });
         setTimeout(() => watch.check(), 20_000).unref?.(); setInterval(() => watch.check(), 60_000).unref?.();
-        log(`update: running ${installed}; a newer release on ${downloads} is installed as soon as it is live`);
+        log(signed ? `update: running ${installed}; a newer release signed by the key(s) pinned in ${policyFile} is installed as soon as a mirror serves it`
+                   : `update: running ${installed}; a newer release on ${downloads} is installed as soon as it is live (UNSIGNED legacy channel: no release policy)`);
       }
     }
     // PRICES: the default is the cheapest per-(GB x FLOPS) unit the other hosts of this tier post (price-guide.mjs), read
     // from the relay's public /enclaves list a minute after start and every hour; the owner's override (the tray) wins.
-    {
-      const relayHttp = RELAY_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/v1\/fleet-tunnel$/, '');
+    // An independent host reads them only from a relay its operator named (RELAY_BASE); otherwise its registry price stands.
+    if (ID.prices) {
+      const relayHttp = ID.mode === 'relay' ? ID.relayHttp : ID.relayBase;
       const readPrices = async () => {
         try {
           const r = await fetch(`${relayHttp}/enclaves`, { signal: AbortSignal.timeout(20000) });
@@ -913,7 +1004,7 @@ async function startHostingControls() {
       };
       // soon after start: ensurePriced posts nothing over a registered price until these are known
       setTimeout(readPrices, 5_000).unref?.(); setInterval(readPrices, 3_600_000).unref?.();
-    }
+    } else log('prices: no relay price list in this mode; the registered price (or the owner\'s, from the tray) stands');
     // The host-side cache for public, pinned content (blob-cache.mjs, docs/design/shield-blob-cache.md): shield-egress
     // dials blobs.enclave.internal:80 here instead of the app's paid route. Loopback only; off unless configured.
     if (process.env.BLOB_SERVICE_PORT) {
@@ -930,10 +1021,15 @@ async function startHostingControls() {
     // \Enclave\Network task waits for. Every 5 minutes, once the
     // box is registered.
     const NET = { agentDir: process.env.ENCLAVE_NETWORK_AGENT_DIR, binDir: process.env.ENCLAVE_NETWORK_BIN_DIR, policy: process.env.ENCLAVE_NETWORK_SHIELD_POLICY };
-    if (NET.agentDir && NET.binDir && NET.policy && host.cfg.isolationManager && nodeKey) {
+    // An independent host enrolls only against the public directories its operator listed (ENCLAVE_NETWORK_DIRECTORIES):
+    // with no relay there is nothing else to probe providers from, and no DNS mirror is published to.
+    const netReady = NET.agentDir && NET.binDir && NET.policy && host.cfg.isolationManager && nodeKey;
+    if (netReady && ID.mode !== 'relay' && !ID.networkDirectories.length)
+      log('[network] enrollment: off (independent mode needs ENCLAVE_NETWORK_DIRECTORIES: the public directories to use)');
+    else if (netReady) {
       const { createNetworkEnroll, fileSha256 } = await import('./network-enroll.mjs');
       const chainMod = await import('./chain.mjs');
-      const relayBase = RELAY_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/v1\/fleet-tunnel$/, '');
+      const relayBase = ID.mode === 'relay' ? ID.relayHttp : ID.relayBase;
       let enroll = null, enrolling = false, lastEnrollError = '', enrollWaiting = 0;
       const tickEnroll = async () => {
         if (enrolling || !host.registered) return;
@@ -949,6 +1045,7 @@ async function startHostingControls() {
                       // the Enclave network (docs/design/enclave-network.md) with its trusted qualification checkers; TUNA is
                       // retired, so there is no other transport (no checkers: enrollment refuses, and says so in the log)
                       enclaveNetwork: { checkers: String(process.env.ENCLAVE_NETWORK_CHECKERS || '').toLowerCase().split(',').map((c) => c.trim()).filter(Boolean),
+                        ...(ID.networkDirectories.length ? { directories: ID.networkDirectories } : {}),
                         // the box's registry proof key and operator key, beside each other here (keys.mjs): paid providers settle with them
                         ...(fs.existsSync(path.join(DIR, 'proof.key')) && fs.existsSync(path.join(DIR, 'operator.key')) ? { paid: { proofKeyFile: path.join(DIR, 'proof.key'), gasKeyFile: path.join(DIR, 'operator.key') } } : {}) } },
             // a box whose network configuration changes restarts its network agent once (the \Enclave\Network task starts it again in 10 s)
@@ -1006,7 +1103,11 @@ async function startHostingControls() {
       const { loadOperator } = await import('./chain.mjs');
       let acct = null;
       try { acct = loadOperator(path.join(DIR, 'operator.key')); } catch (e) { log(`certificates: no operator key (${e.message})`); }
-      if (acct) {
+      // Both halves below ask a relay: sealed secrets come from its secrets plane, certificates from its CA account. A host
+      // with no relay services (independent mode, no RELAY_BASE) runs neither, and its partitions keep their own
+      // self-signed certificates and get no relay-held secrets.
+      if (acct && !host.cfg.relayBase) log('certificates and sealed secrets: no relay services in this mode; partitions keep their self-signed certificates');
+      else if (acct) {
         const {createShieldSecrets}=await import('./shield-secrets.mjs');
         shieldSecrets=createShieldSecrets({base:host.cfg.isolationManager,endpoint:host.cfg.endpoint,relayBase:host.cfg.relayBase,
           sign:message=>acct.signMessage({message}),log:m=>log(m)});
@@ -1016,7 +1117,7 @@ async function startHostingControls() {
         const certs = createHvCertPass({
           client: new IsolationManagerClient({ base: host.cfg.isolationManager }), dataAddr: host.cfg.isolationDataAddr,
           runtimeId: rec => Number(rec.gpuShare) > 0 ? host.managerInference?.runtimeId : host.cfg.isolationRuntimeId,
-          endpoint: host.cfg.endpoint, sign: (message) => acct.signMessage({ message }),
+          endpoint: host.cfg.endpoint, sign: (message) => acct.signMessage({ message }), ...(ID.mode === 'relay' ? {} : { base: host.cfg.relayBase }),
           served: (owner) => host.servingScope() === "market" || host.ownerSet().has(owner), log: (m) => log(m) });
         let running = false;
         const tick = () => { if (running) return; running = true;
@@ -1045,7 +1146,7 @@ async function startHostingControls() {
     } catch (e) { log(`secrets signer unavailable: ${e.message}`); }
   }
   if (process.env.LOCAL_HTTP_PORT) localHttp(Number(process.env.LOCAL_HTTP_PORT));
-  if (process.env.RELAY_URL !== 'none') connect(); else log('RELAY_URL=none: local only');
+  if (RELAY_URL !== 'none') connect(); else log(`RELAY_URL=none: no fleet tunnel${ID.mode === 'relay' ? ', local only' : ' (independent: owner-only scope; the chain, the operator key and the loopback controls still work)'}`);
   // The relay learns whom this node serves only at attach, so when that changes (a delegation added, removed or expired;
   // the tick re-reads them) the node attaches again - at most every 2 minutes (hvnode-attach.mjs shouldReattach).
   if (!LEGACY_ENGINE && APPS) setInterval(() => {

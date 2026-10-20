@@ -1,0 +1,872 @@
+[
+ {
+  "name": "policy: the base policy",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: no keys",
+  "verdict": "refuse",
+  "why": "release policy needs 1 to 8 keys"
+ },
+ {
+  "name": "policy: eight keys",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: nine keys",
+  "verdict": "refuse",
+  "why": "release policy needs 1 to 8 keys"
+ },
+ {
+  "name": "policy: one key listed twice",
+  "verdict": "refuse",
+  "why": "release policy lists a key twice"
+ },
+ {
+  "name": "policy: a key in non-canonical base64 (a trailing newline)",
+  "verdict": "refuse",
+  "why": "release key is not base64"
+ },
+ {
+  "name": "policy: a key without its prefix",
+  "verdict": "refuse",
+  "why": "release key must be \"ecdsa-p256:<base64 SPKI>\""
+ },
+ {
+  "name": "policy: a P-384 key",
+  "verdict": "refuse",
+  "why": "release key is not an uncompressed P-256 public key"
+ },
+ {
+  "name": "policy: a key whose point is not on the curve",
+  "verdict": "refuse",
+  "why": "release key is not a usable public key (Failed to read asymmetric key)"
+ },
+ {
+  "name": "policy: threshold \"0\"",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold \"3\"",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold \"1\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: threshold \"01\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: threshold \"x\"",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold \"-1\"",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold \"99999999999\"",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold written 1.0",
+  "verdict": "refuse",
+  "why": "release policy may hold only whole numbers"
+ },
+ {
+  "name": "policy: threshold written 1e0",
+  "verdict": "refuse",
+  "why": "release policy may hold only whole numbers"
+ },
+ {
+  "name": "policy: channel \"Stable\"",
+  "verdict": "refuse",
+  "why": "release policy channel must be 1-32 of a-z 0-9 . _ -"
+ },
+ {
+  "name": "policy: channel \"stable\\n\"",
+  "verdict": "refuse",
+  "why": "release policy channel must be 1-32 of a-z 0-9 . _ -"
+ },
+ {
+  "name": "policy: channel \"\"",
+  "verdict": "refuse",
+  "why": "release policy channel must be 1-32 of a-z 0-9 . _ -"
+ },
+ {
+  "name": "policy: channel \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: channel \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+  "verdict": "refuse",
+  "why": "release policy channel must be 1-32 of a-z 0-9 . _ -"
+ },
+ {
+  "name": "policy: channel \"release-1.x_y\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"HTTPS://M.Example:443/W\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://m.example/W/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"https://m.example/a/../b\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://m.example/b/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"https://m.example\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://m.example/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://localhost:8080/x\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://localhost:8080/x/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.1/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://127.0.0.1/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://[::1]:9/w/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]:9/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.2/\"",
+  "verdict": "refuse",
+  "why": "mirror http://127.0.0.2/ must be https"
+ },
+ {
+  "name": "policy: mirror \"http://m.example/\"",
+  "verdict": "refuse",
+  "why": "mirror http://m.example/ must be https"
+ },
+ {
+  "name": "policy: mirror \"ftp://m.example/\"",
+  "verdict": "refuse",
+  "why": "mirror ftp://m.example/ must be https"
+ },
+ {
+  "name": "policy: mirror \"https://u:p@m.example/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://u:p@m.example/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/w/?x=1\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/w/?x=1\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/w/?\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/w/?\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/w/#\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/w/#\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/%77/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/%77/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/a b/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/a b/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \" https://m.example/\"",
+  "verdict": "refuse",
+  "why": "mirror \" https://m.example/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example\\\\w/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example\\\\w/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://bücher.example/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://bücher.example/\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example/w/\\n\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example/w/\\n\" is not a plain URL"
+ },
+ {
+  "name": "policy: mirror \"m.example/w/\"",
+  "verdict": "refuse",
+  "why": "mirror \"m.example/w/\" is not a URL"
+ },
+ {
+  "name": "policy: mirror \"http://[::1]/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://[0:0:0:0:0:0:0:1]:9/w/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]:9/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://[0000:0000:0000:0000:0000:0000:0000:0001]/w\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"HTTP://[::1]:8080/A/../w\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]:8080/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"https://[::1]:443/w/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://[::1]/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://[::1]:80/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://[::1]/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://[::2]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[::2]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[::]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[::]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[::ffff:127.0.0.1]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[::ffff:127.0.0.1]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[::ffff:7f00:1]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[::ffff:7f00:1]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[fe80::1]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[fe80::1]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://[2001:db8::1]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://[2001:db8::1]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[0:0:0:0:0:0:0:2]/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[0:0:0:0:0:0:0:2]/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://[::1/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://[::1/\" is not a URL"
+ },
+ {
+  "name": "policy: mirror \"http://127.1/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://127.1/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://2130706433/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://2130706433/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://0x7f000001/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://0x7f000001/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://0x7f.0.0.1/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://0x7f.0.0.1/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.01/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://127.0.0.01/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://127.000.000.001/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://127.000.000.001/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.2/w/\"",
+  "verdict": "refuse",
+  "why": "mirror http://127.0.0.2/w/ must be https"
+ },
+ {
+  "name": "policy: mirror \"http://127.255.255.255/\"",
+  "verdict": "refuse",
+  "why": "mirror http://127.255.255.255/ must be https"
+ },
+ {
+  "name": "policy: mirror \"http://localhost.localdomain/\"",
+  "verdict": "refuse",
+  "why": "mirror http://localhost.localdomain/ must be https"
+ },
+ {
+  "name": "policy: mirror \"http://localhost./\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://localhost./\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"http://sub.localhost/\"",
+  "verdict": "refuse",
+  "why": "mirror http://sub.localhost/ must be https"
+ },
+ {
+  "name": "policy: mirror \"HTTP://LOCALHOST/w\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://localhost/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://localhost:80/w/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://localhost/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.1:65535/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "http://127.0.0.1:65535/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"http://127.0.0.1:65536/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://127.0.0.1:65536/\" is not a URL"
+ },
+ {
+  "name": "policy: mirror \"http://localhost:/\"",
+  "verdict": "refuse",
+  "why": "mirror \"http://localhost:/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://192.0.2.1/w/\"",
+  "verdict": "accept",
+  "mirrors": [
+   "https://192.0.2.1/w/"
+  ]
+ },
+ {
+  "name": "policy: mirror \"https://256.0.0.1/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://256.0.0.1/\" is not a URL"
+ },
+ {
+  "name": "policy: mirror \"https://m.example./\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example./\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://m..example/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m..example/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://-m.example/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://-m.example/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://m_x.example/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m_x.example/\" must name a DNS host, a dotted quad or [::1], written plainly"
+ },
+ {
+  "name": "policy: mirror \"https://m.example.123/\"",
+  "verdict": "refuse",
+  "why": "mirror \"https://m.example.123/\" is not a URL"
+ },
+ {
+  "name": "policy: one mirror spelled twice",
+  "verdict": "refuse",
+  "why": "release policy lists a mirror twice"
+ },
+ {
+  "name": "policy: nine mirrors",
+  "verdict": "refuse",
+  "why": "release policy needs 1 to 8 mirrors"
+ },
+ {
+  "name": "policy: eight mirrors",
+  "verdict": "accept",
+  "mirrors": [
+   "https://m0.example/",
+   "https://m1.example/",
+   "https://m2.example/",
+   "https://m3.example/",
+   "https://m4.example/",
+   "https://m5.example/",
+   "https://m6.example/",
+   "https://m7.example/"
+  ]
+ },
+ {
+  "name": "policy: an unknown field",
+  "verdict": "refuse",
+  "why": "release policy has unknown field(s): requireSigned"
+ },
+ {
+  "name": "policy: another format",
+  "verdict": "refuse",
+  "why": "release policy format must be enclave-windows-release-policy/v1"
+ },
+ {
+  "name": "policy: keys not a list",
+  "verdict": "refuse",
+  "why": "release policy needs 1 to 8 keys"
+ },
+ {
+  "name": "policy: threshold as a string",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: threshold as true",
+  "verdict": "refuse",
+  "why": "release policy threshold must be 1 to the number of keys"
+ },
+ {
+  "name": "policy: not an object",
+  "verdict": "refuse",
+  "why": "release policy must be an object"
+ },
+ {
+  "name": "policy: with a byte-order mark (PowerShell's Set-Content -Encoding UTF8)",
+  "verdict": "accept",
+  "mirrors": [
+   "https://mirror.invalid/windows/"
+  ]
+ },
+ {
+  "name": "envelope: 2 of 2 pinned keys",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: 1 of 2 (threshold not met)",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: signed by an unpinned key and one pinned",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: no signatures",
+  "verdict": "refuse",
+  "why": "release statement has 0 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: the statement changed after signing",
+  "verdict": "refuse",
+  "why": "release statement has 0 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: signed without the signing context",
+  "verdict": "refuse",
+  "why": "release statement has 0 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: expired",
+  "verdict": "refuse",
+  "why": "release statement expired at 2026-10-19T11:59:59.000Z"
+ },
+ {
+  "name": "envelope: expiring exactly now",
+  "verdict": "refuse",
+  "why": "release statement expired at 2026-10-19T12:00:00.000Z"
+ },
+ {
+  "name": "envelope: expiring in a second",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "b1d1f2061438835aac3886d91e60c2dec4d2ee0da87758fd4ffa3fe874c5bfbd"
+ },
+ {
+  "name": "envelope: no expiry",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "40a6a9e52e22969664a779da4a3e240ef90378ce13ba31bc21b3e9bf1bcebfbc"
+ },
+ {
+  "name": "envelope: expiresAt null",
+  "verdict": "refuse",
+  "why": "expiresAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issued 25 hours ahead",
+  "verdict": "refuse",
+  "why": "release statement is issued in the future"
+ },
+ {
+  "name": "envelope: issued 23 hours ahead (clock skew)",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "9d8947888d3c002ce031e2441417cd51bfcef41af1de86641267376ba8ce95ca"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-02-30T00:00:00Z\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-10-18T24:00:00Z\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-10-18T12:00:00+00:00\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-10-18T12:00:00\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-10-18T12:00:00.1234Z\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt \"2026-10-18T12:00:00Z\\n\"",
+  "verdict": "refuse",
+  "why": "issuedAt must be an ISO-8601 UTC time"
+ },
+ {
+  "name": "envelope: issuedAt with milliseconds",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "15e1808fe68c51255a82875162283d9298c7ca8be037abc4ea41d0ac0893a27a"
+ },
+ {
+  "name": "envelope: another channel",
+  "verdict": "refuse",
+  "why": "release statement is for channel \"other\", not \"test\""
+ },
+ {
+  "name": "envelope: the channel in another case",
+  "verdict": "refuse",
+  "why": "release statement is for channel \"TEST\", not \"test\""
+ },
+ {
+  "name": "envelope: the statement format in another case",
+  "verdict": "refuse",
+  "why": "release statement format must be enclave-windows-release/v1"
+ },
+ {
+  "name": "envelope: version 1.2.3.4",
+  "verdict": "accept",
+  "version": "1.2.3.4",
+  "signers": 2,
+  "statementSha256": "eeee9bfe49ac7fbdfa217d096ae06f11f36f9ca22ff55fcc3e2fbb6bc8e30020"
+ },
+ {
+  "name": "envelope: version 1.2.3.4.5",
+  "verdict": "refuse",
+  "why": "release statement version must be 2-4 dotted numbers"
+ },
+ {
+  "name": "envelope: version with a final newline",
+  "verdict": "refuse",
+  "why": "release statement version must be 2-4 dotted numbers"
+ },
+ {
+  "name": "envelope: version in Arabic-Indic digits",
+  "verdict": "refuse",
+  "why": "release statement version must be 2-4 dotted numbers"
+ },
+ {
+  "name": "envelope: version as a number",
+  "verdict": "refuse",
+  "why": "signed release statement may hold only whole numbers"
+ },
+ {
+  "name": "envelope: a zip name not bound to the version",
+  "verdict": "refuse",
+  "why": "release statement file must be enclave-host-1.2.3.zip"
+ },
+ {
+  "name": "envelope: a sha256 in capitals",
+  "verdict": "refuse",
+  "why": "release statement setupSha256 must be 64 lowercase hex"
+ },
+ {
+  "name": "envelope: a size written 1000.0",
+  "verdict": "refuse",
+  "why": "signed release statement may hold only whole numbers"
+ },
+ {
+  "name": "envelope: a size written 1e3",
+  "verdict": "refuse",
+  "why": "signed release statement may hold only whole numbers"
+ },
+ {
+  "name": "envelope: a size as a string",
+  "verdict": "refuse",
+  "why": "release statement bytes is out of range"
+ },
+ {
+  "name": "envelope: a size of 0",
+  "verdict": "refuse",
+  "why": "release statement bytes is out of range"
+ },
+ {
+  "name": "envelope: a zip of exactly 2 GiB",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "7be8048697d771f319f49efb2c4d9820954297d78fac8ec17a8e4434187edc67"
+ },
+ {
+  "name": "envelope: a zip over 2 GiB",
+  "verdict": "refuse",
+  "why": "release statement bytes is out of range"
+ },
+ {
+  "name": "envelope: a setup over 64 MiB",
+  "verdict": "refuse",
+  "why": "release statement setupBytes is out of range"
+ },
+ {
+  "name": "envelope: a manifest over 16 MiB",
+  "verdict": "refuse",
+  "why": "release statement manifestBytes is out of range"
+ },
+ {
+  "name": "envelope: an unknown statement field",
+  "verdict": "refuse",
+  "why": "release statement has unknown field(s): extra"
+ },
+ {
+  "name": "envelope: a statement field in another case",
+  "verdict": "refuse",
+  "why": "release statement has unknown field(s): Version"
+ },
+ {
+  "name": "envelope: a statement that is a list",
+  "verdict": "refuse",
+  "why": "release statement must be an object"
+ },
+ {
+  "name": "envelope: a statement field given twice (last one valid)",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c83a76ba95e8d16b840bf3017faba1c72192e7a8cdfe2b29ca9bb162349e7411"
+ },
+ {
+  "name": "envelope: a statement padded past 16 KiB with whitespace",
+  "verdict": "refuse",
+  "why": "release statement is too large"
+ },
+ {
+  "name": "envelope: a statement padded to exactly 16 KiB",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "94b204ff0a06917f37bac8be784a4d063270616ed8327175e96fa4161bb2598e"
+ },
+ {
+  "name": "envelope: an unknown envelope field",
+  "verdict": "refuse",
+  "why": "release envelope has unknown field(s): note"
+ },
+ {
+  "name": "envelope: signatures not a list",
+  "verdict": "refuse",
+  "why": "release envelope signatures must be a list of at most 16"
+ },
+ {
+  "name": "envelope: 16 signatures (2 good, 14 by unpinned keys)",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: 17 signatures (2 good, 15 by unpinned keys)",
+  "verdict": "refuse",
+  "why": "release envelope signatures must be a list of at most 16"
+ },
+ {
+  "name": "envelope: a signature with an extra field",
+  "verdict": "refuse",
+  "why": "release signature has unknown field(s): alg"
+ },
+ {
+  "name": "envelope: a signature that is a string",
+  "verdict": "refuse",
+  "why": "release signature must be an object"
+ },
+ {
+  "name": "envelope: a pinned key's signature in non-canonical base64",
+  "verdict": "refuse",
+  "why": "release signature is not base64"
+ },
+ {
+  "name": "envelope: an unpinned key's signature that is not base64 (ignored)",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: a pinned keyId in capitals (not that key)",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: a keyId that is a number",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: one key's signature twice",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: a bad signature, then a good one, by the same key",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: a 63-byte signature",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: a DER (not r||s) signature",
+  "verdict": "refuse",
+  "why": "release statement has 1 valid signature(s) by pinned keys; the policy requires 2"
+ },
+ {
+  "name": "envelope: an envelope of exactly 64 KiB",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: an envelope of 64 KiB + 1",
+  "verdict": "refuse",
+  "why": "release envelope is too large"
+ },
+ {
+  "name": "envelope: an envelope with a byte-order mark",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 2,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: an envelope that is not JSON",
+  "verdict": "refuse",
+  "why": "release envelope is not JSON"
+ },
+ {
+  "name": "envelope: the statement in non-canonical base64",
+  "verdict": "refuse",
+  "why": "release statement is not canonical base64"
+ },
+ {
+  "name": "envelope: the legacy unsigned latest.json",
+  "verdict": "refuse",
+  "why": "release envelope has unknown field(s): version, file, sha256"
+ },
+ {
+  "name": "envelope: threshold 1 of 3, signed by the third",
+  "verdict": "accept",
+  "version": "1.2.3",
+  "signers": 1,
+  "statementSha256": "c4976e2b60ec2e25562c7777a22ec01278fe0515a9e0dc2d1f8f1019456df602"
+ },
+ {
+  "name": "envelope: judged 31 days later (expired by then)",
+  "verdict": "refuse",
+  "why": "release statement expired at 2026-11-18T12:00:00.000Z"
+ }
+]

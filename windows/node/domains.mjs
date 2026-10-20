@@ -30,6 +30,8 @@
 // tried, and the relay shows it to the customer. It is the only way somebody learns that a CA
 // refused their domain, so a report that fails to send is retried rather than dropped.
 
+import { ownerHost } from "../../sdk/bootstrap/package.mjs";
+
 const FETCH_SKEW_SEC = 300;          // relay/domains.js FETCH_SKEW_SEC
 const TIMEOUT_MS = 5000;
 // relay/domains.js's own hostname filter, re-checked here rather than trusted: this list decides
@@ -113,4 +115,38 @@ export async function fetchDomains({ id, endpoint, sign, base = "https://api.enc
     return { hosts, delivered: report.map((x) => x.hostname), source: "relay" };
   }
   return keep(last || "the relay did not answer");
+}
+
+// ---- owner-committed names (an owner-committed startup package; no relay domain map) ---------------------------------
+//
+// The LEGACY path above is unchanged and is still what a legacy envelope uses: the relay's list, on the relay's word.
+// A deployment started from an owner-committed package (shield-startup.mjs) takes its names from that package and from
+// nowhere else, and a listed name is the OWNER'S CLAIM, not proof of control (network/owner-names.mjs, whose rules these
+// are). A name is served only while a proof stands that whoever controls its DNS agrees: a WebPKI certificate for the
+// name, chaining to the public roots, presented by THIS deployment's partition on exactly the TLS key the manager's
+// readiness judge bound (proveNameControl). A CA issued it only after DNS validation. Proofs lapse after
+// NAME_PROOF_TTL_MS and are re-made, never extended; a failed proof drops the name at once.
+//
+//   startup   the verified startup record (host.mjs rec.startup): its `names` are the package's, its `sha256` the package
+//   prove     async (name) -> proof ({ name, notBefore, notAfter, ... }) or throws: the caller's real handshake through its
+//             own forward path (host.mjs uses network/owner-names.mjs proveNameControl over the partition splice)
+//   proofs    Map name -> proof, the caller's previous proofs FOR THIS PACKAGE (a new package starts empty)
+// -> { hosts, proofs, refused: [{ hostname, why }], source: "owner-package" }
+export const OWNER_NAME_PROOF_TTL_MS = 5 * 60_000;
+export async function ownerCommittedDomains({ startup, prove, proofs = new Map(), now = Date.now, log = () => {} }) {
+  if (!startup || !/^[0-9a-f]{64}$/.test(String(startup.sha256 || ""))) throw new Error("domains: owner names need a verified startup package");
+  if (typeof prove !== "function") throw new Error("domains: owner names need a name-control prover");
+  const names = (Array.isArray(startup.names) ? startup.names : []).filter((h) => typeof h === "string" && HOST_RE.test(h) && ownerHost(h)).slice(0, MAX_HOSTS);
+  const next = new Map(), refused = [];
+  for (const h of names) {
+    const old = proofs.get(h), t = now();
+    if (old && old.provedAt + OWNER_NAME_PROOF_TTL_MS > t && old.notAfter > t) { next.set(h, old); continue; }
+    try {
+      const p = await prove(h);
+      if (!p || p.name !== h || !(p.notAfter > now())) throw new Error("the proof is not for this name now");
+      next.set(h, { ...p, provedAt: now() });
+    } catch (e) { refused.push({ hostname: h, why: String(e.message || e).slice(0, 200) }); }
+  }
+  if (refused.length) log(`domains: owner-committed name(s) not proven: ${refused.map((r) => `${r.hostname} (${r.why})`).join("; ")}`);
+  return { hosts: [...next.keys()], proofs: next, refused, source: "owner-package" };
 }

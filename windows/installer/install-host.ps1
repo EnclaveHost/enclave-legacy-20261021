@@ -1,8 +1,19 @@
 # install-host.ps1 -- install an Enclave host on this Windows PC (docs/design/windows-host-installer.md). EnclaveSetup.exe
 # runs it elevated from the expanded bundle; it can also be run by hand:
 #   powershell -ExecutionPolicy Bypass -File install-host.ps1 -Name my-box [-Owner DOMAIN\user] [-Referral code] [-EnclaveDNS] [-CheckOnly]
+# An INDEPENDENT host (docs/network/independent-windows.md): no Enclave relay tunnel, no relay name reservation, and no
+# Enclave default for anything it fetches or trusts:
+#   ... -Name my-box -NoRelay -PublicUrl https://my-box.example.org -Gateways https://gw1.example,https://gw2.example
+#       -ContractPins C:\path\contract-pins.json [-Rpcs a,b] [-Directories a,b] [-NetworkCheckers 0x..,0x..]
+#       [-NameCheck chain|offline] [-ReleasePolicy C:\path\release-policy.json]
 # Progress goes to stdout as one JSON object per line: {"step","state":"run|ok|warn|fail|reboot","message"}.
 # Re-running is safe: every step checks what is already there. Nothing is downloaded: the bundle is this folder.
+#
+# WHO THIS HOST IS is recorded in node\host.json (identity, ENCLAVE-IDENTITY-RECORD-V1) and re-used by every later run,
+# including the automatic updates, which pass only -Name and -Owner: an update never moves a host to another endpoint,
+# relay, gateway set, pin document or release policy. Changing any of them takes explicit parameters AND -Reconfigure,
+# and a new public endpoint is a new host on chain (keccak256 of the endpoint is its registry id). A host installed before
+# identities were recorded is the relay host it has always been: https://api.enclave.host/t/<name>.
 param(
   [string] $Name = "",
   [string] $Owner = "",                 # the Windows account that gets the tray (default: whoever runs setup)
@@ -12,7 +23,17 @@ param(
   [string] $SetupExe = "",              # EnclaveSetup.exe: kept in Program Files as the uninstaller Windows' Installed apps runs
   [switch] $Delta,                      # an update over this install: replace only the files whose sha256 changed (update-host.ps1)
   [string] $Referral = "",              # the referral code this machine came with (attribution only; relay/referrals.mjs)
-  [switch] $EnclaveDNS                  # also install EnclaveDNS (setup's checkbox, ticked by default; updates never pass it)
+  [switch] $EnclaveDNS,                 # also install EnclaveDNS (setup's checkbox, ticked by default; updates never pass it)
+  [switch] $NoRelay,                    # independent: no Enclave fleet tunnel and no relay name reservation
+  [string] $PublicUrl = "",             # independent: this host's own public endpoint, exactly as it is to be registered
+  [string] $Gateways = "",              # independent: artifact gateways (comma list; every artifact is CID-verified)
+  [string] $ContractPins = "",          # independent: the contract pin document (network/contract-pins.mjs format)
+  [string] $Rpcs = "",                  # Base RPCs (comma list; default: the node's public list)
+  [string] $Directories = "",           # public signed-record directories for the Enclave network (comma list of origins)
+  [string] $NetworkCheckers = "",       # the qualification checkers this host trusts for network providers (comma list)
+  [ValidateSet("", "relay", "chain", "offline")] [string] $NameCheck = "",   # default: relay for a relay host, chain otherwise
+  [string] $ReleasePolicy = "",         # the signed update policy to pin (release-channel.mjs format)
+  [switch] $Reconfigure                 # let explicit parameters replace this host's recorded identity or release policy
 )
 $ErrorActionPreference = "Stop"
 $Bundle = $PSScriptRoot
@@ -21,6 +42,12 @@ $PD = Join-Path $env:ProgramData "Enclave"
 function Emit($step, $state, $message) { [ordered]@{ step = $step; state = $state; message = $message } | ConvertTo-Json -Compress | Write-Output }
 function Fail($step, $message) { Emit $step "fail" $message; exit 1 }
 function Sha($p) { (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower() }
+function List($s) { @(([string]$s).Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+# node.exe with its stderr kept: native stderr under "Stop" throws in Windows PowerShell 5.1, so relaxed for this call only
+function NodeRun($exe, [string[]] $a) {
+  $ErrorActionPreference = "Continue"
+  $o = @(& $exe @a 2>&1 | ForEach-Object { "$_" }); return @{ code = $LASTEXITCODE; out = ($o -join "`n").Trim() }
+}
 
 # ---------------------------------------------------------------------------------------------------------------------
 # 1. the machine
@@ -74,22 +101,71 @@ Emit "hyperv" "ok" "Hyper-V is on"
 if ($CheckOnly) { Emit "done" "ok" "This PC can host"; exit 0 }
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 3. the name
+# 3. the name, and who this host is (ENCLAVE-IDENTITY-RECORD-V1)
 # ---------------------------------------------------------------------------------------------------------------------
 if ($Name -notmatch '^[a-z0-9](?:[a-z0-9-]{1,30})[a-z0-9]$' -or $Name -match '--') { Fail "name" "Pick a name of 3 to 32 lowercase letters, digits and hyphens." }
 $existing = Join-Path $PD "node\host.json"
-$sameBox = (Test-Path $existing) -and ((Get-Content $existing -Raw | ConvertFrom-Json).name -eq $Name)
+$rec = if (Test-Path $existing) { Get-Content $existing -Raw | ConvertFrom-Json } else { $null }
+$sameBox = $rec -and $rec.name -eq $Name
+function RelayIdentity($relay) { [pscustomobject]@{ mode = "relay"; publicUrl = "$relay/t/$Name"; relay = $relay; gateways = @(); rpcs = @(); directories = @(); checkers = @(); contractPinsSha256 = "" } }
+# what this host IS: its recorded identity; a host installed before identities were recorded is the relay host it always was
+$recorded = if ($rec -and $rec.identity) { $rec.identity } elseif ($sameBox) { RelayIdentity $Relay } else { $null }
+if ($recorded -and $recorded.mode -eq "relay") { $recorded = RelayIdentity $recorded.relay }   # a relay identity follows its name
+$explicit = $NoRelay -or $PublicUrl -or $Gateways -or $ContractPins -or $Rpcs -or $Directories -or $NetworkCheckers
+if ($explicit) {
+  if (-not $NoRelay) { Fail "identity" "-PublicUrl, -Gateways, -ContractPins, -Rpcs, -Directories and -NetworkCheckers describe an independent host: add -NoRelay (the relay honours only its own /t/<name> route)." }
+  if (-not $PublicUrl -or -not $Gateways -or -not $ContractPins) { Fail "identity" "An independent host needs -PublicUrl (its own public endpoint), -Gateways (artifact gateways) and -ContractPins (the contract pin document): nothing defaults to an Enclave service." }
+  if ($PublicUrl -notmatch '^https://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-])?$') { Fail "identity" "-PublicUrl must be an https URL written exactly as it will be registered, with no trailing slash, query or credentials." }
+  foreach ($u in @(List $Gateways) + @(List $Rpcs) + @(List $Directories)) { if ($u -notmatch '^https://[^\s?#@]+$') { Fail "identity" "'$u' is not an https URL." } }
+  # the chain name check (host-identity.mjs) decides only on two agreeing RPCs, so one RPC, or two on one host, never decides
+  $rpcHosts = @(@(List $Rpcs) | ForEach-Object { ([Uri]$_).Host.ToLowerInvariant() })
+  if ($rpcHosts.Count -and ($rpcHosts.Count -lt 2 -or @($rpcHosts | Select-Object -Unique).Count -ne $rpcHosts.Count)) { Fail "identity" "-Rpcs must name at least two RPCs on distinct hosts: one RPC never decides what the chain says." }
+  foreach ($c in @(List $NetworkCheckers)) { if ($c -notmatch '^0x[0-9a-fA-F]{40}$') { Fail "identity" "'$c' is not a checker address." } }
+  if (-not (Test-Path -LiteralPath $ContractPins)) { Fail "identity" "The contract pin document $ContractPins does not exist." }
+  $want = [pscustomobject]@{ mode = "independent"; publicUrl = $PublicUrl; relay = ""; gateways = @(List $Gateways); rpcs = @(List $Rpcs)
+                             directories = @(List $Directories); checkers = @(List $NetworkCheckers | ForEach-Object { $_.ToLower() }); contractPinsSha256 = (Sha $ContractPins) }
+} elseif ($PSBoundParameters.ContainsKey("Relay") -or -not $recorded) { $want = RelayIdentity $Relay }
+else { $want = $recorded }
+function IdKey($i) { if (-not $i) { return "" }; "$($i.mode)|$(if ($i.mode -eq 'relay') { $i.relay } else { $i.publicUrl })|$(@($i.gateways) -join ',')|$(@($i.rpcs) -join ',')|$(@($i.directories) -join ',')|$(@($i.checkers) -join ',')|$($i.contractPinsSha256)" }
+if ($recorded -and (IdKey $recorded) -ne (IdKey $want) -and -not $Reconfigure) {
+  Fail "identity" ("This host is recorded as the $($recorded.mode) host $($recorded.publicUrl). Changing its relay, endpoint, gateways, pins, RPCs, directories or checkers needs -Reconfigure" +
+                   $(if ($recorded.publicUrl -ne $want.publicUrl) { " - and $($want.publicUrl) is a NEW host on chain (a new registry entry and a new ownership enrollment)." } else { "." })) }
+$independent = $want.mode -eq "independent"
+if (-not $NameCheck) { $NameCheck = if ($independent) { "chain" } else { "relay" } }
+if (-not $independent -and $NameCheck -ne "relay") { Fail "name" "A relay host's name is its route on the relay, so the relay checks it: -NameCheck chain and offline are for independent hosts (-NoRelay)." }
+if ($independent -and $NameCheck -eq "relay") { Fail "name" "An independent host has no relay route to reserve: use -NameCheck chain (the pinned registry) or offline." }
 # A referral code: 1-64 letters, digits, '.', '_' or '-'. Re-running setup or an automatic update (which passes no code)
 # keeps the one this machine was installed with; a new one given here replaces it, and the relay keeps the first it saw.
 $Referral = $Referral.Trim()
 if ($Referral -and $Referral -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$') { Fail "name" "A referral code is 1 to 64 letters, digits, '.', '_' or '-'." }
-if (-not $Referral -and (Test-Path $existing)) { $Referral = [string](Get-Content $existing -Raw | ConvertFrom-Json).referral }
-if (-not $sameBox) {
-  try { $avail = Invoke-RestMethod -UseBasicParsing -Uri "$Relay/v1/hosts/name/$Name" -TimeoutSec 20 }
-  catch { Fail "name" "Could not reach $Relay to check the name: $($_.Exception.Message)" }
+if (-not $Referral -and $rec) { $Referral = [string]$rec.referral }
+if ($NameCheck -eq "relay" -and -not $sameBox) {
+  try { $avail = Invoke-RestMethod -UseBasicParsing -Uri "$($want.relay)/v1/hosts/name/$Name" -TimeoutSec 20 }
+  catch { Fail "name" "Could not reach $($want.relay) to check the name: $($_.Exception.Message)" }
   if (-not $avail.available) { Fail "name" "The name '$Name' is not available: $($avail.reason)" }
 }
-Emit "name" "ok" "This host will be '$Name'"
+# The release policy (release-channel.mjs) and the pin document are checked now, with the bundle's own node, before anything
+# on this PC is stopped or replaced; they are written once the program files are in place.
+$bnode = Join-Path $Bundle "runtime\node\node.exe"; $bnodeDir = Join-Path $Bundle "control\windows\node"
+$policyDest = Join-Path $PD "node\release-policy.json"; $pinsDest = Join-Path $PD "node\contract-pins.json"
+if ($ReleasePolicy) {
+  if (-not (Test-Path -LiteralPath $ReleasePolicy)) { Fail "release" "The release policy $ReleasePolicy does not exist." }
+  $chk = NodeRun $bnode @((Join-Path $bnodeDir "release-channel.mjs"), "check-policy", $ReleasePolicy)
+  if ($chk.code) { Fail "release" "The release policy is not valid: $($chk.out)" }
+  if (Test-Path -LiteralPath $policyDest) {
+    $have = NodeRun $bnode @((Join-Path $bnodeDir "release-channel.mjs"), "check-policy", $policyDest)
+    if ($have.out -ne $chk.out -and -not $Reconfigure) { Fail "release" "This host already pins a different release policy ($policyDest): changing its release keys or mirrors needs -Reconfigure." }
+  }
+}
+if ($independent -and $ContractPins) {
+  $pinsOk = NodeRun $bnode @("--input-type=module", "-e", "import fs from 'node:fs'; import { validateContractPins } from 'file:///$((Join-Path $bnodeDir 'host-admission.bundle.mjs').Replace('\','/'))'; validateContractPins(JSON.parse(fs.readFileSync(process.argv[1], 'utf8').replace(/^\uFEFF/, ''))); process.stdout.write('pins-ok')", $ContractPins)
+  if ($pinsOk.out -ne "pins-ok") { Fail "identity" "The contract pin document is not valid: $($pinsOk.out)" }
+}
+if ($independent -and -not $ContractPins -and -not (Test-Path -LiteralPath $pinsDest)) { Fail "identity" "This independent host's contract pin document ($pinsDest) is missing: re-run with -ContractPins and -Reconfigure." }
+if ($independent) {
+  Emit "name" $(if ($NameCheck -eq "offline") { "warn" } else { "ok" }) ("This host will be '$Name' at $($want.publicUrl) (independent: no Enclave relay)" +
+    $(if ($NameCheck -eq "offline") { "; the endpoint is NOT checked against the chain (-NameCheck offline): if another operator registered it, this host's registration fails" } else { "; the endpoint is checked on the pinned registry once this host's key exists" }))
+} else { Emit "name" "ok" "This host will be '$Name'" }
 
 # ---------------------------------------------------------------------------------------------------------------------
 # 4. host prerequisites for Enclave Shield's partitions
@@ -179,7 +255,54 @@ foreach ($d in "", "node", "shield", "shield\vmgs-archive", "shield\bundles", "n
 # the root: owners full, users may only pass through (the node opens hosting\ to the tray user itself); the rest: owners only
 icacls $PD /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(RX)" /q | Out-Null
 foreach ($d in "node", "shield", "network", "logs") { icacls (Join-Path $PD $d) /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /q | Out-Null }
+# THE CUSTODY CALLBACK KEY (windows/vbslike/manager/custody-key-file.mjs): the HMAC key the manager and the node share for
+# direct Shield custody answers. Created when ABSENT, private from its first byte: a protected DACL granting only SYSTEM and
+# Administrators, owner Administrators, applied by the same call that creates it. An EXISTING file is checked by the same
+# rule the manager and node apply at start and reported if it is not private: never changed here. Inert until the explicit
+# activation sets ENCLAVE_CUSTODY_CALLBACK_KEY_FILE (and ENCLAVE_SHIELD_CUSTODY_V2); no other file is touched.
+$ckey = Join-Path $PD "shield\custody-callback.key"
+if (-not (Test-Path -LiteralPath $ckey)) {
+  $kb = New-Object byte[] 32; $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($kb); $rng.Dispose()
+  $sec = New-Object System.Security.AccessControl.FileSecurity
+  $sec.SetAccessRuleProtection($true, $false)
+  foreach ($sid in "S-1-5-18", "S-1-5-32-544") {
+    $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier $sid), "FullControl", "Allow")))
+  }
+  $sec.SetOwner((New-Object System.Security.Principal.SecurityIdentifier "S-1-5-32-544"))
+  $hex = [Text.Encoding]::ASCII.GetBytes((($kb | ForEach-Object { $_.ToString("x2") }) -join ""))
+  $fsk = [System.IO.File]::Create($ckey, 4096, [System.IO.FileOptions]::None, $sec)
+  try { $fsk.Write($hex, 0, $hex.Length) } finally { $fsk.Dispose() }
+  [Array]::Clear($kb, 0, $kb.Length); [Array]::Clear($hex, 0, $hex.Length)
+  Emit "files" "run" "Created the custody callback key $ckey (SYSTEM and Administrators only; inert until activation)"
+} else {
+  $acl = Get-Acl -LiteralPath $ckey
+  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  $open = @($acl.Access | Where-Object { $_.AccessControlType -eq "Allow" -and @("S-1-5-18", "S-1-5-32-544") -notcontains $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
+  $nullDacl = $acl.GetSecurityDescriptorSddlForm("Access") -notmatch "D:" -or $acl.GetSecurityDescriptorSddlForm("Access") -match "D:[A-Z]*NO_ACCESS_CONTROL"
+  if ($open.Count -or $nullDacl -or @("S-1-5-18", "S-1-5-32-544") -notcontains $owner) {
+    Emit "files" "warn" ("The custody callback key $ckey is NOT private (owner $owner" + $(if ($open.Count) { "; allowed to $($open[0].IdentityReference)" } else { "" }) +
+                         "): left unchanged, and the manager and node refuse it until it is SYSTEM and Administrators only")
+  }
+}
 Emit "files" "ok" ("Enclave $($manifest.version) installed in $PF" + $(if ($null -ne $changed) { " ($($changed.Count) file(s) changed, $($gone.Count) removed)" } else { "" }))
+
+# the pins and the release policy, into node\ (SYSTEM and Administrators only), never replaced unless asked (step 3)
+$node = Join-Path $PF "runtime\node\node.exe"
+if ($independent) {
+  if ($ContractPins) { Copy-Item -LiteralPath $ContractPins $pinsDest -Force }
+  if ((Sha $pinsDest) -ne $want.contractPinsSha256) { Fail "identity" "$pinsDest was changed outside setup: re-run with -ContractPins and -Reconfigure to pin a new document." }
+}
+if ($ReleasePolicy) {
+  $ip = NodeRun $node (@((Join-Path $PF "control\windows\node\release-channel.mjs"), "install-policy", "--policy", $ReleasePolicy, "--dest", $policyDest) + @(if ($Reconfigure) { "--replace" }))
+  if ($ip.code) { Fail "release" "The release policy was not installed: $($ip.out)" }
+}
+if (Test-Path -LiteralPath $policyDest) {
+  $pol = NodeRun $node @((Join-Path $PF "control\windows\node\release-channel.mjs"), "check-policy", $policyDest)
+  if ($pol.code) { Fail "release" "$policyDest is not a valid release policy: $($pol.out). Updates would refuse every release; fix it or re-run with -ReleasePolicy and -Reconfigure." }
+  $pj = $pol.out | ConvertFrom-Json
+  Emit "release" "ok" "Updates: only releases signed by $($pj.threshold) of $(@($pj.keys).Count) pinned key(s), from $(@($pj.mirrors) -join ', ')"
+} elseif ($independent) { Emit "release" "warn" "Updates: OFF. An independent host takes no unsigned Enclave release; pin a release policy (-ReleasePolicy, or release-channel.mjs install-policy) to update automatically" }
+else { Emit "release" "warn" "Updates: the legacy get.enclave.host channel, which is UNSIGNED (its hashes come from the same unsigned latest.json). Pin a release policy to require signed releases (docs/network/independent-windows.md)" }
 
 # ---------------------------------------------------------------------------------------------------------------------
 # 6. this box's own: the guest-state master, the keys, the configuration
@@ -202,12 +325,27 @@ $probe = @(& powershell.exe -NoProfile -NonInteractive -Command "Import-Module '
 if (($probe | Select-Object -Last 1) -ne "module-ok") { Fail "shield" "Enclave Shield's Hyper-V module does not load: $(($probe | Out-String).Trim())" }
 Emit "shield" "ok" "Enclave Shield's guest-state master is ready"
 
-$node = Join-Path $PF "runtime\node\node.exe"
-$env:NODE_NAME = $Name; $env:PUBLIC_URL = "$Relay/t/$Name"
-$keys = & $node (Join-Path $PF "control\windows\node\keys.mjs") (Join-Path $PD "node") 2>&1
-if ($LASTEXITCODE) { Fail "keys" "The node's keys could not be made: $keys" }
-$operator = ([regex]::Match(($keys -join "`n"), '0x[0-9a-fA-F]{40}')).Value
+$env:NODE_NAME = $Name; $env:PUBLIC_URL = $want.publicUrl
+if ($independent) { $env:ENCLAVE_CONTRACT_PINS_FILE = $pinsDest; if (@($want.rpcs).Count) { $env:BASE_RPCS = @($want.rpcs) -join "," } }
+$keys = NodeRun $node (@((Join-Path $PF "control\windows\node\keys.mjs"), (Join-Path $PD "node")) + @(if ($NameCheck -eq "offline") { "--offline" }))
+if ($keys.code) { Fail "keys" "The node's keys could not be made: $($keys.out)" }
+$operator = ([regex]::Match($keys.out, '"operator": "(0x[0-9a-fA-F]{40})"')).Groups[1].Value
+if (-not $operator) { Fail "keys" "The node's keys did not report an operator address: $($keys.out)" }
 Emit "keys" "ok" "Operator key $operator (created on this PC; it never leaves it)"
+# the relay-free name check: keccak256(endpoint) is the registry id, so the collision that matters is another operator's
+# entry for this endpoint on the PINNED registry, read through agreeing RPCs (host-identity.mjs)
+# Not repeated for an unchanged identity on the same box (an automatic update): it was checked when it was recorded, and an
+# update must not fail because the RPCs are slow that hour.
+$unchanged = $sameBox -and $recorded -and (IdKey $recorded) -eq (IdKey $want) -and -not $PSBoundParameters.ContainsKey("NameCheck")
+if ($NameCheck -eq "chain" -and $unchanged) { Emit "name" "ok" "$($want.publicUrl): this host's recorded identity, unchanged" }
+elseif ($NameCheck -eq "chain") {
+  $chk = NodeRun $node (@((Join-Path $PF "control\windows\node\host-identity.mjs"), "check-endpoint", "--endpoint", $want.publicUrl, "--operator", $operator, "--pins", $pinsDest) +
+                        @(@($want.rpcs) | ForEach-Object { "--rpc"; $_ }))
+  if ($chk.code -eq 2) { Fail "name" "$($want.publicUrl) is registered on chain to another operator ($(($chk.out | ConvertFrom-Json).operator)): choose another public endpoint." }
+  if ($chk.code) { Fail "name" "Could not check $($want.publicUrl) on the pinned registry: $($chk.out). Re-run when the RPCs answer, or with -NameCheck offline to skip the check." }
+  $st = ($chk.out | ConvertFrom-Json).status
+  Emit "name" "ok" "$($want.publicUrl) is $(if ($st -eq 'ours') { "already this host's (operator $operator)" } else { 'free' }) on the pinned registry"
+}
 
 $appRamGb = [math]::Max(4, [math]::Floor($ramGb / 2))
 # an owner who gives apps more (or less) than half sets NODE_APP_RAM_GB in node-config.local.cmd (never written by an
@@ -257,7 +395,7 @@ set ENCLAVE_HYPERV_MODULE_SHA256=$(& $pin 'guest/hyperv.psm1')
 set ENCLAVE_RUNTIME_IDENTITY=$runtimeJson
 set PYTHON_BIN=$PF\runtime\python\python.exe
 set PYTHONDONTWRITEBYTECODE=1
-set IPFS_GATEWAY=https://ipfs.enclave.host
+$(if ($independent) { "set IPFS_GATEWAYS=$(@($want.gateways) -join ',')`r`nset IPFS_GATEWAY=$(@($want.gateways)[0])" } else { "set IPFS_GATEWAY=https://ipfs.enclave.host" })
 set ENCLAVE_WMISERVE_EXE=$PF\bin\shield-host.exe
 set ENCLAVE_WMISERVE_EXE_SHA256=$(& $pin 'bin/shield-host.exe')
 set ENCLAVE_BUNDLE_DIR=$PD\shield\bundles
@@ -317,8 +455,10 @@ rem The Enclave host node. Written by install-host.ps1; re-run setup to change i
 set APPS=1
 set NODE_NAME=$Name
 set REFERRAL_CODE=$Referral
-set PUBLIC_URL=$Relay/t/$Name
-set RELAY_URL=$($Relay -replace '^https:', 'wss:')/v1/fleet-tunnel
+set PUBLIC_URL=$($want.publicUrl)
+set RELAY_URL=$(if ($independent) { "none" } else { "$($want.relay -replace '^https:', 'wss:')/v1/fleet-tunnel" })
+$(if ($independent) { "set ENCLAVE_IDENTITY_MODE=independent`r`nset ENCLAVE_CONTRACT_PINS_FILE=$pinsDest" })
+$(if (@($want.rpcs).Count) { "set BASE_RPCS=$(@($want.rpcs) -join ',')" })
 set NODE_DIR=$PD\node
 set TPMATTEST_EXE=$PF\bin\tpmattest.exe
 set ENCLAVE_ISOLATION_MANAGER=http://127.0.0.1:8091
@@ -328,7 +468,7 @@ set CLAIM_SCOPE=market
 set LOCAL_HTTP_PORT=9600
 set HOSTING_TRAY_USER=$Owner
 set PYTHON_BIN=$PF\runtime\python\python.exe
-set IPFS_GATEWAY=https://ipfs.enclave.host
+$(if ($independent) { "set IPFS_GATEWAYS=$(@($want.gateways) -join ',')" } else { "set IPFS_GATEWAY=https://ipfs.enclave.host" })
 set APP_SLOTS=$slots
 set NODE_APP_RAM_GB=$appRamGb
 set ENCLAVE_EGRESS_APP_ROUTES=$PD\network\state\egress-routes.json
@@ -344,7 +484,10 @@ set BLOB_SERVICE_PORT=9621
 set BLOB_CACHE_DIR=$PD\shield\blobs
 rem the Enclave network (docs/design/enclave-network.md): every app's route and this box's own control traffic over
 rem WireGuard providers qualified by these checkers
-set ENCLAVE_NETWORK_CHECKERS=0x57144c9008cff0b3ed94f6e40964a321fbee848a,0x033bc2b92bb1bb97c7dadf2879d3048748e2257b
+$(if (-not $independent) { "set ENCLAVE_NETWORK_CHECKERS=0x57144c9008cff0b3ed94f6e40964a321fbee848a,0x033bc2b92bb1bb97c7dadf2879d3048748e2257b" }
+  elseif (@($want.checkers).Count) { "set ENCLAVE_NETWORK_CHECKERS=$(@($want.checkers) -join ',')" }
+  else { "rem no checkers chosen (-NetworkCheckers): network enrollment refuses until this host's operator picks the ones it trusts" })
+$(if (@($want.directories).Count) { "set ENCLAVE_NETWORK_DIRECTORIES=$(@($want.directories) -join ',')" })
 rem this box's own settings (node-config.local.cmd: never written by an update), after and over everything above
 if exist "$PD\node-config.local.cmd" call "$PD\node-config.local.cmd"
 "@ | Set-Content -Encoding ASCII (Join-Path $PD "node-config.cmd")
@@ -380,9 +523,16 @@ goto loop
 }
 RunLoop (Join-Path $PD "run-shield.cmd") (Join-Path $PD "shield-config.cmd") (Join-Path $PF "control\windows\vbslike\manager\main.mjs") (Join-Path $PD "logs\shield.log")
 RunLoop (Join-Path $PD "run-node.cmd") (Join-Path $PD "node-config.cmd") (Join-Path $PF "control\windows\node\agent.mjs") (Join-Path $PD "logs\node.log")
-[ordered]@{ name = $Name; operator = $operator; owner = $Owner; referral = $Referral; version = $manifest.version; installedAt = (Get-Date).ToUniversalTime().ToString("o") } |
-  ConvertTo-Json | Set-Content -Encoding UTF8 $existing
+[ordered]@{ name = $Name; operator = $operator; owner = $Owner; referral = $Referral; version = $manifest.version; installedAt = (Get-Date).ToUniversalTime().ToString("o")
+            identity = [ordered]@{ format = "enclave-host-identity/v1"; mode = $want.mode; publicUrl = $want.publicUrl; relay = $want.relay
+                                   gateways = @($want.gateways); rpcs = @($want.rpcs); directories = @($want.directories); checkers = @($want.checkers)
+                                   contractPinsSha256 = $want.contractPinsSha256 } } |
+  ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $existing
 Emit "config" "ok" "Configured '$Name': $slots app slot(s), $appRamGb GB for apps"
+if ($independent) {
+  Emit "config" "warn" ("Independent: owner-only scope (the Shield market opens only on an attached relay's attestation verdict); no relay-held secrets, " +
+                        "relay certificates or custom domains; the operator key pays its own registration gas. See docs/network/independent-windows.md")
+}
 
 # ---------------------------------------------------------------------------------------------------------------------
 # 7. the services: \Enclave\Shield, then \Enclave\Node, as SYSTEM, at every boot
@@ -429,7 +579,7 @@ Emit "services" "ok" "Enclave Shield, the node and the private-route agent are r
 # ---------------------------------------------------------------------------------------------------------------------
 # 8. join the network: hardware attestation, then the sponsored registration (no ETH needed)
 # ---------------------------------------------------------------------------------------------------------------------
-Emit "join" "run" "Proving this PC's hardware to the network and registering '$Name'"
+Emit "join" "run" $(if ($independent) { "Registering $($want.publicUrl) from the operator key (it needs a little Base ETH for gas)" } else { "Proving this PC's hardware to the network and registering '$Name'" })
 $log = Join-Path $PD "logs\node.log"; $joined = $false
 for ($i = 0; $i -lt 90; $i++) {
   Start-Sleep 4
@@ -439,6 +589,7 @@ for ($i = 0; $i -lt 90; $i++) {
   if ($refused) { Emit "join" "warn" ($refused -replace '^.*?\] ', '') }
 }
 if ($joined) { Emit "join" "ok" "'$Name' is registered and attached: it takes work from the network" }
+elseif ($independent) { Emit "join" "warn" "'$Name' is installed but not registered yet: send operator $operator a little Base ETH and it registers itself (see $log)" }
 else { Emit "join" "warn" "'$Name' is installed but not registered yet; it keeps trying (see $log)" }
 
 # ---------------------------------------------------------------------------------------------------------------------

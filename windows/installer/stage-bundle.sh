@@ -61,6 +61,8 @@ rm -rf "$W"
 
 mkdir -p "$T/setup"; git archive --format=tar "$NC" windows/tray windows/installer host-ui | tar -x -C "$T/setup"
 
+# Carry the full source identity inside the hashed archive; an eight-character filename is not provenance.
+printf '{"format":"enclave-control-source/1","commit":"%s"}\n' "$NC" > "$T/control-source.json"
 (cd "$T" && find . -type f | sort | sed 's|^\./||' | while read -r f; do printf '%s  %s\n' "$(sha256sum "$f" | cut -c1-64)" "$f"; done) > "$OUT/MANIFEST-control-$N8.txt"
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu -C "$T" -cf - control network setup | gzip -n -9 > "$OUT/control-$N8.tar.gz"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu -C "$T" -cf - control network setup control-source.json | gzip -n -9 > "$OUT/control-$N8.tar.gz"
 echo "commit $NC -> $OUT/control-$N8.tar.gz sha256 $(sha256sum "$OUT/control-$N8.tar.gz" | cut -c1-64) ($(wc -l < "$OUT/MANIFEST-control-$N8.txt") files, $(du -h "$OUT/control-$N8.tar.gz" | cut -f1))"

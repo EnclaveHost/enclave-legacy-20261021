@@ -91,8 +91,13 @@ Three things differ, each no weaker on this tier:
 `relay/dns-challenge-shield.mjs` makes the owner-selected DNS-01 responder accept a Shield guest's push. It is
 enabled by `ATTESTED_SHIELD_POLICY`, which needs:
 
-- `ATTESTED_SHIELD_PINS` (the pinned registry);
-- `ATTESTED_SHIELD_RPCS` (two or more RPC hosts, read at one agreed block).
+- `ATTESTED_SHIELD_PROFILE` and `ATTESTED_SHIELD_PROFILE_DIGEST`: the reviewed authority profile, pinned by its digest
+  (`network/authority-profile.mjs` refuses any other bytes). Every host-identity read is judged against its registry pin
+  (address, runtime code hash and length, registry schema) at its own agreed block;
+- `ATTESTED_SHIELD_RPCS` (two or more RPC hosts on distinct hosts, read at one agreed block).
+
+`ATTESTED_SHIELD_PINS`, the strict contract-pin document, is optional. If it is given, it must name the same registry as
+the profile. No address book, fleet, relay or default RPC is consulted (`relay/dns-relay.js shieldAuthFromEnv`).
 
 Without the policy, only SEV-SNP evidence is accepted, and `ATTESTED_MEASUREMENTS` is required as before. Each
 adapter refuses the other's documents.

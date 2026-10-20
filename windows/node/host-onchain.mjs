@@ -14,26 +14,68 @@
 //                   secrets, waiting); it needs a SERVING enclave to quote a price from, which a
 //                   fleet of owner-only nodes has none of, so this is the direct equivalent.
 //
-// Usage (OWNER_KEY is the owner's private key; never the box's operator key):
-//   OWNER_KEY=0x… node host-onchain.mjs status
+// Usage (OWNER_KEY is the owner's private key; never the box's operator key). The host is PUBLIC_URL, or the legacy relay
+// route of NODE_NAME (https://api.enclave.host/t/<name>); one of them is required - there is no default host.
+//   OWNER_KEY=0x… node host-onchain.mjs status                 (OWNER_KEY optional here: without it, no owner balance)
 //   OWNER_KEY=0x… node host-onchain.mjs fund-operator <0xoperator> [eth]
 //   OWNER_KEY=0x… node host-onchain.mjs declare-payout [endpoint]
 //   OWNER_KEY=0x… node host-onchain.mjs deploy <catalog://appId/index> [cpuPercent] [maxRateUsdPerHour]
+//
+// HOST OWNERSHIP on a verified EnclaveHostOwnership (host-ownership.mjs). READ-ONLY, no key of any kind: they prepare
+// and check, they never sign or send. ENCLAVE_CONTRACT_PINS_FILE is required (the registry and catalog the verified
+// contract is bound to must be the ones this host pins); --authorities defaults to the repo's
+// contracts/deployments/independent-authorities-base.json (the verified 0xF5E9E6C0… deployment).
+//   node host-onchain.mjs prepare-ownership --policy <policy.json> --owner <0xwallet> --out <new-dir> --policy-dir <dir> [--authorities <file>]
+//       -> <out>/<policyHash>.json (place it in the host's ENCLAVE_HOST_POLICY_DIR), transactions.json (UNSIGNED:
+//          proposeOwner from the operator key, acceptOwner and setPolicy from the owner wallet), node-config.ownership.cmd
+//   node host-onchain.mjs ownership-status [--policy-dir <dir>] [--authorities <file>]
+//       -> whether the owner has accepted and the committed policy is on the host: only then add
+//          node-config.ownership.cmd to node-config.local.cmd (the veto fails closed before that)
 import { createWalletClient, createPublicClient, http, fallback, parseEther, formatEther, getAddress, keccak256, toBytes, decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 import * as chain from "./chain.mjs";
 
-const RPCS = (process.env.BASE_RPCS || "https://base-rpc.publicnode.com,https://base.drpc.org,https://mainnet.base.org").split(",");
-const NAME = process.env.NODE_NAME || "nucbox-k11";
-const ENDPOINT = process.env.PUBLIC_URL || `https://api.enclave.host/t/${NAME}`;
-const key = (process.env.OWNER_KEY || "").trim();
-if (!/^0x[0-9a-fA-F]{64}$/.test(key)) { console.error("set OWNER_KEY to the owner wallet's private key (0x + 64 hex)"); process.exit(2); }
-const owner = privateKeyToAccount(key);
-const pub = createPublicClient({ chain: base, transport: fallback(RPCS.map((u) => http(u))) });
-const wal = createWalletClient({ account: owner, chain: base, transport: fallback(RPCS.map((u) => http(u))) });
-const A = await chain.resolveAddresses();
+const RPCS = (process.env.BASE_RPCS || "https://base-rpc.publicnode.com,https://base.drpc.org,https://mainnet.base.org").split(",").map((s) => s.trim()).filter(Boolean);
+const ENDPOINT = process.env.PUBLIC_URL || (process.env.NODE_NAME ? `https://api.enclave.host/t/${process.env.NODE_NAME}` : "");
+if (!ENDPOINT) { console.error("set PUBLIC_URL (this host's registered endpoint), or NODE_NAME for a relay-routed host"); process.exit(2); }
+const [cmd, ...rest] = process.argv.slice(2);
+const opt = (name, dflt = "") => { const i = rest.indexOf(`--${name}`); return i >= 0 && rest[i + 1] ? rest[i + 1] : dflt; };
 const enclaveId = keccak256(toBytes(ENDPOINT));
+const pub = createPublicClient({ chain: base, transport: fallback(RPCS.map((u) => http(u))) });
+
+if (cmd === "prepare-ownership" || cmd === "ownership-status") {
+  const fs = await import("node:fs"), path = await import("node:path"), { fileURLToPath } = await import("node:url");
+  const own = await import("./host-ownership.mjs"), { quorumReader, rpcClients } = await import("./host-identity.mjs");
+  if (!chain.CONTRACT_PINS) { console.error("set ENCLAVE_CONTRACT_PINS_FILE: ownership is prepared only against pinned contracts"); process.exit(2); }
+  const authFile = opt("authorities", path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "contracts", "deployments", "independent-authorities-base.json"));
+  const authority = own.verifiedOwnershipAuthority(JSON.parse(fs.readFileSync(authFile, "utf8")), chain.CONTRACT_PINS);
+  const reader = quorumReader({ clients: await rpcClients(RPCS) });
+  const policyDir = opt("policy-dir", process.env.ENCLAVE_HOST_POLICY_DIR || "");
+  if (cmd === "ownership-status") {
+    console.log(JSON.stringify(await own.ownershipStatus({ authority, hostId: enclaveId, reader, policyDir }), null, 1));
+    process.exit(0);
+  }
+  const policyFile = opt("policy"), wallet = opt("owner"), out = opt("out");
+  // --policy-dir is the host's ENCLAVE_HOST_POLICY_DIR as the HOST sees it (the generated settings name it); not guessed
+  if (!policyFile || !wallet || !out || !policyDir) { console.error("prepare-ownership --policy <policy.json> --owner <0xwallet> --out <new-dir> --policy-dir <host's policy dir> [--authorities <file>]"); process.exit(2); }
+  const prepared = await own.prepareOwnershipEnrollment({ policy: JSON.parse(fs.readFileSync(policyFile, "utf8")), owner: wallet, endpoint: ENDPOINT, authority, reader });
+  const activation = own.ownershipActivation({ authority, hostId: enclaveId, pinsFile: process.env.ENCLAVE_CONTRACT_PINS_FILE, policyDir });
+  fs.mkdirSync(out);                                   // a new directory: an earlier signing package is never overwritten
+  fs.writeFileSync(path.join(out, `${prepared.policyHash}.json`), JSON.stringify(prepared.policy, null, 2) + "\n", { flag: "wx" });
+  fs.writeFileSync(path.join(out, "transactions.json"), JSON.stringify({ ...prepared, activation: activation.env }, null, 2) + "\n", { flag: "wx" });
+  fs.writeFileSync(path.join(out, "node-config.ownership.cmd"), activation.cmd, { flag: "wx" });
+  console.log(JSON.stringify({ status: prepared.status, hostId: enclaveId, ownership: authority.ownershipContract, policyHash: prepared.policyHash,
+                               transactions: prepared.transactions.map((t) => `${t.transaction.from} ${t.purpose}`), out }, null, 1));
+  process.exit(0);
+}
+
+const key = (process.env.OWNER_KEY || "").trim();
+if (key && !/^0x[0-9a-fA-F]{64}$/.test(key)) { console.error("OWNER_KEY must be the owner wallet's private key (0x + 64 hex)"); process.exit(2); }
+if (!key && cmd !== "status") { console.error("set OWNER_KEY to the owner wallet's private key (0x + 64 hex)"); process.exit(2); }
+const owner = key ? privateKeyToAccount(key) : null;
+const wal = owner ? createWalletClient({ account: owner, chain: base, transport: fallback(RPCS.map((u) => http(u))) }) : null;
+const A = await chain.resolveAddresses();
 
 const SET_PAYOUT_ABI = [{ type: "function", name: "setPayoutWallet", stateMutability: "nonpayable", inputs: [{ name: "id", type: "bytes32" }], outputs: [] }];
 const CREATE_ABI = [
@@ -53,10 +95,9 @@ const send = async (label, req) => {
   return r;
 };
 
-const [cmd, ...rest] = process.argv.slice(2);
 const e = await chain.readEnclave(enclaveId).catch(() => null);
 if (cmd === "status") {
-  console.log(JSON.stringify({ owner: owner.address, ownerEth: formatEther(await pub.getBalance({ address: owner.address })),
+  console.log(JSON.stringify({ owner: owner?.address || null, ownerEth: owner ? formatEther(await pub.getBalance({ address: owner.address })) : null,
     endpoint: ENDPOINT, enclaveId, registered: !!(e && e.endpoint),
     entry: e && e.endpoint ? { operator: e.operator, active: e.active, cpuPricePerSec6: String(e.cpuPricePerSec6), proofKey: e.proofKey, payoutWallet: e.payoutWallet, measurement: e.measurement } : null,
     addresses: A }, null, 1));
@@ -88,6 +129,7 @@ if (cmd === "status") {
       if (d.eventName === "Created") console.log(`deployment ${d.args.id} owned by ${d.args.owner}`); } catch {}
   }
 } else {
-  console.error("commands: status | fund-operator <0xaddr> [eth] | declare-payout | deploy <catalog://appId/index> [cpuPercent] [maxRateUsdPerHour]");
+  console.error("commands: status | fund-operator <0xaddr> [eth] | declare-payout | deploy <catalog://appId/index> [cpuPercent] [maxRateUsdPerHour]"
+    + " | prepare-ownership --policy <f> --owner <0x> --out <dir> | ownership-status");
   process.exit(2);
 }

@@ -5,7 +5,7 @@
    runner, the WMI launcher with the guest image pinned BY HASH, and a CID-verified component
    fetcher. The manager then asks the host what it can actually do (probe) before it answers
    /health, so "canStart" is the host's answer rather than a configuration detail. */
-import { profile, probeWorker, startBridge, ProfileLauncher } from "./shield-profile.mjs";
+import { profile, probeWorker, startBridge, ImageLauncher } from "./shield-profile.mjs";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -14,10 +14,13 @@ import { Manager, createServer, startManager } from "./server.mjs";
 import { judgeRunning, checkAnswer } from "./ready.mjs";
 import { runtimeId as runtimeIdOf } from "../../../isolation/contract/runtime.mjs";
 import { HyperVPartitionBackend } from "./backend.mjs";
-import { WmiHyperVLauncher, HYPERV_MODULE_SHA256 } from "./wmi-launcher.mjs";
+import { WmiHyperVLauncher, HYPERV_MODULE_SHA256, DEFAULT_VM_PREFIX, VM_PREFIX_RE } from "./wmi-launcher.mjs";
 import { powershellRunner } from "./psrun.mjs";
 import { cidFetcher } from "./fetchcid.mjs";
 import { egressConfigFromEnv, checkPin, startEgress, EGRESS_SERVICE_GUID } from "./egress.mjs";
+import { startPackageTransport, PACKAGE_SERVICE_GUID } from "./package-transport.mjs";
+import { startCustodyTransport, CUSTODY_SERVICE_GUID } from "./custody-transport.mjs";
+import { readCustodyCallbackKey } from "./custody-key-file.mjs";
 import { DERIVATION_V6, DERIVATION_V7 } from "./derive.mjs";
 import { PartitionConsoleLogs, consoleTargets, partitionLogDir } from "./console-log.mjs";
 
@@ -25,6 +28,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const env = (k, d = "") => (process.env[k] || d).trim();
 
 const port        = Number(env("VMMGR_PORT", "8091"));
+// THE VM NAME SCOPE of this instance. Unset: the production prefix, exactly as before. Set (e.g. a hardware canary beside
+// production): its own name prefix and Notes marker (wmi-launcher.mjs markerFor), so neither instance surveys, recovers,
+// sweeps or removes the other's VMs. Validated first: a malformed scope never starts.
+const vmPrefix = env("ENCLAVE_VM_PREFIX") || DEFAULT_VM_PREFIX;
+if (vmPrefix !== DEFAULT_VM_PREFIX && !VM_PREFIX_RE.test(vmPrefix)) {
+  console.error(`[winmgr] REFUSING TO START: ENCLAVE_VM_PREFIX must be "enclave-" + 1-16 lowercase letters or digits + "-" (got ${JSON.stringify(vmPrefix).slice(0, 60)})`);
+  process.exit(2);
+}
+if (vmPrefix !== DEFAULT_VM_PREFIX) console.log(`[winmgr] VM scope ${vmPrefix}: a separately scoped instance; it sees only its own VM names or Notes marker`);
 const imagePath   = env("ENCLAVE_GUEST_IGVM");          // e.g. C:\Users\claude\vbs-like\openhcl-ownguest.bin
 const imageSha256 = env("ENCLAVE_GUEST_IGVM_SHA256");   // the bytes it must be; a path is not an identity
 const runtimeId   = env("ENCLAVE_RUNTIME_ID");
@@ -90,17 +102,70 @@ if (egress) {
       + "secret deployments only");
   } catch (e) { console.error(`[winmgr] REFUSING TO START: ${e.message}`); process.exit(2); }
 }
-// the launcher's hook: a secret deployment's partition gets its egress path; every other mapping gets none
+// OWNER-COMMITTED STARTUP (package-transport.mjs, isolation/m2/front/shield_direct.go) ON ITS OWN PINNED IMAGE (F3):
+// ENCLAVE_SHIELD_DIRECT=1 needs a SEPARATE Shield-direct image, by path, hash and runtime identity:
+//   ENCLAVE_SHIELD_DIRECT_IGVM / _IGVM_SHA256 / _RUNTIME_IDENTITY (runtime.json; the RuntimeID is derived, never configured)
+// distinct from the legacy ENCLAVE_GUEST_IGVM, which keeps running the readiness witness, public and relay-secret apps
+// exactly as before. A Shield-direct front ends every domain that receives no package, so the legacy image is never
+// relabelled as direct, and there is no grace mode. Such a partition reads its package on vsock 9446 and its own RPC
+// quorum, CA and responder through egress, so egress is required; the package bridge is the egress bridge's pinned
+// executable. OFF by default, and then a spawn carrying a package is refused (server.mjs).
+const shieldDirect = env("ENCLAVE_SHIELD_DIRECT") === "1";
+let direct = null;            // { imagePath, imageSha256, runtime, runtimeId }
+if (shieldDirect) {
+  const dPath = env("ENCLAVE_SHIELD_DIRECT_IGVM"), dSha = env("ENCLAVE_SHIELD_DIRECT_IGVM_SHA256").toLowerCase(), dIdentity = env("ENCLAVE_SHIELD_DIRECT_RUNTIME_IDENTITY");
+  const miss = [!egress && "ENCLAVE_EGRESS_V1=1 (the guest reads its own chain quorum through egress)",
+                !(imagePath && imageSha256) && "the legacy image ENCLAVE_GUEST_IGVM and _SHA256 (the witness and every legacy spawn run there)",
+                !dPath && "ENCLAVE_SHIELD_DIRECT_IGVM", !/^[0-9a-f]{64}$/.test(dSha) && "ENCLAVE_SHIELD_DIRECT_IGVM_SHA256 (64 hex)",
+                !dIdentity && "ENCLAVE_SHIELD_DIRECT_RUNTIME_IDENTITY",
+                dPath && dPath === imagePath && "a Shield-direct image path distinct from ENCLAVE_GUEST_IGVM",
+                dSha && dSha === imageSha256.toLowerCase() && "a Shield-direct image hash distinct from ENCLAVE_GUEST_IGVM_SHA256 (the legacy image is never relabelled)"].filter(Boolean);
+  if (miss.length) { console.error(`[winmgr] REFUSING TO START: ENCLAVE_SHIELD_DIRECT=1 needs ${miss.join(", ")}`); process.exit(2); }
+  let runtime;
+  try { runtime = JSON.parse(fs.readFileSync(dIdentity, "utf8")); }
+  catch (e) { console.error(`[winmgr] REFUSING TO START: the Shield-direct runtime identity ${dIdentity}: ${e.message}`); process.exit(2); }
+  direct = { imagePath: dPath, imageSha256: dSha, runtime, runtimeId: Buffer.from(runtimeIdOf(runtime)).toString("hex") };
+  console.log(`[winmgr] owner-committed startup ON, on its own image ${dSha} (RuntimeID ${direct.runtimeId}; tier T0-hv, hostExcluded=false); the legacy image ${imageSha256} keeps every other spawn`);
+}
+// the launcher's hook: a secret deployment's partition, or an owner-committed one, gets its egress path; every other mapping gets none
 const egressHook = egress
-  ? (vmId, deploymentId, mapping) => [DERIVATION_V6,DERIVATION_V7].includes(mapping?.record?.derivation) ? startEgress({ cfg: egress, vmId, deploymentId }) : null
+  ? (vmId, deploymentId, mapping, { bootstrap = false } = {}) =>
+      [DERIVATION_V6,DERIVATION_V7].includes(mapping?.record?.derivation) || (shieldDirect && bootstrap) ? startEgress({ cfg: egress, vmId, deploymentId }) : null
+  : null;
+const packageHook = shieldDirect
+  ? (vmId, deploymentId, bytes) => startPackageTransport({ bridge: { exe: egress.bridgeExe, sha256: egress.bridgeSha256 }, vmId, deploymentId, bytes })
+  : null;
+// DIRECT SHIELD CUSTODY (custody-transport.mjs, isolation/m2/front/shield_direct_custody.go): ENCLAVE_SHIELD_CUSTODY_V2=1
+// states that the pinned Shield-direct image is the custody build, by its hash: ENCLAVE_SHIELD_CUSTODY_IMAGE_SHA256 must be
+// ENCLAVE_SHIELD_DIRECT_IGVM_SHA256, so changing the image turns custody off until it is stated again. Such a guest needs the
+// Shield-direct package path, egress and secret (V6) delivery, and the node answers its requests with the key in
+// ENCLAVE_CUSTODY_CALLBACK_KEY_FILE (a private file of 64-128 hex, the node's copy beside it). OFF by default. The 9445
+// hv_sock service is registered by an explicit activation step, never here: preflight reports it, canStart follows.
+let custodyV2 = null;
+if (env("ENCLAVE_SHIELD_CUSTODY_V2") === "1") {
+  const stated = env("ENCLAVE_SHIELD_CUSTODY_IMAGE_SHA256").toLowerCase(), keyFile = env("ENCLAVE_CUSTODY_CALLBACK_KEY_FILE");
+  const miss = [!shieldDirect && "ENCLAVE_SHIELD_DIRECT=1", env("ENCLAVE_CONFIG_BUNDLE_V5") !== "1" && "ENCLAVE_CONFIG_BUNDLE_V5=1",
+                env("ENCLAVE_SECRETS_V1") !== "1" && "ENCLAVE_SECRETS_V1=1",
+                !(/^[0-9a-f]{64}$/.test(stated) && stated === direct?.imageSha256) && "ENCLAVE_SHIELD_CUSTODY_IMAGE_SHA256 equal to the pinned ENCLAVE_SHIELD_DIRECT_IGVM_SHA256",
+                !keyFile && "ENCLAVE_CUSTODY_CALLBACK_KEY_FILE"].filter(Boolean);
+  if (miss.length) { console.error(`[winmgr] REFUSING TO START: ENCLAVE_SHIELD_CUSTODY_V2=1 needs ${miss.join(", ")}`); process.exit(2); }
+  let key = null;
+  // private to SYSTEM and Administrators on win32 (its DACL and owner), owner-only on POSIX; checked, never altered
+  try { key = readCustodyCallbackKey(keyFile); }
+  catch (e) { console.error(`[winmgr] REFUSING TO START: the custody callback key file ${keyFile}: ${e.message}`); process.exit(2); }
+  custodyV2 = { imageSha256: stated, callbackKey: key };
+  console.log(`[winmgr] direct Shield custody ON for image ${stated}: V6/V7 custody-v2 packages only; the guest opens its own shares`);
+}
+const custodyHook = custodyV2
+  ? (vmId, deploymentId, { vault }) => startCustodyTransport({ bridge: { exe: egress.bridgeExe, sha256: egress.bridgeSha256 }, vmId, deploymentId, vault })
   : null;
 
-let launcher = null;
+let launcher = null, directLauncher = null;
 let launcherOptions = null;
 if (imagePath && imageSha256) {
   try {
     launcherOptions = {
-      run: powershellRunner(), imagePath, imageSha256,
+      run: powershellRunner(), imagePath, imageSha256, prefix: vmPrefix,
       boot: env("ENCLAVE_BOOT_FORM") || null,
       medium: env("ENCLAVE_GUEST_MEDIUM") || null,
       mediumSha256: env("ENCLAVE_GUEST_MEDIUM_SHA256") || null,
@@ -114,7 +179,12 @@ if (imagePath && imageSha256) {
       serve,
       ...(egress ? { startEgress: egressHook, egressService: EGRESS_SERVICE_GUID } : {}),
     };
+    // the legacy image: no package and no custody hook, exactly the launcher it always was
     launcher = new WmiHyperVLauncher(launcherOptions);
+    // the Shield-direct image (F3): the same host options, its own pinned IGVM, and the package and custody hooks
+    if (direct) directLauncher = new WmiHyperVLauncher({ ...launcherOptions, imagePath: direct.imagePath, imageSha256: direct.imageSha256, imageRole: "shield-direct",
+      startPackage: packageHook, packageService: PACKAGE_SERVICE_GUID,
+      ...(custodyHook ? { startCustody: custodyHook, custodyService: CUSTODY_SERVICE_GUID, custodyImageSha256: custodyV2.imageSha256 } : {}) });
   } catch (e) {
     // A contradictory launcher configuration (a medium with linux-direct, an unknown boot form, a
     // medium with no boot form) is refused at startup rather than guessed at.
@@ -163,18 +233,18 @@ if (runtimeIdentityPath) {
   process.exit(2);
 }
 
-let shield = null;
+let shield = null, gpu = null;
 const shieldConfig = env("ENCLAVE_SHIELD_PROFILE");
 if (shieldConfig) {
   if (!launcherOptions) throw new Error("Shield requires an existing CPU launcher");
   const cfg = JSON.parse(fs.readFileSync(shieldConfig,"utf8"));
   shield = { ...profile(cfg.runtime), ready:false, imageSha256:cfg.imageSha256 };
-  const gpuLauncher = new WmiHyperVLauncher({ ...launcherOptions, startEgress:null, egressService:null,   // no secret domain runs on the GPU image
-    imagePath:cfg.imagePath, imageSha256:cfg.imageSha256,
+  const gpuLauncher = new WmiHyperVLauncher({ ...launcherOptions, startEgress:null, egressService:null, startPackage:null, packageService:null, startCustody:null, custodyService:null, custodyImageSha256:null,   // no secret or owner-committed domain runs on the GPU image
+    imageRole:"gpu", imagePath:cfg.imagePath, imageSha256:cfg.imageSha256,
     startTransport:vmId => startBridge({ exe:cfg.bridgeExe, sha256:cfg.bridgeSha256, vmId, port:cfg.workerPort || 19595 }) });
   await gpuLauncher.verifyImage();
   if (createHash("sha256").update(fs.readFileSync(cfg.bridgeExe)).digest("hex") !== cfg.bridgeSha256) throw new Error("Shield bridge differs from its pin");
-  launcher = new ProfileLauncher(launcher,gpuLauncher);
+  gpu = gpuLauncher;
   const refresh = async () => {
     try { shield.card=await probeWorker(cfg.workerPort || 19595); shield.ready=true; shield.checkedAt=Date.now(); shield.error=null; }
     catch(e) { shield.ready=false; shield.card=null; shield.error=e.message; shield.checkedAt=Date.now(); }
@@ -183,7 +253,14 @@ if (shieldConfig) {
   setInterval(refresh,15000).unref();
 }
 
-const manager = new Manager({ judgeReady: judgeRunning, answerCheck: checkAnswer,
+// PER-SPAWN IMAGE SELECTION (F3, shield-profile.mjs ImageLauncher): a package -> the Shield-direct image, inference -> the
+// GPU image, everything else -> the legacy image. With neither extra image, the legacy launcher alone, exactly as before.
+const routed = launcher && (directLauncher || gpu) ? new ImageLauncher({ legacy: launcher, shieldDirect: directLauncher, gpu }) : launcher;
+const manager = new Manager({ judgeReady: judgeRunning, answerCheck: checkAnswer, directBootstrap: !!directLauncher,
+  images: { legacy: { igvmSha256: imageSha256.toLowerCase() || null },
+            ...(direct ? { shieldDirect: { runtime: direct.runtime, igvmSha256: direct.imageSha256 } } : {}) },
+  // only with a launcher whose own pinned image is the stated one (above); without a launcher nothing can start anyway
+  custodyV2: custodyV2 && launcherOptions ? custodyV2 : null,
   // Match the node agent's advertised hosting RAM, not physical machine RAM.
   ramPoolMiB: env("NODE_APP_RAM_GB") ? Number(env("NODE_APP_RAM_GB")) * 1024 : null,
   runtime,
@@ -200,7 +277,7 @@ const manager = new Manager({ judgeReady: judgeRunning, answerCheck: checkAnswer
   fetchConfig: cidFetcher({ script: fetcherPath, python: env("PYTHON_BIN", "python"),
     gateway: env("IPFS_GATEWAY"), maxBytes: 1 << 20,
     timeoutMs: Number(env("ENCLAVE_FETCH_TIMEOUT_MS", "240000")) }),
-  backend: new HyperVPartitionBackend({ launcher }),
+  backend: new HyperVPartitionBackend({ launcher: routed }),
 });
 
 // THE DATA PLANE. Without it a domain can be started and judged running and still have nothing to

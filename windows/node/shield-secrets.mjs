@@ -8,7 +8,7 @@ export function createShieldSecrets({base,endpoint,relayBase,sign,fetchImpl=fetc
  const inventory=async()=>{const r=await fetchImpl(base+'/vms',{signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('manager inventory unavailable');return (await r.json()).vms;};
  async function target(id){
   if(!ID.test(id||''))throw Error('exact deployment required');
-  const v=(await inventory()).find(v=>v.name===id&&v.secretDeployment===id&&!v.recovered&&['starting','running'].includes(v.status));
+  const v=(await inventory()).find(v=>v.name===id&&v.secretDeployment===id&&!v.recovered&&v.directBootstrap!==true&&['starting','running'].includes(v.status));
   if(!v||v.relay?.host!=='127.0.0.1'||!Number.isInteger(v.relay.port)||v.relay.port<1||v.relay.port>65535)throw Error('secret guest is not reachable');
   return v;
  }
@@ -38,6 +38,8 @@ export function createShieldSecrets({base,endpoint,relayBase,sign,fetchImpl=fetc
    try{
     const all=await inventory(),live=new Set(all.map(v=>v.id));for(const id of done)if(!live.has(id))done.delete(id);for(const id of retry.keys())if(!live.has(id))retry.delete(id);
     for(const v of all){
+     // an owner-committed (direct) domain never gets relay-staged secrets: a custody guest opens its own (shield-custody.mjs)
+     if(v.directBootstrap===true)continue;
      if(v.recovered||v.status!=='starting'||v.secretDeployment!==v.name||!ID.test(v.name||'')||!v.relay||done.has(v.id)||Date.now()<(retry.get(v.id)||0))continue;
      retry.set(v.id,Date.now()+15000);
      const ts=Math.floor(Date.now()/1000),ep=endpoint.replace(/\/+$/,''),opSig=await sign(message(v.name,ep,ts));

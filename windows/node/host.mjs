@@ -43,7 +43,8 @@ function readDelegationFiles(dir) {
   });
 }
 import { ensureCert, appHostFor, selfSigned } from "./apptls.mjs";
-import { fetchDomains } from "./domains.mjs";
+import { fetchDomains, ownerCommittedDomains } from "./domains.mjs";
+import { shieldStartupEnvelope, createShieldStartup, startupGateways, startupAdoptionRefusal, startupImages } from "./shield-startup.mjs";
 import tls from "node:tls";
 import * as waf from "./waf.mjs";
 import { CAP_STEP, loadCaps, saveCaps } from "./hosting.mjs";
@@ -186,6 +187,60 @@ export class Host {
     this.pricingFile = path.join(cfg.dir, "pricing.json");
     this.pricing = Host.loadPricing(this.pricingFile);
     this.priceGuide = null; this.pricedBy = { cpu: "config", gpu: "config" };
+    // OWNER-COMMITTED STARTUP (shield-startup.mjs): an envelope carrying guestBootstrap is started only from its exact
+    // package, verified against the operator's pinned contracts through a fresh agreeing quorum. cfg.ownerStartup is the
+    // authority (a test or the agent passes one); otherwise it is built once from the environment (#startupAuthority).
+    // Without either, such a deployment is refused by name, as it always was: nothing falls back to a relay.
+    this.startupAuthority = Object.hasOwn(cfg, "ownerStartup") ? cfg.ownerStartup : undefined;
+    this.startupConfigError = "";
+    // THE MARKET WINDOW FROM OPERATOR-SELECTED VERIFIERS (shield-verdict.mjs): { until, tier, keyIds } from a threshold
+    // of verdicts that each bind this host, its transport key and this host's own current challenge. Never self-set.
+    this.verifierMarket = null;
+  }
+  /**
+   * The startup authority, built lazily from the environment when the agent did not pass one:
+   *   ENCLAVE_STARTUP_STORAGE_PLAN_FILE | ENCLAVE_STARTUP_GATEWAYS   where package bytes may come from (one, not both)
+   *   ENCLAVE_STARTUP_RPCS (comma; default the node's own BASE_RPCS)  two or more RPCs on distinct hosts
+   *   ENCLAVE_CONTRACT_PINS_FILE                                       the pinned ledger and catalog (chain.mjs CONTRACT_PINS)
+   * -> the authority, or null with this.startupConfigError saying what is missing.
+   */
+  async #startupAuthority() {
+    if (this.startupAuthority !== undefined) return this.startupAuthority;
+    try {
+      const gateways = startupGateways(process.env);
+      if (!gateways.length) throw new Error("no startup package replicas (ENCLAVE_STARTUP_STORAGE_PLAN_FILE or ENCLAVE_STARTUP_GATEWAYS)");
+      if (!chain.CONTRACT_PINS) throw new Error("no pinned contracts (ENCLAVE_CONTRACT_PINS_FILE): the mutable address book is not a startup authority");
+      const { quorumReader, rpcClients } = await import("./host-identity.mjs");
+      const { cidFetcher } = await import("../vbslike/manager/fetchcid.mjs");
+      const rpcs = String(process.env.ENCLAVE_STARTUP_RPCS || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const reader = quorumReader({ clients: await rpcClients(rpcs.length ? rpcs : chain.rpcUrls()) });
+      const { fileURLToPath } = await import("node:url");
+      const script = fileURLToPath(new URL("./fetch-cid.py", import.meta.url));
+      const sources = String(this.cfg.gateway || "").split(",").map((x) => x.trim()).filter(Boolean);
+      if (!sources.length) throw new Error("no artifact gateways (IPFS_GATEWAYS) to fetch the catalog component from");
+      const fetchers = sources.map((gateway) => cidFetcher({ script, python: this.cfg.python || "python", gateway }));
+      const fetchComponent = async (cid) => { let last; for (const f of fetchers) { try { return await f(cid); } catch (e) { last = e; } } throw last; };
+      this.startupAuthority = createShieldStartup({ reader, pins: chain.CONTRACT_PINS, gateways, fetchComponent,
+        abis: { DEP_ABI: chain.DEP_ABI, CATALOG_ABI: chain.CATALOG_ABI }, log: (m) => this.log(m), ...startupImages(process.env) });
+    } catch (e) { this.startupAuthority = null; this.startupConfigError = e.message; }
+    return this.startupAuthority;
+  }
+  /**
+   * envelopeOf(raw, gpuMilli) -> chain.parseEnvelope's options for this deployment's envelope, plus `startup` (the owner's
+   * guestBootstrap intent) when it carries one. An owner-committed envelope is judged by the SAME parser on its
+   * projection without the commitment, so placement, isolation, protection rules and GPU options keep their meaning.
+   * Throws as parseEnvelope does.
+   */
+  envelopeOf(raw, gpuMilli) {
+    const s = shieldStartupEnvelope(raw);
+    if (!s) return chain.parseEnvelope(raw, gpuMilli);
+    return { ...chain.parseEnvelope(s.projected, gpuMilli), startup: s.intent };
+  }
+  /** The ledger row as the node's generic policy reads it: an owner-committed envelope projected without its commitment. */
+  #policyView(d) {
+    let s = null;
+    try { s = shieldStartupEnvelope(d?.configCid); } catch { return d; }   // malformed: claimPolicy's parser refuses it by name
+    return s ? { ...d, configCid: s.projected } : d;
   }
   static loadPricing(file) {
     try {
@@ -561,7 +616,7 @@ export class Host {
     const heldHere = String(d.runner || "").toLowerCase() === this.enclaveId.toLowerCase() && Number(d.leaseUntil) * 1000 > Date.now();
     if (!heldHere && this.isolation) {
       let envOpts = {}, envRead = false;
-      try { envOpts = chain.parseEnvelope(d.configCid, d.gpuMilli) || {}; envRead = true; } catch { envRead = false; }
+      try { envOpts = this.envelopeOf(d.configCid, d.gpuMilli) || {}; envRead = true; } catch { envRead = false; }
       if (envRead && chain.isolationForBackend(envOpts, this.isolationBackend)) {
         const pre = await this.#preclaimVerdict(id, d, v, { envOpts, envRead, force });
         if (pre) return pre;
@@ -769,7 +824,7 @@ export class Host {
     if (verdict === "stamp") { this.#record(id, { envelope: cur }); return; }
     if (verdict === "error") {
       let why = "it does not parse";
-      try { chain.parseEnvelope(cur, d.gpuMilli); } catch (e) { why = e.message; }
+      try { this.envelopeOf(cur, d.gpuMilli); } catch (e) { why = e.message; }
       // Recorded once, not every 30 seconds: a bad edit is a standing fact about the row.
       if (rec.reason !== `the owner's last options edit was not applied: ${why}`)
         this.log(`config edit ${id.slice(0, 10)} NOT applied (the running app keeps its old configuration): ${why}`);
@@ -777,7 +832,7 @@ export class Host {
       return;
     }
     let opts = {};
-    try { opts = chain.parseEnvelope(cur, d.gpuMilli); } catch { return; }
+    try { opts = this.envelopeOf(cur, d.gpuMilli); } catch { return; }
     if (verdict === "waf") {
       // {} not null: the envelope parsed, so "no rules" is KNOWN. null means "could not read",
       // which isolationPlan holds on - so recording null after a live edit that REMOVED the rules
@@ -818,13 +873,15 @@ export class Host {
     if (rec.envelope == null) return "stamp";
     if (rec.envelope === cur) return "skip";
     let oldO = {}, newO;
-    try { oldO = chain.parseEnvelope(rec.envelope); } catch { /* a stale unparsable stamp reads as no options */ }
-    try { newO = chain.parseEnvelope(cur); } catch { return "error"; }
+    try { oldO = this.envelopeOf(rec.envelope); } catch { /* a stale unparsable stamp reads as no options */ }
+    try { newO = this.envelopeOf(cur); } catch { return "error"; }
     // "config absent" (use the version's) and "config: {}" (explicitly empty) are different owner
     // intents, so null and "{}" stay distinct. The CID rides the same key: repointing it at a
     // different pinned document is a config change even when the inline part is byte-identical.
-    const cfg = (o) => (o.config !== undefined || o.configCid)
-      ? JSON.stringify([o.configCid || "", o.config !== undefined ? o.config : null]) : null;
+    // An owner-committed package is the whole startup (config, app, names): a new commitment is a restart, and so is
+    // moving between a package and the legacy config fields.
+    const cfg = (o) => o.startup ? JSON.stringify(["guestBootstrap", o.startup.sha256])
+      : (o.config !== undefined || o.configCid) ? JSON.stringify([o.configCid || "", o.config !== undefined ? o.config : null]) : null;
     return cfg(newO) === cfg(oldO) ? "waf" : "restart";
   }
 
@@ -877,7 +934,7 @@ export class Host {
    * envelope could not be read), the model volumes the version needs, the manager's /health, and its pinned runtime.
    * Its rules and its refusals are node-bridge's (UNKNOWN is not NO: an input that cannot be established is unknown).
    */
-  async isolationVerdict(id, d, v, { envOpts = {}, envRead = false } = {}) {
+  async isolationVerdict(id, d, v, { envOpts = {}, envRead = false, launch = false } = {}) {
     const { IsolationManagerClient } = await import("./isolation-client.mjs");
     const { isolationPlan } = await import("../vbslike/datapath/node-bridge.mjs");
     const client = new IsolationManagerClient({ base: this.cfg.isolationManager });
@@ -888,6 +945,15 @@ export class Host {
     if (!managerHealth) this.managerSupports = null;
     // what the manager says it can give a partition (/health supports), for features(): kept when it answered
     if (managerHealth && managerHealth.supports && typeof managerHealth.supports === "object") this.managerSupports = { ...managerHealth.supports };
+    // AN OWNER-COMMITTED PACKAGE: the same plan, built from the package's config and secrets mode on the pinned ledger's
+    // agreed state, and only once its AppID is the package's (shield-startup.mjs). Relay secrets are never asked about.
+    if (envRead && envOpts.startup) {
+      const authority = await this.#startupAuthority();
+      if (!authority) return { ok: false, input: "guestBootstrap", why: `this host cannot verify owner-committed startup: ${this.startupConfigError}`, unknown: false };
+      if (!managerHealth) return { ok: false, input: "manager", why: "the partition manager's /health is not known here", unknown: true };
+      return authority.materialize(id, { observed: d, manager: managerHealth, runtimeId: this.cfg.isolationRuntimeId, waf: envOpts.waf || {},
+        enclaveId: this.enclaveId, needLease: launch, walletRefusal: (row) => this.walletPolicyRefusal(row) });
+    }
     // Which model volumes this version needs, from its own config; null (unknown) when the config cannot be read.
     let volumes = null;
     try {
@@ -997,10 +1063,18 @@ export class Host {
     const rebootHeld = this.records.get(id)?.rebootHeld;
     if (rebootHeld) return this.#record(id, { status: "held", reason: rebootHeld });
 
-    // THE SAME VERDICT consider() asked before the claim (isolationVerdict): one set of inputs, one answer.
-    const plan = await this.isolationVerdict(id, d, v, { envOpts, envRead });
+    // THE SAME VERDICT consider() asked before the claim (isolationVerdict): one set of inputs, one answer. An
+    // owner-committed package is verified again here, at launch, and must find this host's live lease at the quorum block.
+    const plan = await this.isolationVerdict(id, d, v, { envOpts, envRead, launch: true });
     if (!plan.ok) {
       const why = `isolation: ${plan.input}: ${plan.why}`;
+      // A RUNNING owner-committed partition is not taken down by one unanswered re-verification (an RPC or replica blip):
+      // it keeps serving on its last verification for STARTUP_GRACE_MS, never longer. A definite answer ends it at once.
+      const cur = this.records.get(id) || {};
+      if (plan.unknown && cur.startup && cur.status === "running" && cur.isolation && Date.now() - Number(cur.startupVerifiedAt || 0) < Host.STARTUP_GRACE_MS) {
+        if (cur.reason !== why) this.log(`${id.slice(0, 10)} still serving its verified startup package: ${why}`);
+        return this.#record(id, { reason: why });
+      }
       if (plan.unknown) {
         this.log(`${id.slice(0, 10)} ${why}`);
         // planHeld: this box will not provision it until the input is established, so the tick does not RENEW it (87)
@@ -1009,6 +1083,10 @@ export class Host {
       return await this.#giveUp(id, why);
     }
     if (this.records.get(id)?.planHeld) this.#record(id, { planHeld: null, noRenewSaid: null });
+    // What this partition must run, when an owner committed it: recorded before the spawn so the adoption checks below
+    // and a restart judge the manager's view against it, and so the names come only from this package.
+    const startup = plan.startup || null;
+    this.#record(id, { startup, startupVerifiedAt: startup ? Date.now() : null });
 
     // A lapsed hosting lease or readiness timeout may already have retired the
     // ended VM. Keep its service cooldown before reconcile can spawn an absent
@@ -1030,7 +1108,15 @@ export class Host {
     // requested app" (2026-10-13 22:16Z: cron stayed on /1 after its switch to /2, down until retired by hand). It is
     // retired, confirmed gone, and the current version is spawned below. A manager that does not say which version it
     // runs is not second-guessed.
-    const stale = await IsolationManagerClient.staleVersion(client, id, body.derive).catch(() => null);
+    let stale = await IsolationManagerClient.staleVersion(client, id, body.derive).catch(() => null);
+    // ...and for an owner-committed startup, a domain running ANOTHER AppID (the same catalog version with an older
+    // package's config, say) is not adopted either: the version check above cannot see a config change.
+    if (!stale && startup) {
+      const held = await client.findByName(id).catch(() => undefined);
+      if (held === undefined) return this.#record(id, { status: "provisioning", reason: "isolation: the manager could not be asked which app it holds" });
+      const wrong = held ? startupAdoptionRefusal(held, startup) : null;
+      if (wrong) stale = `${held.id}: ${wrong}`;
+    }
     if (stale) {
       this.log(`${id.slice(0, 10)} isolation: version change: ${stale}; replacing the domain`);
       const gone = await this.#retireIsolated(id, `version change: ${stale}`);
@@ -1172,6 +1258,15 @@ export class Host {
       return this.#record(id, { status: "held", boundaryHeld: true, isolation: null, reason: boundaryWrong,
                                 ...(inst.id ? { isolationHeld: inst.id } : {}) });
     }
+    // THE OWNER'S COMMITMENT, on the manager's own view of what it started or adopted: anything else is retired, never
+    // routed, and the deployment waits (provisioning) for the next pass to start the committed app.
+    const notCommitted = startupAdoptionRefusal(inst, startup);
+    if (notCommitted) {
+      this.log(`${id.slice(0, 10)} isolation: ${notCommitted}; retiring it`);
+      const gone = await this.#retireIsolated(id, `owner-committed startup: ${notCommitted}`);
+      return this.#record(id, { status: "provisioning", isolation: null, reason: `isolation: ${notCommitted}`
+        + (gone ? "" : "; it could not be confirmed removed, so nothing new is started"), ...(gone || !inst.id ? {} : { isolationHeld: inst.id }) });
+    }
     // A domain this node saw serving that the manager no longer has (it stopped by itself, crashed, or was removed by
     // its own sweep) is replaced here silently otherwise: say so, with what was last known (2026-10-13 14:13Z: RISC Box's
     // partition turned itself off and a new one appeared with no line saying why). Read from #lastServing, NOT from
@@ -1255,7 +1350,7 @@ export class Host {
     // wrote it at all, which is the defect enclave-99 found: the gate could never be satisfied. Through the same parser
     // claimPolicy used, so "accepted at claim" and "applied here" cannot drift.
     let envOpts = {}, envRead = false;
-    try { envOpts = chain.parseEnvelope(d.configCid, d.gpuMilli) || {}; envRead = true; }
+    try { envOpts = this.envelopeOf(d.configCid, d.gpuMilli) || {}; envRead = true; }
     catch { envOpts = {}; envRead = false; }
     this.#record(id, {
       // {} = the envelope was read and carries no rules; null = it could not be read at all.
@@ -2040,6 +2135,9 @@ export class Host {
     // the list is re-read on the tick rather than only at claim time.
     for (const id of this.apps.keys())
       await this.refreshDomains(id).catch((e) => this.log(`domains ${id.slice(0, 10)}: ${e.message}`));
+    // ...and an owner-committed partition's names, which live in its package and its proofs, not in this.apps
+    for (const [id, r] of [...this.records]) if (r?.startup && r.status === "running")
+      await this.refreshDomains(id).catch((e) => this.log(`domains ${id.slice(0, 10)}: ${e.message}`));
     for (const [id, app] of this.apps) {
       const cur = this.appCerts.get(id);
       if (app.state === "running" && app.port && (!cur || !cur.cert || cur.cert.selfSigned)) {
@@ -2534,12 +2632,15 @@ export class Host {
     if (this.caps.paused === true) return no("hosting is off");
     if (!this.cfg.appsEnabled) return no("hosting is disabled on this node (APPS)");
     if (this.cfg.claimScope !== "market") return no("this node serves only its owner's apps (CLAIM_SCOPE)");
-    if (this.relayAttached !== true) return no("not connected to the network yet");
+    const verifiers = this.cfg.shieldVerifiers === true;     // the operator pinned a verifier set (agent.mjs)
+    if (this.relayAttached !== true && !verifiers) return no("not connected to the network yet");
     if (!this.registered) return no("not registered on the network yet");
     if ((this.gasRenewals ?? 1) <= 0) return no("the operator key has no gas left for claims");
     if (this.scope() !== "market")
-      return no("the network is verifying this PC (a few minutes after every start or update)");
-    return { taking: true, why: "listed on enclave.host" };
+      return no(verifiers && this.relayAttached !== true ? "this PC's selected verifiers have not admitted it to the market yet"
+        : "the network is verifying this PC (a few minutes after every start or update)");
+    return { taking: true, why: this.verifierMarketOpen(now) && !(this.relayTier === "hv-node" && Number(this.shieldMarketUntil || 0) > now)
+      ? "admitted by this PC's selected verifiers" : "listed on enclave.host" };
   }
 
   /**
@@ -2638,7 +2739,7 @@ export class Host {
    */
   isolatedForThisBox(d) {
     if (!this.isolationBackend) return false;
-    try { return chain.isolationForBackend(chain.parseEnvelope(d?.configCid, d?.gpuMilli), this.isolationBackend); }
+    try { return chain.isolationForBackend(this.envelopeOf(d?.configCid, d?.gpuMilli), this.isolationBackend); }
     catch { return false; }
   }
   /**
@@ -2680,7 +2781,15 @@ export class Host {
     // an admitted audit job (servesAuditJob) is claimed as its fee wallet's own: owner-only scope still holds, because only
     // a payer this box serves can have created it here
     if (this.#auditAdmitted.has(String(d?.id || "").toLowerCase())) ownerAllow = new Set([...ownerAllow, String(d.owner || "").toLowerCase()]);
-    return chain.claimPolicy(d, { isolationBackend: this.isolationBackend, ownerAllow, enclaveId: this.enclaveId,
+    // An owner-committed envelope: its commitment is judged here (its form, and that this host can start packages at
+    // all), and the rest of the envelope by claimPolicy, unchanged. The package itself is verified before any claim
+    // (#preclaimVerdict -> isolationVerdict -> shield-startup.mjs materialize).
+    let startup = null;
+    try { startup = shieldStartupEnvelope(d?.configCid); } catch (e) { return e.message; }
+    if (startup && !this.isolation) return "it carries an owner-committed startup package, which this host starts only in its Shield partitions, and it runs no isolation manager";
+    if (startup && this.startupAuthority === null)
+      return `it carries an owner-committed startup package, and this host cannot verify one: ${this.startupConfigError || "no startup authority"}`;
+    return chain.claimPolicy(this.#policyView(d), { isolationBackend: this.isolationBackend, ownerAllow, enclaveId: this.enclaveId,
                                   appsEnabled, scope: this.scope(), version, capacity, listedAt: this.listedAt(), invited,
                                   hostWalletPolicy: !!this.hostAdmission,
                                   legacy: this.cfg.claimLegacy === true, fetchesConfigCid: this.features().configCidOverride,
@@ -2689,6 +2798,7 @@ export class Host {
       || this.retiredEngineClaimRefusal(d);
   }
   static MARKET_GRACE_MS = 15 * 60_000;    // servingScope(): the relay's owner-read grace is the same 15 min
+  static STARTUP_GRACE_MS = 10 * 60_000;   // a running owner-committed partition outlasts an unanswered re-verification this long
   static SCAN_HOLD_MS = 10 * 60_000;       // a refused row
   static SCAN_QUEUED_HOLD_MS = 2 * 60_000; // a queued one: its input may come back soon (the preclaim's unknown, the ledger's cap)
   static SCAN_CLAIMFAIL_HOLD_MS = 2 * 60_000; // a row whose claim tx failed twice running under the same inputs
@@ -2726,7 +2836,24 @@ export class Host {
   appTrafficInsideEnclave() { return false; }
   meetsIsolationContract() {
     return this.cfg.engineRetired === true && this.isolationBackend === "hyperv-partition-per-app"
-      && this.relayTier === "hv-node" && Number(this.shieldMarketUntil || 0) > Date.now();
+      && this.relayTier === "hv-node" && Number(this.shieldMarketUntil || 0) > Date.now()
+      || this.verifierMarketOpen();
+  }
+  /**
+   * The same contract on verdicts from the verifiers this host's OPERATOR selected (shield-verdict.mjs): a threshold of
+   * them verified this host's attach, identity and pinned readiness witness for its own current challenge. Only
+   * openVerifierMarket sets the window, and only from verifyVerdicts' answer; nothing local raises it.
+   */
+  verifierMarketOpen(now = Date.now()) {
+    const m = this.verifierMarket;
+    return this.cfg.engineRetired === true && this.isolationBackend === "hyperv-partition-per-app"
+      && m?.tier === "hv-node" && Number(m.until || 0) > now;
+  }
+  /** shield-verdict.mjs createVerifierMarketClient's `open`: at most five minutes, remembered past it for the grace. */
+  openVerifierMarket(until, keyIds = []) {
+    const u = Math.min(Number(until) || 0, Date.now() + 300_000);
+    const seen = Math.max(Number(this.verifierMarket?.seenUntil || 0), u);
+    this.verifierMarket = { tier: "hv-node", until: u, seenUntil: seen, keyIds: [...keyIds].slice(0, 8), at: Date.now() };
   }
   /**
    * Which scope this box claims in. The market is only open when an app runs inside the enclave
@@ -2749,7 +2876,9 @@ export class Host {
    */
   servingScope() {
     if (this.scope() === "market") return "market";
-    return this.cfg.claimScope === "market" && this.cfg.engineRetired === true && this.isolationBackend === "hyperv-partition-per-app"
+    const base = this.cfg.claimScope === "market" && this.cfg.engineRetired === true && this.isolationBackend === "hyperv-partition-per-app";
+    if (base && this.verifierMarket?.tier === "hv-node" && Number(this.verifierMarket.seenUntil || 0) + Host.MARKET_GRACE_MS > Date.now()) return "market";
+    return base
       && this.relayTier === "hv-node" && Number(this.shieldMarketSeenUntil || 0) + Host.MARKET_GRACE_MS > Date.now() ? "market" : "owner-only";
   }
   /**
@@ -2789,7 +2918,9 @@ export class Host {
       isolation: this.isolationBackend,
       ...(this.isolationBackend ? { isolationBoundary: { tier: "T0-hv", hostExcluded: false } } : {}),
       // The relay's verdict on this node's attach, as it gave it (null until attached): tier "hv-node", hostExcluded false.
-      attach: { tier: this.relayTier || null, hostExcluded: this.relayHostExcluded ?? null },
+      attach: { tier: this.relayTier || null, hostExcluded: this.relayHostExcluded ?? null,
+                // the market window from operator-selected verifiers (shield-verdict.mjs), when one is open: who vouched, until when
+                ...(this.verifierMarketOpen() ? { verifiers: { tier: "hv-node", hostExcluded: false, until: this.verifierMarket.until, keyIds: this.verifierMarket.keyIds } } : {}) },
       apps: this.appsInTee() ? {
         // Where a leased app runs, in the one word that matters: INSIDE the enclave. The bytecode
         // is interpreted in VTL1 by the runtime linked into the measured image, so the app's code
@@ -2815,7 +2946,7 @@ export class Host {
         // branch below and say isolation "none", capacity 0 and "sells no app hosting" while partitions served.
         isolation: this.isolationBackend, tier: this.meetsIsolationContract() ? "enclave-shield" : "T0-hv", hostExcluded: false, hostOsExcluded: this.meetsIsolationContract(), operatorExcluded: false, inTee: false,
         running: partitions, capacity: cap.slots, scope: this.scope(),
-        note: this.meetsIsolationContract() ? "each app has a measured Shield partition and guest-held TLS key; the relay verifies app evidence; physical operator and hypervisor remain trusted" : "each deployment runs in its own Hyper-V partition; marketplace admission awaits the relay’s app-evidence check",
+        note: this.meetsIsolationContract() ? `each app has a measured Shield partition and guest-held TLS key; ${this.verifierMarketOpen() ? "this host's selected verifiers" : "the relay"} verified its boot and readiness evidence; physical operator and hypervisor remain trusted` : "each deployment runs in its own Hyper-V partition; marketplace admission awaits the relay’s app-evidence check",
       } : {
         // No app runtime in this enclave image: the box hosts nothing for a tenant. The VTL0
         // wasmtime path still exists for the box owner's own bring-up, and is not an offer.
@@ -3038,6 +3169,9 @@ export class Host {
    * because forgetting a hostname is an outage on a name the customer owns.
    */
   async refreshDomains(id, { forLaunch = false } = {}) {
+    // An owner-committed deployment's names come from its package and proofs, never from the relay's map (domains.mjs).
+    const committed = this.records.get(id);
+    if (committed?.startup) return this.#refreshOwnerNames(id, committed);
     if (!this.cfg.secretsSign || !this.cfg.customDomains) return;
     const rec = this.records.get(id);
     // `forLaunch` is the cold-start call, made while the record is still "provisioning": the names
@@ -3105,6 +3239,58 @@ export class Host {
     for (const h of r.hosts) if (this.domainOwner.get(h) === key) await this.#certifyHost(id, h);
   }
 
+  /**
+   * THE OWNER-COMMITTED NAMES of a running partition (domains.mjs ownerCommittedDomains): the package's names, each served
+   * only while a fresh proof stands (a WebPKI certificate for it on the partition's judged TLS key). Two deployments that
+   * both prove a name: network/owner-names.mjs OwnerNameTable's rule (the later issuance wins; a tie selects neither).
+   * Only names that no legacy (relay-mapped) deployment owns are moved here. This host certifies nothing for a partition:
+   * the guest holds its key and certificate, and the proof reads what it presents.
+   */
+  async #refreshOwnerNames(id, rec) {
+    const key = String(id).toLowerCase();
+    if (!this.cfg.customDomains || rec.status !== "running" || !rec.isolation) return;
+    const { OwnerNameTable } = await import("../../network/owner-names.mjs");
+    this.ownerNames ||= new OwnerNameTable();
+    this.ownerNameProofs ||= new Map();
+    const was = this.ownerNameProofs.get(key);
+    const proofs = was && was.sha256 === rec.startup.sha256 ? was.proofs : new Map();
+    const prove = (name) => (this.cfg.proveOwnerName || ((i, n, r) => this.#proveOwnerName(i, n, r)))(key, name, rec);
+    let r;
+    try { r = await ownerCommittedDomains({ startup: rec.startup, prove, proofs, log: (m) => this.log(`${key.slice(0, 10)} ${m}`) }); }
+    catch (e) { this.log(`domains ${key.slice(0, 10)}: ${e.message}`); return; }
+    if (this.records.get(key)?.startup?.sha256 !== rec.startup.sha256) return;     // the package moved while proving
+    this.ownerNameProofs.set(key, { sha256: rec.startup.sha256, proofs: r.proofs });
+    this.ownerNames.set(key, [...r.proofs.values()]);
+    const previous = this.domains.get(key) || [];
+    const live = (dep) => { const x = this.records.get(dep); return !!x?.startup && x.status === "running" && !!x.isolation; };
+    const mine = [];
+    for (const h of new Set([...previous, ...r.hosts])) {
+      const cur = this.domainOwner.get(h);
+      if (cur && cur !== key && !this.records.get(cur)?.startup) continue;            // a legacy owner's name is not ours to move
+      const winner = this.ownerNames.select(h, live);
+      if (winner !== (cur || null)) this.#setOwner(h, winner);
+      if (winner === key) mine.push(h);
+    }
+    this.domains.set(key, mine);
+    const why = r.refused.length ? `owner-committed name(s) not proven: ${r.refused.map((x) => x.hostname).join(", ")}` : null;
+    if (previous.join(",") !== mine.join(",") || rec.domainWhy !== why) {
+      this.log(`domains ${key.slice(0, 10)}: ${mine.length ? mine.join(", ") : "no proven owner-committed names"}${why ? ` (${why})` : ""}`);
+      this.#record(key, { domains: mine, domainWhy: why });
+    }
+  }
+  /** One proof (network/owner-names.mjs proveNameControl): a TLS handshake for `name` through this partition's own splice. */
+  async #proveOwnerName(id, name, rec) {
+    const spki = String(rec.isolation?.transportKeySha256 || "");
+    if (!/^[0-9a-f]{64}$/.test(spki)) throw new Error("the partition's TLS key is not known");
+    const { proveNameControl, forwardDuplex } = await import("../../network/owner-names.mjs");
+    const { createIsolationSplicer, isolatedTarget } = await import("../vbslike/datapath/node-bridge.mjs");
+    const { IsolationManagerClient } = await import("./isolation-client.mjs");
+    const t = isolatedTarget(id, rec, this.cfg.appZone);
+    if (!t || !this.cfg.isolationDataAddr) throw new Error("the partition has no route here");
+    const splicer = createIsolationSplicer({ client: new IsolationManagerClient({ base: this.cfg.isolationManager }), dataAddr: this.cfg.isolationDataAddr });
+    const target = { ...t, isolation: { ...t.isolation, allowedNames: [name] } };
+    return proveNameControl({ name, spkiSha256: spki, open: () => forwardDuplex((s) => splicer.serve(s, target), id, (m) => this.log(m)) });
+  }
   /**
    * Record who owns a hostname, and bump its GENERATION.
    *
@@ -3202,6 +3388,7 @@ export class Host {
       this.domainFails.delete(h);
     }
     this.domains.delete(key);
+    this.ownerNames?.drop(key); this.ownerNameProofs?.delete(key);
   }
 
   /**
@@ -3292,7 +3479,10 @@ export class Host {
     // guest holds the key and does the handshake, which is the entire point of the tier.
     if (rec && rec.isolation) {
       const { isolatedTarget } = await import("../vbslike/datapath/node-bridge.mjs");
-      return isolatedTarget(id, rec, this.cfg.appZone);
+      const t = isolatedTarget(id, rec, this.cfg.appZone);
+      // an owner-committed deployment's PROVEN names (refreshDomains): its ClientHello may name them as well as its zone label
+      const names = rec.startup ? (this.domains.get(id) || []).filter((h) => this.domainOwner.get(h) === id) : [];
+      return t && names.length ? { ...t, isolation: { ...t.isolation, allowedNames: names } } : t;
     }
     const app = this.apps.get(id);
     if (!rec || rec.status !== "running" || !app) return null;
