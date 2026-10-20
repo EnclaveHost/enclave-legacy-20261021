@@ -14,18 +14,108 @@ import {hostABI} from './registry-abi.mjs';
 const registryV1ABI=[{type:'function',name:'get',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'tuple',components:
   [['endpoint','string'],['repo','string'],['measurement','bytes32'],['operator','address'],['registeredAt','uint64'],['lastSeen','uint64'],['active','bool']].map(([name,type])=>({name,type}))}]}];
 function jsonValue(value) {return JSON.parse(JSON.stringify(value,(_k,v)=>typeof v==='bigint'?v.toString():v));}
+// A request that has not answered within `ms` stops being waited for. It cannot be aborted (viem's per-call API takes
+// no signal), but nothing waits on it and nothing new is sent on its behalf.
+function timed(promise,ms) {
+  let timer;
+  return Promise.race([promise,new Promise((_r,reject)=>{timer=setTimeout(()=>reject(new Error('chain request timed out')),ms);})]).finally(()=>clearTimeout(timer));
+}
+const errText=e=>String(e?.shortMessage||e?.message||e).slice(0,400);
+// The vote identity of an RPC URL (the rule of service-index.mjs rpcIdentity, kept here so this module does not depend
+// on that one): its public host, lowercase and without a trailing dot, whatever the path, query, key or port, since one
+// public host is one vote however it is addressed; for a local test chain, its loopback port (any loopback name or
+// scheme on one port is one vote). HTTPS for every public host; plain HTTP only on loopback (a local chain such as
+// Anvil), as service-index and the custody rig allow. No credentials or fragment. Throws without echoing the URL, which may hold an API key. Distinct identities are distinct
+// configured endpoints, NOT proof of independent operators.
+//   Address literals are compared as addresses. URL itself canonicalizes every IPv4 spelling (127.1, 0x8.8.8.8,
+// 134744072) and IPv6 case and zero compression. On top of that, an IPv4 address written in IPv6 form is folded back to
+// it: an IPv4-mapped address (::ffff:0:0/96, RFC 4291) IS that IPv4 host to the local stack, so [::ffff:8.8.8.8] is
+// one vote with 8.8.8.8 and [::ffff:127.0.0.1] is the loopback listener 127.0.0.1; the NAT64 well-known prefix
+// (64:ff9b::/96, RFC 6052) reaches that same IPv4 host through a translator, so it shares the vote, but its traffic
+// leaves this machine and it is never loopback. Other embeddings (the deprecated IPv4-compatible ::/96, SIIT
+// ::ffff:0:0:0/96) are left as distinct IPv6 addresses. No name is resolved: two names, or a name and an address, may
+// reach one machine, and nothing here can tell (nor would distinct hosts prove distinct operators).
+const loopbackHosts=new Set(['localhost','127.0.0.1','[::1]']);
+// URL writes the embedded IPv4 address as its two final 16-bit pieces, compressing zeros: [::ffff:808:808],
+// [::ffff:0:1], [64:ff9b::808:808], [64:ff9b::1], [64:ff9b::].
+const mappedRe=/^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/,nat64Re=/^\[64:ff9b::(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})?\]$/;
+const dotted=(hi='0',lo='0')=>{const a=parseInt(hi,16),b=parseInt(lo,16);return [a>>8,a&255,b>>8,b&255].join('.');};
+// -> {host: the vote host, loopback: whether plain HTTP may reach it on this machine}
+function rpcHost(hostname) {
+  const host=hostname.toLowerCase().replace(/\.$/,'');
+  let m=mappedRe.exec(host);
+  if(m){const v4=dotted(m[1],m[2]);return {host:v4,loopback:loopbackHosts.has(v4)};}
+  m=nat64Re.exec(host);
+  if(m)return {host:dotted(m[1],m[2]),loopback:false};
+  return {host,loopback:loopbackHosts.has(host)};
+}
+export function rpcIdentity(raw) {
+  let u;try{u=new URL(String(raw));}catch{throw new Error('invalid RPC URL');}
+  const {host,loopback}=rpcHost(u.hostname);
+  if(!host)throw new Error('invalid RPC URL');
+  if(!(u.protocol==='https:'||(loopback&&u.protocol==='http:')))throw new Error('RPC URLs must be HTTPS (plain HTTP only on loopback)');
+  if(u.username||u.password||u.hash||String(raw).includes('#'))throw new Error('RPC URLs may not carry credentials or a fragment');
+  return loopback?`loopback:${u.port||(u.protocol==='https:'?'443':'80')}`:`host:${host}`;
+}
+const maxClients=16,clientMethods=['getChainId','getBlockNumber','getBlock'];
+// Why a client set cannot read a quorum, or null. Two to sixteen DISTINCT objects (one object twice is one RPC counted
+// twice), each with the three calls every read needs. A client that exposes its transport URL (viem's http transport
+// does, as transport.url) is also counted by rpcIdentity, so two clients for one host are one vote; a malformed exposed
+// URL is refused. A client with no visible URL (a test double, or a caller's own transport) is known only by its object
+// identity: the caller who builds it vouches that it is a separate endpoint.
+function clientProblem(clients) {
+  if(!Array.isArray(clients)||clients.length<2||clients.length>maxClients)return `two to ${maxClients} chain clients are required`;
+  if(new Set(clients).size!==clients.length)return 'two distinct clients are required: one client listed twice';
+  if(!clients.every(c=>c&&typeof c==='object'&&clientMethods.every(m=>typeof c[m]==='function')))return 'each chain client needs getChainId, getBlockNumber and getBlock';
+  const seen=new Set();
+  for(const c of clients){
+    const url=c.transport?.url;
+    if(url===undefined||url===null)continue;
+    let id;try{id=rpcIdentity(url);}catch(e){return 'a chain client exposes an unusable RPC URL: '+e.message;}
+    if(seen.has(id))return 'two chain clients reach the same RPC host: one vote, not two';
+    seen.add(id);
+  }
+  return null;
+}
+// Why the reader's chain policy is unusable, or null (checked at construction and again by every read, since the
+// fields are plain properties).
+function policyProblem(r) {
+  const int=(v,lo,hi)=>Number.isSafeInteger(v)&&v>=lo&&v<=hi;
+  if(!int(r.chainId,1,Number.MAX_SAFE_INTEGER)||!int(r.maxBlockAgeMs,1000,120000)||!int(r.confirmations,1,64)||!int(r.deadlineMs,100,300000)||
+     !int(r.headGraceMs,0,10000)||!int(r.retryDelayMs,0,10000)||typeof r.now!=='function')return 'invalid chain policy';
+  return null;
+}
+// A block header as an RPC returned it, checked: the block number asked for, a 32-byte hash, a whole-second timestamp.
+function header(block,blockNumber) {
+  const {number,hash,timestamp}=block||{};
+  if(!(typeof number==='bigint'||Number.isSafeInteger(number))||BigInt(number)!==blockNumber)throw new Error('chain block number differs from the one requested');
+  if(typeof hash!=='string'||!/^0x[0-9a-fA-F]{64}$/.test(hash))throw new Error('malformed chain block hash');
+  if(!((typeof timestamp==='bigint'&&timestamp>=0n)||(Number.isSafeInteger(timestamp)&&timestamp>=0)))throw new Error('malformed chain block timestamp');
+  const ms=Number(timestamp)*1000;
+  if(!Number.isSafeInteger(ms))throw new Error('malformed chain block timestamp');
+  return {number:blockNumber,hash:hash.toLowerCase(),timestamp:ms};
+}
+// The fields agreed() itself puts on every answer; a read callback returning one is a bug, refused loudly.
+const reservedFields=['hash','blockNumber','timestamp'];
 export class LeaseReader {
-  constructor({rpc,chainId=8453,addressBook,authorityPins,maxBlockAgeMs=90000,confirmations=2,clients,proxy,includeHostPayout=false,includeConnectivity=false,now=Date.now}) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(addressBook||'') || !Number.isSafeInteger(chainId) || chainId<=0 ||
-        !Number.isSafeInteger(maxBlockAgeMs) || maxBlockAgeMs<1000 || maxBlockAgeMs>120000 || !Number.isSafeInteger(confirmations) || confirmations<1) throw new Error('invalid chain policy');
-    if (!clients && (!Array.isArray(rpc) || rpc.length<2 || new Set(rpc.map(s=>new URL(s).hostname)).size!==rpc.length || rpc.some(s=>new URL(s).protocol!=='https:'))) throw new Error('at least two independent HTTPS RPC origins required');
-    Object.assign(this,{chainId,addressBook,maxBlockAgeMs,confirmations,includeHostPayout,includeConnectivity,now});
+  constructor({rpc,chainId=8453,addressBook,authorityPins,maxBlockAgeMs=90000,confirmations=2,deadlineMs=30000,clients,proxy,includeHostPayout=false,includeConnectivity=false,now=Date.now}) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(addressBook||'')) throw new Error('invalid chain policy');
+    Object.assign(this,{chainId,addressBook,maxBlockAgeMs,confirmations,deadlineMs,includeHostPayout,includeConnectivity,now});
+    this.retryDelayMs=400;this.headGraceMs=250;
+    const policy=policyProblem(this);if(policy)throw new Error(policy);
+    if (!clients) {
+      // one vote per public host: case, a trailing dot, the port and the path do not make another one
+      if (!Array.isArray(rpc) || rpc.length<2 || rpc.length>maxClients) throw new Error('at least two independent HTTPS RPC origins required');
+      const ids=rpc.map(rpcIdentity);
+      if (new Set(ids).size!==ids.length) throw new Error('at least two independent HTTPS RPC origins required: two URLs reach the same host');
+    }
+    if (clients) {const problem=clientProblem(clients);if(problem)throw new Error('invalid chain clients: '+problem);}
     Object.defineProperty(this,'authorityPins',{value:authorityPins===undefined?null:validateNetworkAuthorities(authorityPins),enumerable:true});
     // Public RPCs meter requests per second. Multicall3 folds a snapshot's
     // same-block reads into one eth_call each, however many apps it covers.
     this.clients=clients||rpc.map(url=>createPublicClient({chain:base,batch:{multicall:{wait:0}},
       transport:http(url,{timeout:14000,retryCount:0,...(proxy?{fetchFn:guardedFetch(proxy,{timeoutMs:6000})}:{})})}));
-    this.lastBlock=0n;this.cache=new Map();this.retryDelayMs=400;this.headGraceMs=250;
+    this.lastBlock=0n;this.cache=new Map();
   }
   // Requests that arrive while a snapshot is queued join it: a burst of
   // publications costs one chain read, not one per app.
@@ -49,52 +139,131 @@ export class LeaseReader {
       }
     }
   }
-  // One value read from every peer at the same recent block, returned once two
-  // peers agree on it. Every chain answer this class gives comes through here.
-  async agreed(read, failures=[]) {
-    // Two heads pick the block. A slower peer gets a short grace to join, not its
-    // full request timeout: route publications wait on this snapshot.
-    const available=await new Promise(resolve=>{
-      const heads=[];let settled=0,grace;
-      const done=()=>{clearTimeout(grace);resolve([...heads]);};
-      for(const c of this.clients)this.limited(async()=>{
-        const [chainId,number]=await Promise.all([c.getChainId(),c.getBlockNumber({cacheTime:0})]);
-        if(chainId!==this.chainId) throw new Error('wrong chain');
-        return {client:c,number};
-      }).then(head=>heads.push(head),()=>{}).finally(()=>{
-        if(++settled===this.clients.length)done();
-        else if(heads.length>=2&&!grace)grace=setTimeout(done,this.headGraceMs);
+  // One value read at ONE fixed recent block, returned once two peers return it identically (the whole value,
+  // block hash and timestamp included). Every chain answer this class gives comes through here.
+  //  * Each peer reports chain id and head; a wrong chain or a failure leaves it out. Once two heads are in, the others
+  //    get `headGraceMs` before the block is chosen: the SECOND-highest head minus `confirmations`, never below the block
+  //    already accepted (`lastBlock`: a lagging pair cannot roll an answer back). One RPC claiming a far-future head
+  //    cannot choose the block, and one slow RPC cannot hold the others back.
+  //  * Choosing the block shuts nobody out: a head that arrives later still reads at that block, for as long as the
+  //    deadline allows, so a fast liar beside one fast honest RPC cannot veto a slower honest one by disagreeing.
+  //  * If every reader finished without two matching answers and later heads give a strictly NEWER block (a liar's low
+  //    head made the first one stale), the read is repeated there with every RPC that reported a head.
+  //  * Each header must be the block asked for (number), with a 32-byte hash and a valid timestamp; it is read again
+  //    after the read and all three must be unchanged. The block must be neither in the future nor older than
+  //    `maxBlockAgeMs` before the read, after it, and again at the moment two answers match.
+  //  * At that moment the block must also be no older than `lastBlock`: another call on this reader (a registry read,
+  //    a book address) may have accepted a newer block meanwhile. Then the read moves up to that block instead of
+  //    returning an answer older than one already given.
+  //  * `read(client, blockNumber)` must return a plain object without the reserved fields hash, blockNumber and
+  //    timestamp (agreed() sets those from the checked header); anything else refuses the whole call at once.
+  //  * ONE deadline (`deadlineMs`) bounds the whole call. Each request is waited for at most the time left, and once the
+  //    outcome is decided, a round is superseded, or the deadline has passed, no further request is sent.
+  //  * One RPC never wins alone; there is no fallback to a first answer.
+  agreed(read, failures=[]) {
+    const problem=clientProblem(this.clients);
+    if(problem)return Promise.reject(new Error('invalid chain clients: '+problem));
+    const policy=policyProblem(this);
+    if(policy)return Promise.reject(new Error(policy));
+    if(typeof read!=='function')return Promise.reject(new Error('agreed() needs a read function'));
+    return new Promise((resolve,reject)=>{
+      const endAt=performance.now()+this.deadlineMs,fresh=ts=>ts+this.maxBlockAgeMs>this.now();
+      let closed=false,round=0,block=null,seen=new Map(),readers=new Set(),pending=0,grace=null;
+      const heads=new Map(),tried=[];let headsOutstanding=this.clients.length;
+      const finish=(err,out)=>{if(closed)return;closed=true;clearTimeout(grace);clearTimeout(deadline);if(err)reject(err);else resolve(out);};
+      const deadline=setTimeout(()=>finish(new Error(`no fresh agreeing chain quorum within ${this.deadlineMs} ms`)),this.deadlineMs);
+      deadline.unref?.();
+      // Every request goes through here: refused once decided, superseded or past the deadline, and bounded by the time left.
+      const gate=(r,f)=>{
+        if(closed)return Promise.reject(new Error('the chain read was already decided'));
+        if(r!==null&&r!==round)return Promise.reject(new Error('superseded by a newer block'));
+        const left=Math.floor(endAt-performance.now());
+        if(left<=0)return Promise.reject(new Error('the chain read deadline has passed'));
+        return timed(Promise.resolve().then(f),left);
+      };
+      // `read` gets the client behind this gate, so its own requests obey it too.
+      const guarded=(c,r)=>new Proxy(c,{get(target,key){const v=Reflect.get(target,key);return typeof v==='function'?(...args)=>gate(r,()=>v.apply(target,args)):v;}});
+      const choose=()=>{
+        if(heads.size<2)return null;
+        const ns=[...heads.values()].sort((a,b)=>a>b?-1:a<b?1:0);
+        let b=ns[1]-BigInt(this.confirmations);
+        if(b<0n)return -1n;
+        // Peers' heads jitter by a block or two between back-to-back snapshots. Never read below the block already
+        // accepted; reread it instead. The block-age checks still decide whether that block is fresh enough.
+        if(b<this.lastBlock)b=this.lastBlock;
+        return b;
+      };
+      const readAt=(c,b,r)=>this.limited(async()=>{
+        const g=guarded(c,r);
+        const {hash,timestamp}=header(await g.getBlock({blockNumber:b}),b);
+        if(timestamp>this.now()+5000||!fresh(timestamp))throw new Error('stale chain block');
+        const value=await read(g,b);
+        if(!value||typeof value!=='object'||Array.isArray(value))throw Object.assign(new Error('the chain read function must return an object'),{readerBug:true});
+        const reserved=reservedFields.find(k=>Object.hasOwn(value,k));
+        if(reserved)throw Object.assign(new Error('the chain read function returned the reserved field '+reserved),{readerBug:true});
+        // Confirm the numbered block was not replaced while eth_call ran, and is still recent.
+        const again=header(await g.getBlock({blockNumber:b}),b);
+        if(again.hash!==hash||again.timestamp!==timestamp)throw new Error('chain reorganized during read');
+        if(!fresh(timestamp))throw new Error('chain block became stale during the read');
+        return {...value,hash,blockNumber:String(b),timestamp};
       });
+      const addReader=c=>{
+        if(closed||readers.has(c))return;
+        const r=round,b=block;readers.add(c);pending++;
+        readAt(c,b,r).then(snap=>{
+          if(closed||r!==round)return;
+          const key=canonical(snap),first=seen.get(key);
+          if(first===undefined){seen.set(key,c);return;}
+          if(first===c)return;                         // two distinct peers, never one twice
+          if(!fresh(snap.timestamp)){failures.push('chain block became stale before two peers agreed');return;}
+          if(b<this.lastBlock){
+            // another call accepted a newer block while this one read: never answer from below it
+            failures.push(`block ${b} is older than block ${this.lastBlock} accepted meanwhile`);
+            const next=choose();
+            if(next!==null&&next>b)return startRound(next);
+            return finish(new Error('no fresh agreeing chain quorum'));
+          }
+          this.lastBlock=b;
+          finish(null,snap);
+        },e=>{
+          if(e?.readerBug)return finish(e);               // the caller's read is wrong: say so, do not dress it as a quorum failure
+          if(!closed&&r===round)failures.push(errText(e));
+        }).finally(()=>{if(r===round){pending--;settle();}});
+      };
+      const startRound=b=>{
+        round++;block=b;tried.push(b);seen=new Map();readers=new Set();pending=0;
+        for(const c of heads.keys())addReader(c);
+        settle();
+      };
+      // Nothing more can arrive for this round: try a strictly newer block if later heads give one, else refuse.
+      const settle=()=>{
+        if(closed||block===null||pending>0||headsOutstanding>0)return;
+        const next=choose();
+        if(next!==null&&next>tried[tried.length-1])return startRound(next);
+        finish(new Error('no fresh agreeing chain quorum'));
+      };
+      const headsSettled=()=>{
+        if(closed)return;
+        if(block!==null)return settle();
+        if(headsOutstanding>0&&!(heads.size>=2&&grace==='fired'))return;
+        clearTimeout(grace);
+        const b=choose();
+        if(b===null)return finish(new Error('chain quorum unavailable'));
+        if(b<0n)return finish(new Error('no fresh agreeing chain quorum'));
+        startRound(b);
+      };
+      for(const c of this.clients)this.limited(async()=>{
+        const g=guarded(c,null);
+        const [chainId,number]=await Promise.all([g.getChainId(),g.getBlockNumber({cacheTime:0})]);
+        if(chainId!==this.chainId)throw new Error('wrong chain');
+        return BigInt(number);
+      }).then(number=>{
+        if(closed)return;
+        heads.set(c,number);
+        if(block!==null)addReader(c);                  // a late head still reads at the chosen block
+        else if(heads.size>=2&&grace===null)grace=setTimeout(()=>{grace='fired';headsSettled();},this.headGraceMs);
+      },()=>{}).finally(()=>{headsOutstanding--;headsSettled();});
     });
-    if(available.length<2) throw new Error('chain quorum unavailable');
-    // A stale outlier cannot keep fresh peers from forming a quorum. Conversely,
-    // no one RPC can advance or renew a cached admission on its own.
-    available.sort((a,b)=>a.number>b.number?-1:a.number<b.number?1:0);
-    // Peers' heads jitter by a block or two between back-to-back snapshots. Never
-    // read below the block already accepted; reread it instead. The block-age
-    // check below still decides whether that block is fresh enough.
-    let blockNumber=available[1].number-BigInt(this.confirmations);
-    if(blockNumber<0n)throw new Error('no fresh agreeing chain quorum');
-    if(blockNumber<this.lastBlock)blockNumber=this.lastBlock;
-    const reads=available.map(({client:c})=>this.limited(async()=>{
-      const block=await c.getBlock({blockNumber});
-      const timestamp=Number(block.timestamp)*1000;
-      if(!Number.isSafeInteger(timestamp)||timestamp>this.now()+5000||timestamp+this.maxBlockAgeMs<=this.now()) throw new Error('stale chain block');
-      const value=await read(c,blockNumber);
-      // Confirm the numbered block was not replaced while eth_call ran.
-      if((await c.getBlock({blockNumber})).hash!==block.hash)throw new Error('chain reorganized during read');
-      return {hash:block.hash,blockNumber:String(blockNumber),timestamp,...value};
-    }));
-    // Read every candidate at the same block concurrently. A slow or faulty
-    // third RPC cannot delay two agreeing peers, and a single peer never wins.
-    const snapshot=await new Promise((resolve,reject)=>{
-      const seen=new Map();let pending=reads.length;
-      for(const read of reads)read.then(value=>{
-        const key=canonical(value),prior=seen.get(key);if(prior)resolve(value);else seen.set(key,value);
-      },e=>failures.push(String(e.shortMessage||e.message).slice(0,400))).finally(()=>{if(--pending===0)reject(new Error('no fresh agreeing chain quorum'));});
-    });
-    if(blockNumber>this.lastBlock)this.lastBlock=blockNumber;
-    return snapshot;
   }
   async readSnapshot(ids) {
     if(!Array.isArray(ids)||ids.length>256||ids.some(id=>!/^0x[0-9a-f]{64}$/.test(id))) throw new Error('exact deployment ids required');

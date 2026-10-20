@@ -66,7 +66,7 @@ test('fresh directory-only host admits a signed registered provider before contr
  const directory=await mkdtemp(tmpdir()+'/bootstrap-provider-');t.after(()=>rm(directory,{recursive:true,force:true}));
  let now=Date.now(),reads=0,live=false;
  const peer=op=>({getChainId:async()=>8453,getBlockNumber:async()=>100n,
-  getBlock:async()=>({hash:'0x'+'cd'.repeat(32),timestamp:BigInt(Math.floor(now/1000))}),
+  getBlock:async({blockNumber})=>({number:blockNumber,hash:'0x'+'cd'.repeat(32),timestamp:BigInt(Math.floor(now/1000))}),
   readContract:async q=>{reads++;assert.equal(q.address,registry,'pinned registry only');assert.equal(q.blockNumber,98n);return {active:true,operator:op};}});
  const chain={addressBook:book,authorityPins:pins,clients:[peer(operator.address),peer(operator.address),peer(checker.address)],now:()=>now};
  const bootstrap=createProviderBootstrap({chain,network:{control:true,bootstrap:{mode:'direct'}}});

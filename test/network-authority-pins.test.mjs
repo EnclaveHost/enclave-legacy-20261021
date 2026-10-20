@@ -9,7 +9,7 @@ const pins={deployments,registry,connectivity:zero,sessionVaultFactory:factory};
 const owner=privateKeyToAccount('0x'+'11'.repeat(32));
 const row={id,runner:host,owner:owner.address,runnerOperator:owner.address,active:true,isPublic:true,leaseUntil:1700003600n,appRef:'catalog:a:1',configCid:''};
 function peer({time=1699999995n,recognizes=true}={}){return {
- getChainId:async()=>8453,getBlockNumber:async()=>1000n,getBlock:async()=>({hash:'0x'+'c'.repeat(64),timestamp:time}),
+ getChainId:async()=>8453,getBlockNumber:async()=>1000n,getBlock:async({blockNumber})=>({number:blockNumber,hash:'0x'+'c'.repeat(64),timestamp:time}),
  getCode:async q=>{assert.equal(q.blockNumber,998n);return q.address===vault?'0x01':'0x';},
  readContract:async q=>{
   assert.notEqual(q.address,book,'must never follow the book');assert.equal(q.blockNumber,998n);
@@ -32,8 +32,8 @@ test('network lease and operator reads survive an unavailable/hostile address bo
 });
 test('network pins are complete, copied and immutable, with no partial fallback',()=>{
  for(const authorityPins of [null,{}, {...pins,registry:zero},{...pins,other:factory},{...pins,connectivity:undefined}])
-  assert.throws(()=>new LeaseReader({addressBook:book,authorityPins,clients:[],now}),/pin/);
- const input={...pins};const r=new LeaseReader({addressBook:book,authorityPins:input,clients:[],now});input.registry=book;
+  assert.throws(()=>new LeaseReader({addressBook:book,authorityPins,clients:[peer(),peer()],now}),/pin/);
+ const input={...pins};const r=new LeaseReader({addressBook:book,authorityPins:input,clients:[peer(),peer()],now});input.registry=book;
  assert.equal(r.authorityPins.registry,registry);assert.throws(()=>{r.authorityPins.registry=book;});assert.throws(()=>{r.authorityPins=null;});
 });
 test('pinned SessionVault signatures use one fresh agreeing block without book discovery',async()=>{
