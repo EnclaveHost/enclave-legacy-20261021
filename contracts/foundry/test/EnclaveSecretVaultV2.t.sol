@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import { Test } from "forge-std/Test.sol";
 import { EnclaveSecretVaultV2, IVaultV2Ledger } from "../../EnclaveSecretVaultV2.sol";
+import { EnclaveHostOwnership } from "../../EnclaveHostOwnership.sol";
 import { EnclaveRegistry } from "../../EnclaveRegistry.sol";
 
 contract V2Book {
@@ -38,6 +39,7 @@ contract EnclaveSecretVaultV2Test is Test {
     EnclaveSecretVaultV2 vault;
     V2Book book;
     EnclaveRegistry registry;
+    EnclaveHostOwnership ownership;
     V2Ledger ledger;
     V2Factory factory;
     address enclaveOwner = makeAddr("enclaveOwner");
@@ -63,7 +65,8 @@ contract EnclaveSecretVaultV2Test is Test {
         book.set("registry", address(registry));
         book.set("deployments", address(ledger));
         book.set("sessionVaultFactory", address(factory));
-        vault = new EnclaveSecretVaultV2(address(book), enclaveOwner);
+        ownership = new EnclaveHostOwnership(address(registry));
+        vault = new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
         Y = abi.encodePacked(bytes1(0x02), keccak256("committee-key"));
         owner = vm.addr(ownerKey);
         ledger.setOwner(D, owner);
@@ -90,7 +93,14 @@ contract EnclaveSecretVaultV2Test is Test {
         vm.prank(vm.addr(k));
         rid = registry.register(string.concat("https://host", vm.toString(seed), ".example"), "EnclaveHost/enclave", bytes32(0), 1, 0, address(0));
         opKey[rid] = k;
-        if (payout != address(0)) { vm.prank(payout); registry.setPayoutWallet(rid); }
+        if (payout != address(0)) {
+            vm.prank(payout); registry.setPayoutWallet(rid);
+            (address accepted,,,) = ownership.authority(rid);
+            if (accepted == address(0)) {
+                vm.prank(vm.addr(k)); ownership.proposeOwner(rid,payout);
+                vm.prank(payout); ownership.acceptOwner(rid);
+            }
+        }
     }
     /// a custodian machine on its own host; Enclave-owned iff `enclave`
     function _machine(uint256 seed, bool enclave) internal returns (EnclaveSecretVaultV2.Machine memory m) {
@@ -105,6 +115,77 @@ contract EnclaveSecretVaultV2Test is Test {
     }
 
     function _codeSet() internal pure returns (bytes32[] memory cs) { cs = new bytes32[](1); cs[0] = M; }
+    function _independentMachines() internal returns (EnclaveSecretVaultV2.Machine[] memory ms) {
+        ms = new EnclaveSecretVaultV2.Machine[](3);
+        for (uint256 i; i < 3; i++) ms[i] = _machineOn(800+i, _host(800+i, vm.addr(900+i)));
+    }
+    function _independentSigs(EnclaveSecretVaultV2.Machine[] memory ms, bytes memory cs, bytes32[] memory codes)
+        internal view returns (bytes[] memory sigs) {
+        bytes32[] memory hashes = new bytes32[](ms.length);
+        for (uint256 i; i < ms.length; i++) hashes[i] = _mh(ms[i]);
+        bytes32 digest = keccak256(abi.encode("enclave-custody-v2 independent genesis", block.chainid,
+            address(vault), _cid("independent"), keccak256(cs), keccak256(abi.encode(hashes)), keccak256(abi.encode(codes))));
+        sigs = new bytes[](ms.length);
+        for (uint256 i; i < ms.length; i++) sigs[i] = _psign(idKey[ms[i].identity], digest);
+    }
+    function test_independentGenesisAndCodeQuorumWithoutEnclave() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        // Delete mutable discovery before submission; the vault keeps its pins.
+        book.set("registry", address(0)); book.set("deployments", address(0));
+        vm.prank(stranger);
+        bytes32 cid = vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,_hostSigs(ms));
+        (bytes memory key, uint32 epoch, uint8 t, uint8 W,) = vault.committeeOf(cid);
+        assertEq(key,Y); assertEq(epoch,1); assertEq(t,2); assertEq(W,3);
+        (,bool[] memory enc) = vault.machinesOf(cid,1);
+        assertFalse(enc[0]); assertFalse(enc[1]); assertFalse(enc[2]);
+        address[] memory ap = new address[](2); ap[0]=ms[0].identity; ap[1]=ms[1].identity;
+        vault.proposeCode(cid,M2,ap,_codeSigs(cid,M2,true,ap));
+        assertGt(vault.codeActiveAt(cid,M2), block.timestamp);
+        vm.expectRevert(EnclaveSecretVaultV2.BadCommittee.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,_hostSigs(ms));
+    }
+    function test_independentGenesisRejectsRosterCodeAndCommitmentSubstitution() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        bytes[] memory hosts = _hostSigs(ms);
+        bytes memory changed = bytes.concat(Y, abi.encodePacked(bytes1(0x03), bytes32(uint256(99))));
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,changed,_codeSet(),sigs,hosts);
+        bytes32[] memory codes = new bytes32[](2); codes[0]=M; codes[1]=M2;
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,cs,codes,sigs,hosts);
+        sigs[2]=sigs[1];
+        vm.expectRevert(EnclaveSecretVaultV2.BadSignature.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
+    function test_independentGenesisRequiresDistinctOwnersAndChips() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs = bytes.concat(Y,Y);
+        ms[1].chipId=ms[0].chipId;
+        bytes[] memory hosts = _hostSigs(ms);
+        bytes[] memory sigs = _independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadMachine.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+        ms[1] = _machineOn(810,_host(810,vm.addr(900)));
+        hosts=_hostSigs(ms); sigs=_independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadMachine.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
+    function test_independentGenesisRejectsEnclaveFounderAndWrongThreshold() public {
+        EnclaveSecretVaultV2.Machine[] memory ms = _independentMachines();
+        bytes memory cs=bytes.concat(Y,Y);
+        bytes[] memory sigs=_independentSigs(ms,cs,_codeSet());
+        bytes[] memory hosts=_hostSigs(ms);
+        vm.expectRevert(EnclaveSecretVaultV2.BadCommittee.selector);
+        vault.createIndependentCommittee("independent",ms,Y,_codeSet(),sigs,hosts);
+        ms[1]=_machine(820,true);
+        hosts=_hostSigs(ms); sigs=_independentSigs(ms,cs,_codeSet());
+        vm.expectRevert(EnclaveSecretVaultV2.BadSeats.selector);
+        vault.createIndependentCommittee("independent",ms,cs,_codeSet(),sigs,hosts);
+    }
     function _genesisDigest(bytes32 cid, EnclaveSecretVaultV2.Machine memory m, bytes32[] memory cs) internal view returns (bytes32) {
         return keccak256(abi.encode("enclave-custody-v2 genesis", block.chainid, address(vault), cid, keccak256(Y), _mh(m), keccak256(abi.encode(cs))));
     }
@@ -229,15 +310,16 @@ contract EnclaveSecretVaultV2Test is Test {
         bytes memory hSig = _hostSig(a);
         vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
         vault.createCommittee("salt", a, Y, cs, idSig, hSig);
-        // no payout wallet declared at all
+        // no accepted ownership at all
         EnclaveSecretVaultV2.Machine memory b = _machineOn(3, _host(3, address(0)));
         idSig = _psign(idKey[b.identity], _genesisDigest(_cid("salt"), b, cs));
         hSig = _hostSig(b);
-        vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
+        vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", b, Y, cs, idSig, hSig);
-        // the Enclave wallet clears its declaration: no longer Enclave-owned
+        // ownership transfers: the former owner no longer classifies this host
         EnclaveSecretVaultV2.Machine memory e = _machine(4, true);
-        vm.prank(enclaveOwner); registry.clearPayoutWallet(e.registryId);
+        vm.prank(enclaveOwner); ownership.proposeOwner(e.registryId,otherWallet);
+        vm.prank(otherWallet); ownership.acceptOwner(e.registryId);
         idSig = _psign(idKey[e.identity], _genesisDigest(_cid("salt"), e, cs));
         hSig = _hostSig(e);
         vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
@@ -272,9 +354,9 @@ contract EnclaveSecretVaultV2Test is Test {
         bytes memory hs = _hostSig(u);
         vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", u, Y, cs, idSig, hs);
-        // no registry in the book
+        // an address-book edit cannot change the pinned host registry
         book.set("registry", address(0));
-        vm.expectRevert(EnclaveSecretVaultV2.NoRegistry.selector);
+        vm.expectRevert(EnclaveSecretVaultV2.BadHost.selector);
         vault.createCommittee("salt", u, Y, cs, idSig, hs);
     }
     function _highS(bytes memory sig) internal pure returns (bytes memory) {
@@ -1041,12 +1123,67 @@ contract EnclaveSecretVaultV2Test is Test {
         assertEq(pr, 3); assertEq(sr, 3); assertFalse(paused);
     }
 
+    function testPayoutSpoofDoesNotGrantEnclaveSeat() public {
+        EnclaveSecretVaultV2.Machine memory m = _machine(51,false);
+        vm.prank(enclaveOwner); registry.setPayoutWallet(m.registryId);
+        bytes32[] memory cs = _codeSet();
+        bytes memory sig = _psign(idKey[m.identity],_genesisDigest(_cid("salt"),m,cs));
+        bytes memory hs = _hostSig(m);
+        vm.expectRevert(EnclaveSecretVaultV2.NotEnclave.selector);
+        vault.createCommittee("salt",m,Y,cs,sig,hs);
+    }
+    function testPayoutChangeAndBookEditCannotRemoveAcceptedOwnership() public {
+        EnclaveSecretVaultV2.Machine memory m = _machine(52,true);
+        vm.prank(stranger); registry.setPayoutWallet(m.registryId);
+        book.set("registry",address(0));
+        bytes32 cid = _genesis(m);
+        (,bool[] memory enc) = vault.machinesOf(cid,1);
+        assertTrue(enc[0]);
+    }
     function test_constructorAndImmutables() public {
+        assertEq(address(vault.hostOwnership()), address(ownership));
+        assertEq(vault.hostRegistry(), address(registry));
+        assertEq(vault.deploymentLedger(), address(ledger));
+        assertEq(vault.sessionVaultFactory(), address(factory));
         assertEq(address(vault.book()), address(book));
         assertEq(vault.enclaveOwner(), enclaveOwner);
         vm.expectRevert();
-        new EnclaveSecretVaultV2(address(0), enclaveOwner);
+        new EnclaveSecretVaultV2(address(0), enclaveOwner, address(ownership));
         vm.expectRevert();
-        new EnclaveSecretVaultV2(address(book), address(0));
+        new EnclaveSecretVaultV2(address(book), address(0), address(ownership));
+    }
+
+    function testBookCannotRedirectDeploymentOwnership() public {
+        V2Ledger substitute = new V2Ledger();
+        substitute.setOwner(D, stranger);
+        book.set("deployments", address(substitute));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+        ledger.setOwner(D, otherWallet);
+        assertEq(vault.beneficialOwnerOf(D), otherWallet);
+        book.set("deployments", address(0));
+        assertEq(vault.beneficialOwnerOf(D), otherWallet);
+    }
+
+    function testBookCannotDisableSessionOwnershipResolution() public {
+        V2SessionVault session = new V2SessionVault(owner);
+        factory.add(address(session));
+        ledger.setOwner(D, address(session));
+        book.set("sessionVaultFactory", address(new V2Factory()));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+        book.set("sessionVaultFactory", address(0));
+        assertEq(vault.beneficialOwnerOf(D), owner);
+    }
+
+    function testConstructorRequiresARealLedgerAndOptionalRealFactory() public {
+        book.set("deployments", address(0));
+        vm.expectRevert(EnclaveSecretVaultV2.NoLedger.selector);
+        new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        book.set("deployments", address(ledger));
+        book.set("sessionVaultFactory", stranger);
+        vm.expectRevert();
+        new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        book.set("sessionVaultFactory", address(0));
+        EnclaveSecretVaultV2 noSessions = new EnclaveSecretVaultV2(address(book), enclaveOwner, address(ownership));
+        assertEq(noSessions.sessionVaultFactory(), address(0));
     }
 }

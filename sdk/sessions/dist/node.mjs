@@ -525,6 +525,7 @@ function grantLink(siteOrigin, r) {
 import {
   createPublicClient,
   decodeErrorResult,
+  encodeFunctionData,
   hashTypedData as hashTypedData2,
   http,
   keccak256 as keccak2562
@@ -3284,6 +3285,12 @@ function spendable(s, now = BigInt(Math.floor(Date.now() / 1e3))) {
   const left = fresh ? s.perPeriod6 : s.perPeriod6 > s.periodSpent6 ? s.perPeriod6 - s.periodSpent6 : 0n;
   return s.balance6 < left ? s.balance6 : left;
 }
+async function directDeadline(pc, chainId, seconds = 600) {
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3600)
+    throw new SessionError("config", "deadlineSeconds must be an integer from 1 to 3600");
+  if (await pc.getChainId() !== chainId) throw new SessionError("config", "RPC chain does not match the session");
+  return (await pc.getBlock()).timestamp + BigInt(seconds);
+}
 var Session = class {
   constructor(handle, signer, opts = {}) {
     this.handle = handle;
@@ -3300,6 +3307,57 @@ var Session = class {
   }
   status() {
     return readSession(this.chain(), this.handle.vault, this.handle.sid);
+  }
+  /** Authorize a zero-relay-fee operation using chain reads only. An owner or
+   * independent gas payer can broadcast the returned calldata. The vault remains
+   * authoritative for scope, attestation, budget, revocation and replay checks. */
+  async prepareCall(action, args, opts = {}) {
+    const lane = opts.lane ?? 0n;
+    if (lane < 0n || lane >= 1n << 192n) throw new SessionError("config", "lane must fit uint192");
+    const deadline = await directDeadline(this.chain(), this.handle.chainId, opts.deadlineSeconds);
+    const s = await this.status();
+    if (!s.live) throw new SessionError("not_live", "this session is not live");
+    if ((s.actions >> BigInt(ACTIONS[action]) & 1n) === 0n)
+      throw new SessionError("not_allowed", `this session may not ${action}`);
+    const amount = amountOf(action, args);
+    if (amount > s.balance6) throw new SessionError("budget", `needs ${amount}, session has ${s.balance6}`);
+    const data = encodeArgs(action, args);
+    const nonce = lane << 64n | await this.seq(lane);
+    const digest = digestOf(this.handle.chainId, this.handle.vault, "SessionCall", {
+      sessionId: this.handle.sid,
+      nonce,
+      action: ACTIONS[action],
+      argsHash: keccak2562(data),
+      fee: 0n,
+      deadline
+    });
+    const { r, s: sv } = await this.signer.signDigest(digest);
+    return {
+      chainId: this.handle.chainId,
+      to: this.handle.vault,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: sessionVaultAbi,
+        functionName: "execute",
+        args: [this.handle.sid, nonce, ACTIONS[action], data, 0n, deadline, this.signer.x, this.signer.y, r, sv]
+      })
+    };
+  }
+  /** End and refund a session through any gas payer, without contacting a relay. */
+  async prepareTermination(opts = {}) {
+    const deadline = await directDeadline(this.chain(), this.handle.chainId, opts.deadlineSeconds);
+    const digest = digestOf(this.handle.chainId, this.handle.vault, "SessionEnd", { sessionId: this.handle.sid, deadline });
+    const { r, s } = await this.signer.signDigest(digest);
+    return {
+      chainId: this.handle.chainId,
+      to: this.handle.vault,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: sessionVaultAbi,
+        functionName: "terminateBySession",
+        args: [this.handle.sid, deadline, this.signer.x, this.signer.y, r, s]
+      })
+    };
   }
   /** Check, quote, sign and submit one action. Throws SessionError with a code the
    *  caller can act on (budget -> top-up, expired -> extend, ...). */
@@ -3483,6 +3541,44 @@ async function openSession(p) {
   if (out.sid !== expect) throw new SessionError("relay", `relay reported sid ${out.sid}, expected ${expect}`);
   return out;
 }
+async function prepareSessionOpen(p) {
+  if (await p.publicClient.getChainId() !== p.chainId) throw new SessionError("config", "RPC chain does not match the grant");
+  if (p.grant.budget > 0n && (!p.usdc || p.usdc.chainId !== p.chainId))
+    throw new SessionError("config", "a funded session needs the matching chain's USDC domain");
+  const vault = await vaultAddress(p.publicClient, p.factory, p.owner.address);
+  const ownerSig = await p.owner.signTypedData(typedData(
+    p.chainId,
+    vault,
+    "SessionGrant",
+    p.grant
+  ));
+  let data;
+  if (p.grant.budget > 0n) {
+    const deposit = await signDeposit(
+      p.owner,
+      p.usdc,
+      vault,
+      p.grant.budget,
+      grantDigest(p.chainId, vault, p.grant),
+      p.grant.signBefore
+    );
+    data = encodeFunctionData({
+      abi: sessionVaultFactoryAbi,
+      functionName: "openWithDepositFor",
+      args: [p.owner.address, p.grant, ownerSig, deposit.validAfter, deposit.validBefore, deposit.sig]
+    });
+  } else {
+    data = encodeFunctionData({ abi: sessionVaultFactoryAbi, functionName: "openFor", args: [p.owner.address, p.grant, ownerSig] });
+  }
+  return {
+    chainId: p.chainId,
+    to: p.factory,
+    data,
+    value: 0n,
+    vault,
+    sid: sessionIdOf(vault, p.grant.sessionKey, p.grant.grantNonce)
+  };
+}
 var OP_TYPE = {
   topUp: "TopUp",
   extend: "Extend",
@@ -3587,7 +3683,7 @@ async function requestAttestation(relay, p) {
 // src/delegate.ts
 import {
   encodeAbiParameters as encodeAbiParameters3,
-  encodeFunctionData,
+  encodeFunctionData as encodeFunctionData2,
   getAddress,
   keccak256 as keccak2563,
   toFunctionSelector
@@ -3618,7 +3714,7 @@ async function delegationStatus(pc, ledger, owner, vault) {
   return { supported: true, granted: !!word && BigInt(word) === 1n };
 }
 function setDelegateCall(vault, allowed) {
-  return { data: encodeFunctionData({ abi: ledgerDelegateAbi, functionName: "setDelegate", args: [getAddress(vault), allowed] }) };
+  return { data: encodeFunctionData2({ abi: ledgerDelegateAbi, functionName: "setDelegate", args: [getAddress(vault), allowed] }) };
 }
 
 // src/index.ts
@@ -3801,6 +3897,7 @@ export {
   ownerFromProvider,
   ownerOperation,
   pendingId,
+  prepareSessionOpen,
   publicKeyXY,
   readSession,
   requestAttestation,

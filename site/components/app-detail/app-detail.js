@@ -111,7 +111,7 @@ class AppDetail extends EnclaveElement {
     this.querySelector(".app-actions").innerHTML =
       '<button class="btn btn-primary btn-sm" data-act="deploy" type="button"'
         + (!app.active ? ' disabled title="Delisted: the enclave refuses its CIDs; relist first"'
-           : v.approval === APPROVAL.approved ? '' : ' disabled title="Deploys unlock once the catalog owner approves this version"') + '>Deploy →</button>'
+           : v.yanked ? ' disabled title="This version was yanked by its publisher"' : v.approval === APPROVAL.approved ? '' : ' disabled title="Deploys unlock once the catalog owner approves this version"') + '>Deploy →</button>'
       + '<a class="btn btn-sm" href="' + gw + '" target="_blank" rel="noopener">fetch .wasm</a>'
       + (isPub ? '<button class="btn btn-sm" data-act="newver" type="button" title="Open the publish form pre-filled from this version (new file/CID required)">add version</button>' : '')
       + (isPub && !app.active ? '<button class="btn btn-sm" data-act="relist" type="button">relist</button>' : '')

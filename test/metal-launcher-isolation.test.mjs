@@ -61,7 +61,7 @@ test("the endpoints default as before and must be IPv4 literals", () => {
 // The fake QEMU copies the file named by `-fw_cfg name=opt/org.enclave.metal,file=…` (what the guest reads at
 // /sys/firmware/qemu_fw_cfg/by_name/opt/org.enclave.metal/raw) to $FAKE_QEMU_OUT, then sleeps until the launcher
 // stops it. TMPDIR is private, so the launcher's stale-fw_cfg sweep never looks at the real /tmp.
-function launchWith(isolation) {
+function launchWith(isolation, extras = {}) {
   const t = fs.mkdtempSync(join(os.tmpdir(), "metal-iso-test-"));
   fs.mkdirSync(join(t, "dist")); fs.mkdirSync(join(t, "tmp"));
   fs.writeFileSync(join(t, "dist", "vmlinuz"), "not a kernel");
@@ -76,7 +76,7 @@ function launchWith(isolation) {
     "done",
     "exec sleep 30",
   ].join("\n") + "\n", { mode: 0o755 });
-  const cfg = { mode: "snp", name: "iso-test", cpus: 1, memMiB: 512, dist: join(t, "dist"), ovmf: join(t, "ovmf.fd"),
+  const cfg = { ...extras, mode: "snp", name: "iso-test", cpus: 1, memMiB: 512, dist: join(t, "dist"), ovmf: join(t, "ovmf.fd"),
                 qemu: join(t, "fake-qemu"), relayUrl: "wss://relay.example.test/v1/fleet-tunnel",
                 isolation: { ...BASE, pairingKeyFile: join(t, "pair.key"), ...isolation } };
   fs.writeFileSync(join(t, "config.json"), JSON.stringify(cfg));
@@ -88,8 +88,8 @@ function launchWith(isolation) {
   const exited = new Promise((r) => p.on("exit", (code, sig) => r({ code, sig })));
   return { t, p, out, exited, log: () => log };
 }
-async function fwCfgOf(isolation) {
-  const run = launchWith(isolation);
+async function fwCfgOf(isolation, extras = {}) {
+  const run = launchWith(isolation, extras);
   try {
     const first = await Promise.race([
       (async () => { for (let i = 0; i < 200; i++) { if (fs.existsSync(run.out)) return "file"; await new Promise((r) => setTimeout(r, 50)); } return "timeout"; })(),
@@ -144,4 +144,64 @@ test("the host half and the guest half name the same thing", () => {
   // ...and gsup reads fw_cfg's `isolation` and opts in on exactly `release === true`
   assert.match(gsup, /const ISO_CFG = \(fw\.isolation && typeof fw\.isolation === 'object'\) \? fw\.isolation : \{\};/);
   assert.match(gsup, /\.\.\.\(ISO_CFG\.release === true \? \{ ISOLATION_RELEASE: '1' \} : \{\}\)/);
+});
+
+// The real launcher passes only public, validated policy data into the guest.
+test("wallet policy crosses real fw_cfg and installs from the standalone guest bundle", async () => {
+  const {pathToFileURL}=await import('node:url');
+  const {spawnSync}=await import('node:child_process');
+  const dir=fs.mkdtempSync(join(os.tmpdir(),'metal-policy-boundary-'));
+  const hostId='0x'+'ab'.repeat(32),ownershipContract='0x'+'11'.repeat(20);
+  const policy={version:1,chainId:8453,hostId,ownershipContract,requireCatalogApproval:false,denyDeployments:[],denyAppRefs:[]};
+  const contracts=Object.fromEntries(['registry','deployments','appCatalog','proofOfTime','enclavePay','verificationFees','sessionVaultFactory','secretVaultV2'].map((k,i)=>[k,'0x'+String(i+1).repeat(40)]));
+  try {
+    fs.writeFileSync(join(dir,'pins.json'),JSON.stringify({version:1,chainId:8453,contracts}));
+    fs.writeFileSync(join(dir,'policy.json'),JSON.stringify(policy));
+    const hostAdmission={hostId,ownershipContract,pinsFile:join(dir,'pins.json'),policyFiles:[join(dir,'policy.json')],policyOrigins:['https://policy.example.test']};
+    const {fw}=await fwCfgOf({}, {hostAdmission});
+    assert.equal(JSON.stringify(fw.hostAdmission).includes(dir),false);
+    assert.deepEqual(fw.hostAdmission.policies,[policy]);
+    assert.deepEqual(Object.keys(fw.hostAdmission).sort(),['hostId','ownershipContract','pins','policies','policyOrigins','version']);
+    const bundle=join(dir,'host-policy.bundle.mjs');
+    fs.copyFileSync(join(repo,'metal/guest/host-policy.bundle.mjs'),bundle);
+    // Separate cwd without node_modules proves the exact shipped artifact is usable.
+    const script=`import {installMetalHostPolicy} from ${JSON.stringify(pathToFileURL(bundle).href)};console.log(JSON.stringify(installMetalHostPolicy(${JSON.stringify(fw.hostAdmission)},{directory:${JSON.stringify(join(dir,'guest'))}})));`;
+    const installed=spawnSync(process.execPath,['--input-type=module','-e',script],{cwd:dir,encoding:'utf8'});
+    assert.equal(installed.status,0,installed.stderr);
+    const env=JSON.parse(installed.stdout);
+    assert.equal(env.ENCLAVE_HOST_ID,hostId);
+    assert.equal(env.ENCLAVE_HOST_OWNERSHIP,ownershipContract);
+    assert.equal(env.ENCLAVE_HOST_REGISTRY_PIN,contracts.registry);
+    assert.equal(env.ENCLAVE_HOST_CATALOG_PIN,contracts.appCatalog);
+    assert.deepEqual(JSON.parse(fs.readFileSync(env.ENCLAVE_CONTRACT_PINS_FILE)),fw.hostAdmission.pins);
+    const docs=fs.readdirSync(env.ENCLAVE_HOST_POLICY_DIR);assert.equal(docs.length,1);
+    assert.deepEqual(JSON.parse(fs.readFileSync(join(env.ENCLAVE_HOST_POLICY_DIR,docs[0]))),policy);
+    assert.match(gsup,/const HOST_POLICY_ENV=installMetalHostPolicy\(fw.hostAdmission\)/);
+    assert.match(gsup,/\.\.\.flavorEnv,[^]*?\.\.\.HOST_POLICY_ENV/);
+    const {hostAdmissionFromEnv}=await import('../network/host-admission-runtime.mjs');
+    assert.throws(()=>hostAdmissionFromEnv({hostId:'0x'+'cd'.repeat(32),env}),/another host/);
+    assert.ok(hostAdmissionFromEnv({hostId,env,addressBook:ownershipContract,rpc:['https://rpc-a.example','https://rpc-b.example']}));
+    // A foreign policy must fail in the launcher, before QEMU is invoked.
+    fs.writeFileSync(join(dir,'policy.json'),JSON.stringify({...policy,hostId:'0x'+'cd'.repeat(32)}));
+    const run=launchWith({}, {hostAdmission});
+    try{const result=await run.exited;assert.notEqual(result.code,0);assert.equal(fs.existsSync(run.out),false);assert.match(run.log(),/another host/);}
+    finally{fs.rmSync(run.t,{recursive:true,force:true});}
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('measured image and supervisor overlay include wallet policy and its local import closure',()=>{
+ const builder=fs.readFileSync(join(repo,'metal/build-image.mjs'),'utf8');
+ assert.match(builder,/\['gsup.mjs', 'host-policy.bundle.mjs'/);
+ const list=builder.match(/const files = (\[[\s\S]*?\]);/)[1];
+ const files=new Function('return '+list)();
+ assert.ok(files.includes('windows/node/host-admission.bundle.mjs'));
+ const visit=(file,seen=new Set())=>{
+  if(seen.has(file))return;seen.add(file);
+  assert.ok(files.includes(file),`overlay missing ${file}`);
+  const code=fs.readFileSync(join(repo,file),'utf8');
+  for(const m of code.matchAll(/(?:from\s*|import\s*\()(['"])(\.\.?\/[^'"]+)\1/g)){
+   const target=join(dirname(file),m[2]);visit(target,seen);
+  }
+ };
+ for(const file of ['sdk/bootstrap/storage.mjs','sdk/bootstrap/package.mjs','sdk/storage/gateways.mjs','windows/node/host-admission.bundle.mjs'])visit(file);
 });

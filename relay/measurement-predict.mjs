@@ -207,9 +207,12 @@ function liveWorkRefs(work) {
 
 export function makePredictor(o) {
   const { repo, commit, readCatalog, gateway, sevSnpMeasure, sevSnpMeasureSha256 } = o;
+  // An explicit replica set replaces the legacy gateway, including its fallback.
+  // Transport availability never changes the pinned toolchain's CID verification.
+  const gateways = [...new Set((o.gateways?.length ? o.gateways : [gateway]).filter(Boolean))];
   // Newly pinned configs may not yet be reachable through a public gateway.
   // Each source still goes through the same pinned CAR/CID verifier.
-  const configGateways = [...new Set([o.configGateway, gateway].filter(Boolean))];
+  const configGateways = [...new Set([o.configGateway, ...gateways].filter(Boolean))];
   const digestTool = o.digestTool || ((exe) => sevSnpMeasureDigest(exe, run));
   const work = o.work ? path.resolve(o.work) : "";
   // Only the predictor that owns `work` sweeps it (the relay passes sweepStale); a preflight sharing it never does.
@@ -240,7 +243,7 @@ export function makePredictor(o) {
   const problems = [
     !HEX(40).test(String(commit || "")) && "the toolchain commit (40 hex)",
     !repo && "the toolchain repository", typeof readCatalog !== "function" && "the catalog reader",
-    !/^https:\/\//.test(String(gateway || "")) && "an https gateway", !sevSnpMeasure && "sev-snp-measure",
+    (!gateways.length || gateways.some(g => !/^https:\/\//.test(String(g)))) && "an https gateway", !sevSnpMeasure && "sev-snp-measure",
     o.configGateway && !/^https:\/\//.test(String(o.configGateway)) && "an https config gateway",
     !HEX(64).test(String(sevSnpMeasureSha256 || "")) && "sev-snp-measure's pinned digest", !work && "a work directory",
     !admit.length && "at least one admitted release",
@@ -336,8 +339,16 @@ export function makePredictor(o) {
     const held = digest ? heldComponent(cid, digest, maxComponentBytes) : null;
     if (held) fs.writeFileSync(comp, held);
     else {
-      const f = await run("python3", [path.join(tc.dir, "isolation/m4/guestd/fetch-cid.py"), tc.dir, cid, comp, String(maxComponentBytes), gateway],
-        { env: tc.env, cwd: job, timeoutMs });
+      let f = { code: 1, err: "no configured gateway" };
+      const deadline = Date.now() + timeoutMs;
+      for (const source of gateways) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        fs.rmSync(comp, { force: true });
+        f = await run("python3", [path.join(tc.dir, "isolation/m4/guestd/fetch-cid.py"), tc.dir, cid, comp, String(maxComponentBytes), source],
+          { env: tc.env, cwd: job, timeoutMs: Math.min(remaining, Math.max(1, Math.floor(timeoutMs / gateways.length))) });
+        if (f.code === 0) break;
+      }
       if (f.code !== 0) return { ok: false, code: "component_unavailable", reason: `the component ${cid} did not fetch and verify: ${lastLine(f.err)}` };
       if (digest) {
         try {
@@ -630,10 +641,14 @@ export function makePredictor(o) {
     try {
       const out = path.join(job, "bytes");
       let b, reason = "no configured gateway";
+      const deadline = Date.now() + timeoutMs;
       for (const source of configGateways) {
         if (!/^https:\/\//.test(String(source))) { reason = "config gateway must use https"; continue; }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { reason = "gateway deadline exceeded"; break; }
         fs.rmSync(out, { force: true });
-        const f = await run("python3", [path.join(tc.dir, "isolation/m4/guestd/fetch-cid.py"), tc.dir, cid, out, String(maxBytes), source], { env: tc.env, cwd: job, timeoutMs });
+        const f = await run("python3", [path.join(tc.dir, "isolation/m4/guestd/fetch-cid.py"), tc.dir, cid, out, String(maxBytes), source],
+          { env: tc.env, cwd: job, timeoutMs: Math.min(remaining, Math.max(1, Math.floor(timeoutMs / configGateways.length))) });
         if (f.code !== 0) { reason = lastLine(f.err); continue; }
         const candidate = fs.readFileSync(out);
         if (candidate.length > maxBytes || (digest && sha256hex(candidate) !== digest)) { reason = "verified output size or CID mismatch"; continue; }
@@ -743,6 +758,7 @@ export function versionConfigReader(clients, catalogAddress) {
 //                                      installed release. Must include every admitted release. A release installed only for
 //                                      the known-answer test is left out, so its guests are not certifiable.
 //   SECRETS_RELEASE_PREDICT_GATEWAY    https trustless gateway
+//   SECRETS_RELEASE_PREDICT_GATEWAYS   comma-separated https replicas, replacing the legacy gateway
 //   SECRETS_RELEASE_CONFIG_GATEWAY     optional preferred config gateway; same CID verification, public gateway fallback
 //   SECRETS_RELEASE_SEV_SNP_MEASURE    the pinned sev-snp-measure executable
 //   SECRETS_RELEASE_SEV_SNP_MEASURE_SHA256  its sevSnpMeasureDigest (node relay/measurement-predict.mjs digest <exe> prints it)
@@ -758,6 +774,7 @@ export function predictorEnv(env = process.env) {
            releases, admit: String(env.SECRETS_RELEASE_DOMAIN_RELEASES || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
            certReleases: String(env.SECRETS_RELEASE_CERT_RELEASES || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
            gateway: env.SECRETS_RELEASE_PREDICT_GATEWAY || "", sevSnpMeasure: env.SECRETS_RELEASE_SEV_SNP_MEASURE || "",
+           gateways: String(env.SECRETS_RELEASE_PREDICT_GATEWAYS || "").split(",").map(s => s.trim()).filter(Boolean),
            configGateway: env.SECRETS_RELEASE_CONFIG_GATEWAY || "",
            sevSnpMeasureSha256: String(env.SECRETS_RELEASE_SEV_SNP_MEASURE_SHA256 || "").toLowerCase(),
            toolPath: String(env.SECRETS_RELEASE_PREDICT_PATH || "").split(":").filter(Boolean),

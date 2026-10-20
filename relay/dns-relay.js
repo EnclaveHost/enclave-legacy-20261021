@@ -1,6 +1,6 @@
 // Authoritative Enclave DNS. Application A/AAAA and raw-port SRV answers come
 // only from unexpired, operator-signed Enclave-network routes joined to live leases
-// and host admission on Nan. There is no wildcard or legacy relay fallback.
+// and host admission in the configured validating directory. There is no wildcard or legacy relay fallback.
 // DNS-01 TXT challenges and the box control namespace remain available.
 //
 // IP_ZONE, APP_ZONE and NS_NAME are required. Optional TCP_ZONE preserves its
@@ -9,10 +9,26 @@
 // NET_POLL_SEC controls refresh (default 15). DNS_PORT defaults to 53,
 // DNS_API_PORT to 8153; DNS_API_BIND restricts the challenge API listener.
 // DNS_BIND is a comma-separated IP list; unset preserves the dual-stack wildcard.
+// DNS_READ_ONLY=1 serves route answers without fleet discovery or challenge writes;
+// it requires an explicit ROUTE_MAP_URL and cannot serve the box control zone.
 // DNS_TXT_KEY is HMAC-SHA256(fleet SECRET, 'enclave dns-txt v1') as hex, never
 // the raw fleet secret. TXT_TTL_SEC caps challenges (default 600).
 // Fleet discovery (REGISTRY_ADDRESS or ENCLAVES, BASE_RPC) authenticates DNS-01
 // pushes. DNS_RL_CAP/DNS_RL_PER_SEC bound per-source response rates.
+// DNS_CHALLENGE_AUTH=attested runs an independent DNS-01 responder for direct
+// guests' owner-committed names instead (relay/dns-challenge-attested.mjs): it
+// serves only CHALLENGE_ZONE (plus NS_NAME/NS_NAMES), and writes a TXT value only
+// for a push signed by a measured guest's attested key. It needs no fleet,
+// registry, HMAC key, route map or eligibility API, and refuses to start with any
+// of them configured, so nothing can fall back to them. ATTESTED_MEASUREMENTS
+// pins the launch measurements it accepts; ATTESTED_MIN_TCB requires a firmware
+// floor; ATTESTED_KDS=0 never contacts AMD KDS (the guest must carry its VCEK);
+// ATTESTED_JUDGE_MODE=lab-unsigned is an explicit lab diagnostic without the AMD
+// chain, stated on /health. ATTESTED_SHIELD_POLICY separately admits Enclave
+// Shield (T0-hv) guests; it needs ATTESTED_SHIELD_PROFILE (+ _DIGEST, the
+// reviewed authority profile whose registry pin binds code and schema) and
+// ATTESTED_SHIELD_RPCS (two or more distinct hosts, one agreed block).
+// ATTESTED_PUSH_READ_MS bounds a push body's arrival (default 10 s).
 // This is an authoritative server, not a recursive resolver.
 
 import dgram from "node:dgram";
@@ -21,19 +37,82 @@ import http from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createFleet, fleetConfig, fetchJson, installProcessGuards } from "./fleet.mjs";
 import { isBoxHost } from "./boxhost.js";
+import { authorizePush, parseMeasurements } from "./dns-challenge-attested.mjs";
+import { createShieldChallengeAuth, isShieldPush, shieldRegistryBinding, shieldRegistryEntry } from "./dns-challenge-shield.mjs";
 installProcessGuards("dns-relay");
 
 const need = (k) => { const v = (process.env[k] || "").trim(); if (!v) { console.error(`fatal: ${k} is required`); process.exit(1); } return v; };
 const fqdn = (s) => s.trim().toLowerCase().replace(/\.+$/, "");
+const READ_ONLY = process.env.DNS_READ_ONLY === "1";
+if (READ_ONLY && (!(process.env.ROUTE_MAP_URL || "").trim() || process.env.BOX_ZONE)) {
+  console.error("fatal: DNS_READ_ONLY requires explicit ROUTE_MAP_URL and no BOX_ZONE");
+  process.exit(1);
+}
+const ATTESTED = process.env.DNS_CHALLENGE_AUTH === "attested";
+const NO_FALLBACK = ["DNS_READ_ONLY", "IP_ZONE", "APP_ZONE", "TCP_ZONE", "BOX_ZONE", "APP_STATIC", "ROUTE_MAP_URL", "DNS_TXT_KEY",
+  "SECRET", "REGISTRY_ADDRESS", "ENCLAVES", "ENCLAVE_URL", "ELIGIBILITY_API", "DOMAINS_API", "ADDRESS_BOOK_ADDRESS", "BASE_RPC"];
+if ((process.env.DNS_CHALLENGE_AUTH && !ATTESTED) || (ATTESTED && NO_FALLBACK.some((k) => (process.env[k] || "").trim()))) {
+  console.error(`fatal: DNS_CHALLENGE_AUTH=attested serves only CHALLENGE_ZONE; unset ${NO_FALLBACK.join(", ")}`);
+  process.exit(1);
+}
 
 const CFG = fleetConfig();
-if (!CFG.registryAddress && !CFG.staticList.length) {
+if (!READ_ONLY && !ATTESTED && !CFG.registryAddress && !CFG.staticList.length) {
   console.error("fatal: set REGISTRY_ADDRESS (on-chain discovery) or ENCLAVES (static list)");
   process.exit(1);
 }
-const fleet     = createFleet(CFG, (m) => console.log("[dns-relay]", m));
-const IP_ZONE   = fqdn(need("IP_ZONE"));
-const APP_ZONE  = fqdn(need("APP_ZONE"));
+const fleet     = READ_ONLY || ATTESTED ? null : createFleet(CFG, (m) => console.log("[dns-relay]", m));
+const IP_ZONE   = ATTESTED ? null : fqdn(need("IP_ZONE"));
+const APP_ZONE  = ATTESTED ? null : fqdn(need("APP_ZONE"));
+const CHALLENGE_ZONE = ATTESTED ? fqdn(need("CHALLENGE_ZONE")) : null;
+let ATTEST = null;
+if (ATTESTED) {
+  const mode = process.env.ATTESTED_JUDGE_MODE || "trusted";
+  const minTcb = (process.env.ATTESTED_MIN_TCB || "").trim();
+  try {
+    if (!["trusted", "lab-unsigned"].includes(mode)) throw new Error("ATTESTED_JUDGE_MODE must be trusted or lab-unsigned");
+    if (CHALLENGE_ZONE.length > 204 || CHALLENGE_ZONE.split(".").length < 2 ||
+        CHALLENGE_ZONE.split(".").some((l) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) throw new Error("CHALLENGE_ZONE must be a DNS zone of at most 204 bytes");
+    // ATTESTED_SHIELD_POLICY (dns-challenge-shield.mjs): an explicit, separate opt-in for Enclave Shield (T0-hv) guests,
+    // with its own TPM roots, platforms and image pairs, and a chain reader for host identity. Without it nothing but
+    // SEV-SNP evidence is accepted, and ATTESTED_MEASUREMENTS stays required.
+    const shieldFile = (process.env.ATTESTED_SHIELD_POLICY || "").trim();
+    ATTEST = { mode, measurements: process.env.ATTESTED_MEASUREMENTS || !shieldFile ? parseMeasurements(process.env.ATTESTED_MEASUREMENTS) : new Set(),
+               kds: process.env.ATTESTED_KDS !== "0",
+               ...(minTcb ? { minTcb: JSON.parse(minTcb) } : {}), judge: (await import("../isolation/m2/judge.mjs")).judge };
+    if (shieldFile) Object.assign(ATTEST, await shieldAuthFromEnv(shieldFile));
+    const pushRead = Number(process.env.ATTESTED_PUSH_READ_MS || 10_000);
+    if (!Number.isSafeInteger(pushRead) || pushRead < 1000 || pushRead > 60_000) throw new Error("ATTESTED_PUSH_READ_MS must be an integer in 1000..60000");
+    ATTEST.pushReadMs = pushRead;
+  } catch (e) { console.error(`fatal: ${e.message}`); process.exit(1); }
+  if (mode !== "trusted") console.error("[dns-relay] ATTESTED_JUDGE_MODE=lab-unsigned: the AMD chain is NOT verified; lab diagnostic only");
+}
+// The Shield opt-in's inputs: the policy file, the reviewed authority profile the operator pins by digest
+// (ATTESTED_SHIELD_PROFILE + ATTESTED_SHIELD_PROFILE_DIGEST; network/authority-profile.mjs refuses any other bytes) whose
+// registry pin - address, runtime code hash and length, registrySchema - every host-identity read is judged against at
+// its own agreed block, and ATTESTED_SHIELD_RPCS (two or more RPCs on distinct hosts; windows/node/host-identity.mjs
+// quorumReader). ATTESTED_SHIELD_PINS, the strict contract-pin document, is optional; given, it must name the same
+// registry. No address book, fleet, relay or default RPC is consulted.
+async function shieldAuthFromEnv(file) {
+  const fs = await import("node:fs");
+  const { validateContractPins } = await import("../network/contract-pins.mjs");
+  const { parseProfile } = await import("../network/authority-profile.mjs");
+  const { quorumReader, rpcClients } = await import("../windows/node/host-identity.mjs");
+  const { recoverMessageAddress } = await import("viem");
+  const policy = JSON.parse(fs.readFileSync(file, "utf8"));
+  const profileFile = (process.env.ATTESTED_SHIELD_PROFILE || "").trim(), digest = (process.env.ATTESTED_SHIELD_PROFILE_DIGEST || "").trim();
+  if (!profileFile || !digest) throw new Error("ATTESTED_SHIELD_POLICY needs ATTESTED_SHIELD_PROFILE and ATTESTED_SHIELD_PROFILE_DIGEST (the reviewed registry pin)");
+  const { profile, digest: profileDigest } = parseProfile(fs.readFileSync(profileFile), { expectedDigest: digest });
+  const binding = shieldRegistryBinding(profile);
+  if ((process.env.ATTESTED_SHIELD_PINS || "").trim()) {
+    const pins = validateContractPins(JSON.parse(fs.readFileSync(process.env.ATTESTED_SHIELD_PINS, "utf8").replace(/^\uFEFF/, "")));
+    if (pins.registry !== binding.address) throw new Error("ATTESTED_SHIELD_PINS names another registry than the reviewed profile");
+  }
+  const reader = quorumReader({ clients: await rpcClients(String(process.env.ATTESTED_SHIELD_RPCS || "").split(",").map((x) => x.trim()).filter(Boolean)) });
+  const shield = createShieldChallengeAuth({ policy, zone: CHALLENGE_ZONE, registryEntry: shieldRegistryEntry({ reader, binding }),
+    recoverSigner: (message, signature) => recoverMessageAddress({ message, signature }), log: (m) => console.log(m) });
+  return { shield, shieldRegistry: { address: binding.address, schema: binding.schema, codeHash: binding.codeHash, profileDigest } };
+}
 // zone 3 (optional): the SNI relay's TLS namespace — same wildcard-to-one-box
 // shape as the app zone, delegated here so in-enclave ACME can answer dns-01
 // for <label>.tcp.* names too. Unset = zone off (Cloudflare keeps serving it).
@@ -46,6 +125,15 @@ const TCP_ZONE  = process.env.TCP_ZONE ? fqdn(process.env.TCP_ZONE.trim()) : nul
 // never saw and attestation cannot complete. Unset = zone off.
 const BOX_ZONE  = process.env.BOX_ZONE ? fqdn(process.env.BOX_ZONE.trim()) : null;
 const NS_NAME   = fqdn(need("NS_NAME"));
+// Every replica publishes the same complete delegation, so resolvers do not
+// cache only the one server that happened to answer their last query.
+const NS_NAMES = [...new Set(process.env.NS_NAMES?.trim()
+  ? process.env.NS_NAMES.split(",").map(fqdn) : [NS_NAME])];
+if (!NS_NAMES.length || NS_NAMES.length > 8 || NS_NAMES.some(n => !n || n.length > 253 ||
+    n.split(".").some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
+  console.error("fatal: NS_NAMES must name 1..8 valid DNS names");
+  process.exit(1);
+}
 // hostmaster at the NS name's parent (ns1.enclave.host -> hostmaster.enclave.host)
 const RNAME     = "hostmaster." + (NS_NAME.includes(".") ? NS_NAME.slice(NS_NAME.indexOf(".") + 1) : NS_NAME);
 const DNS_PORT  = parseInt(process.env.DNS_PORT || "53", 10);
@@ -63,8 +151,8 @@ const API_BIND  = process.env.DNS_API_BIND || undefined;
 // (see supervisor.js's DNS_TXT_KEY). Set DNS_TXT_KEY to that derived hex.
 // `SECRET` stays as a DEPRECATED fallback (it was mislabeled "the fleet secret"
 // but always had to hold the derived key for a push to verify).
-let TXT_KEY = (process.env.DNS_TXT_KEY || "").trim();
-if (!TXT_KEY && (process.env.SECRET || "").trim()) {
+let TXT_KEY = READ_ONLY || ATTESTED ? "" : (process.env.DNS_TXT_KEY || "").trim();
+if (!READ_ONLY && !TXT_KEY && (process.env.SECRET || "").trim()) {
   TXT_KEY = process.env.SECRET.trim();
   console.error("[dns-relay] SECRET is DEPRECATED — rename it to DNS_TXT_KEY. Its value must be the DERIVED key HMAC(fleet SECRET,'enclave dns-txt v1') hex, never the raw fleet SECRET.");
 }
@@ -240,7 +328,7 @@ const rr = (name, type, ttl, rdata) =>
 const soaRR = (zone) => rr(zone, T.SOA, NEG_TTL, Buffer.concat([
   encodeName(NS_NAME), encodeName(RNAME),
   u32(SERIAL), u32(3600), u32(600), u32(604800), u32(NEG_TTL)]));
-const nsRR  = (zone) => rr(zone, T.NS, 300, encodeName(NS_NAME));
+const nsRR  = (zone, name) => rr(zone, T.NS, 300, encodeName(name));
 const srvRR = (name, port, target) =>
   rr(name, T.SRV, 60, Buffer.concat([u16(0), u16(0), u16(port), encodeName(target)]));
 
@@ -269,7 +357,7 @@ const EMPTY  = (rcode) => ({ rcode, aa: false, an: [], au: [], ad: [] });
 function apex(zone, qtype) {
   const an = [];
   if (qtype === T.SOA || qtype === T.ANY) an.push(soaRR(zone));
-  if (qtype === T.NS  || qtype === T.ANY) an.push(nsRR(zone));
+  if (qtype === T.NS  || qtype === T.ANY) an.push(...NS_NAMES.map(name => nsRR(zone, name)));
   return an.length ? HIT(an) : NODATA(zone);
 }
 
@@ -328,8 +416,15 @@ function resolveApp(qname, qtype) {
   const sub = qname.slice(0, -(APP_ZONE.length + 1));
   const fixed = sub.includes(".") ? null : APP_STATIC.get(sub);
   if (fixed) return (qtype === T.A || qtype === T.ANY) ? HIT([rr(qname, T.A, 300, fixed)]) : NODATA(APP_ZONE);
+  // Routes govern addresses only. In particular, CAA must answer NODATA so
+  // the CA can check the parent policy before a guest has a serving route.
+  // SERVFAIL here creates a cycle: no certificate -> no route -> no certificate.
+  if (qtype !== T.A && qtype !== T.AAAA && qtype !== T.ANY) return NODATA(APP_ZONE);
   const pick = sub.includes(".") ? null : appRoutes.get(sub);
-  if (!pick || pick.expiresAt <= Date.now()) return NODATA(APP_ZONE);
+  // A replica without a current verified deployment route cannot assert that
+  // the name has no address. SERVFAIL lets recursive resolvers try another
+  // authority instead of caching a transient verification gap as NODATA.
+  if (!pick || pick.expiresAt <= Date.now()) return (pick || /^[0-9a-f]{8}$/.test(sub)) ? EMPTY(RC.SERVFAIL) : NODATA(APP_ZONE);
   const an = [];
   const ttl=Math.min(ROUTE_TTL,Math.max(0,Math.floor((pick.expiresAt-Date.now())/1000)));
   if (qtype === T.A || qtype === T.ANY) for(const address of pick.a) an.push(rr(qname,T.A,ttl,address));
@@ -340,6 +435,8 @@ function resolveApp(qname, qtype) {
 function answer(q) {
   if (q.opcode !== 0) return EMPTY(RC.NOTIMP);
   if (q.qclass !== 1 && q.qclass !== T.ANY) return EMPTY(RC.REFUSED);
+  if (ATTESTED) return q.qname === CHALLENGE_ZONE || q.qname.endsWith("." + CHALLENGE_ZONE)
+    ? resolveWildcard(q.qname, q.qtype, CHALLENGE_ZONE, null, null) : EMPTY(RC.REFUSED);
   if (q.qname === IP_ZONE  || q.qname.endsWith("." + IP_ZONE))  return resolveIp(q.qname, q.qtype);
   if (q.qname === APP_ZONE || q.qname.endsWith("." + APP_ZONE)) return resolveApp(q.qname, q.qtype);
   if (TCP_ZONE && (q.qname === TCP_ZONE || q.qname.endsWith("." + TCP_ZONE)))
@@ -464,7 +561,7 @@ tcp.listen({ port: DNS_PORT, host: address, ipv6Only }, () => console.log(`[dns-
 
 // ---- challenge-push HTTP API --------------------------------------------------
 
-if (!TXT_KEY) console.error("[dns-relay] DNS_TXT_KEY unset — fleet-HMAC pushes answer 503 (operator-signed pushes still verify on-chain)");
+if (!TXT_KEY && !ATTESTED) console.error("[dns-relay] DNS_TXT_KEY unset — fleet-HMAC pushes answer 503 (operator-signed pushes still verify on-chain)");
 
 // hex HMAC-SHA256 over the RAW body with the DERIVED DNS_TXT_KEY (NOT the raw
 // fleet SECRET — the enclave derives HMAC(SECRET,'enclave dns-txt v1')), constant-time
@@ -613,10 +710,15 @@ function apiHandler(req, res) {
   if (req.method === "GET" && u.pathname === "/health") {
     let txtRecords = 0;
     for (const name of [...txtStore.keys()]) txtRecords += txtValues(name).length;
-    return json(200, { ok: true, zones: { ip: IP_ZONE, app: APP_ZONE, tcp: TCP_ZONE, box: BOX_ZONE },
+    if (ATTESTED) return json(200, { ok: true, mode: "attested", readOnly: false, zones: { challenge: CHALLENGE_ZONE },
+      judgeMode: ATTEST.mode, minTcb: ATTEST.minTcb !== undefined, kds: ATTEST.kds, measurements: ATTEST.measurements.size, txtRecords,
+      shield: ATTEST.shield ? { tier: "hv-node", hostExcluded: false, liveHostSessions: ATTEST.shield.sessions(), registry: ATTEST.shieldRegistry } : null });
+    return json(200, { ok: true, readOnly: READ_ONLY, zones: { ip: IP_ZONE, app: APP_ZONE, tcp: TCP_ZONE, box: BOX_ZONE },
                        deployments: deployments.length, txtRecords,
                        routeLabels: appRoutes.size, routeMap: ROUTE_MAP_URL || null });
   }
+  if (READ_ONLY) { req.resume(); return json(405, { error: "read_only", routes: ["GET /health"] }); }
+  if (ATTESTED) return attestedPush(req, res, u, json);
   if (u.pathname !== "/v1/txt" || (req.method !== "POST" && req.method !== "DELETE"))
     return json(404, { error: "not_found", routes: ["GET /health", "POST /v1/txt", "DELETE /v1/txt"] });
   if (!dnsRate(req.socket?.remoteAddress || "unknown")) return json(429, { error: "rate_limited" });   // fix 11
@@ -699,16 +801,97 @@ function apiHandler(req, res) {
     return json(200, { ok: true, name, values: vals ? vals.size : 0 });
   });
 }
+// DNS_CHALLENGE_AUTH=attested: the only write path. Every push, set or delete, carries the full proof
+// (dns-challenge-attested.mjs); a value is stored under the zone's per-name caps exactly like any other.
+// Bounds: a per-peer rate, a 64 KiB body (declared or streamed: 413), a read deadline (408), and at most
+// PUSH_MAX_INFLIGHT verifications at once across all peers (503 + retry-after). Every request is answered once.
+const rlAttested = makeRateLimiter(30, 1);
+const PUSH_MAX_BYTES = 65536, PUSH_MAX_INFLIGHT = 16;
+let pushInflight = 0;
+function attestedPush(req, res, u, json) {
+  const send = (code, body, headers = {}) => {
+    if (res.headersSent || res.destroyed) return;
+    for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+    json(code, body);
+  };
+  if (ATTEST.shield && u.pathname.startsWith("/v1/shield-session/")) {
+    if (!rlAttested(req.socket?.remoteAddress || "unknown")) { req.resume(); return send(429, { error: "rate_limited" }); }
+    ATTEST.shield.handle(req, res, json).then((handled) => {
+      if (!handled) { req.resume(); send(404, { error: "not_found", routes: ["POST /v1/shield-session/challenge", "POST /v1/shield-session/attest"] }); }
+    }, (e) => { console.error(`[dns-relay] shield session handler: ${e?.message || e}`); send(500, { error: "internal_error" }); });
+    return;
+  }
+  if (u.pathname !== "/v1/txt" || (req.method !== "POST" && req.method !== "DELETE")) {
+    req.resume();
+    return send(404, { error: "not_found", routes: ["GET /health", "POST /v1/txt", "DELETE /v1/txt"] });
+  }
+  if (!rlAttested(req.socket?.remoteAddress || "unknown")) { req.resume(); return send(429, { error: "rate_limited" }); }
+  const declared = req.headers["content-length"];
+  if (declared !== undefined && !(Number(declared) <= PUSH_MAX_BYTES)) return send(413, { error: "body_too_large" }, { connection: "close" });
+  if (pushInflight >= PUSH_MAX_INFLIGHT) return send(503, { error: "busy" }, { "retry-after": "1", connection: "close" });
+  pushInflight++;
+  let released = false, done = false;
+  const release = () => { if (!released) { released = true; pushInflight--; } };
+  const stop = () => { done = true; clearTimeout(timer); };
+  const chunks = []; let size = 0;
+  const timer = setTimeout(() => { if (done) return; stop(); release(); send(408, { error: "the push body did not arrive in time" }, { connection: "close" }); }, ATTEST.pushReadMs);
+  req.on("data", (d) => {
+    if (done) return;
+    size += d.length;
+    if (size > PUSH_MAX_BYTES) { stop(); release(); chunks.length = 0; return send(413, { error: "body_too_large" }, { connection: "close" }); }
+    chunks.push(d);
+  });
+  req.on("error", () => { if (!done) { stop(); release(); } });
+  req.on("close", () => { if (!done) { stop(); release(); } });     // the client went away before the body ended
+  req.on("end", () => {
+    if (done) return;
+    stop();
+    storePush(Buffer.concat(chunks), req, send)
+      .catch((e) => { console.error(`[dns-relay] attested push: ${e?.message || e}`); send(500, { error: "internal_error" }); })
+      .finally(release);
+  });
+}
+async function storePush(raw, req, send) {
+  // a Shield document is judged only by the operator's Shield opt-in; everything else only by the SNP path (each refuses the other's)
+  const v = ATTEST.shield && isShieldPush(raw)
+    ? await ATTEST.shield.authorize({ raw, sig: req.headers["x-attested-sig"], method: req.method })
+    : await authorizePush({ raw, sig: req.headers["x-attested-sig"], method: req.method, zone: CHALLENGE_ZONE, ...ATTEST });
+  if (!v.ok) { console.log(`[dns-relay] attested txt ${req.method} REFUSED: ${v.why}`); return send(v.status, { error: "attested_auth_refused", message: v.why }); }
+  const name = v.name;
+  if (v.op === "delete") {
+    const vals = txtStore.get(name);
+    if (vals) { vals.delete(v.value); if (!vals.size) txtStore.delete(name); }
+    return send(200, { ok: true, name, values: vals ? vals.size : 0 });
+  }
+  if (!txtStore.has(name) && txtStore.size >= MAX_TXT_NAMES) {
+    for (const n of [...txtStore.keys()]) txtValues(n);
+    if (txtStore.size >= MAX_TXT_NAMES) return send(503, { error: "store_full", message: "Too many live challenges on this responder; retry shortly." });
+  }
+  const vals = txtStore.get(name) || new Map();
+  vals.set(v.value, Date.now() + TXT_TTL_S * 1000);
+  while (vals.size > MAX_TXT_VALUES) {
+    let oldest = null, at = Infinity;
+    for (const [x, exp] of vals) if (exp < at) { at = exp; oldest = x; }
+    vals.delete(oldest);
+  }
+  txtStore.set(name, vals);
+  console.log(`[dns-relay] attested txt set ${name} for ${v.deploymentId.slice(0, 10)}… (${v.verdict})`);
+  return send(200, { ok: true, name, values: vals.size, ttlSec: TXT_TTL_S });
+}
+
 api.on("error", (e) => { console.error("[dns-relay] api:", e.message); process.exit(1); });
 api.listen(API_PORT, API_BIND, () => console.log(`[dns-relay] challenge-push api :${API_PORT}`));
 
 // ---- boot ---------------------------------------------------------------------
 
-await fleet.start();
-await fleet.startEligibility();
+if (!READ_ONLY && !ATTESTED) { await fleet.start(); await fleet.startEligibility(); }
+if (ATTESTED) console.log(`[dns-relay] attested DNS-01 responder for ${CHALLENGE_ZONE} (ns ${NS_NAME}); judge ${ATTEST.mode}, ${ATTEST.measurements.size} pinned measurement(s)`
+  + (ATTEST.shield ? "; Enclave Shield (T0-hv, hostExcluded=false) guests accepted under ATTESTED_SHIELD_POLICY" : ""));
+else {
 await poll();
 setInterval(poll, POLL_MS);
 console.log(`[dns-relay] authoritative for ${IP_ZONE} + ${APP_ZONE}${TCP_ZONE ? " + " + TCP_ZONE : ""} (ns ${NS_NAME}, serial ${SERIAL}); ` +
             `refreshing allocations every ${POLL_MS / 1000}s` +
             (ROUTE_MAP_URL ? ` + per-app routes from ${ROUTE_MAP_URL}`
                            : "; route map unavailable"));
+}

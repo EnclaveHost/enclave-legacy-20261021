@@ -14,7 +14,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY supervisor.js ./
+COPY sdk/bootstrap/package.mjs ./sdk/bootstrap/
 COPY windows/node/verification-checkpoints.mjs ./windows/node/
+COPY windows/node/host-admission.bundle.mjs ./windows/node/
 # wallet sessions as owner credentials (shared with the Windows node, which ships it through deploy-files.mjs)
 COPY windows/node/session-api-auth.mjs ./windows/node/
 # dedicated-IP egress: the enclave-side SOCKS front + its SSRF classifier

@@ -73,6 +73,14 @@ export interface CallResult {
     result: Hex;
     fee: bigint;
 }
+/** Portable calldata for any gas payer. Preparation signs an intent, but does not
+ * submit it. The caller must check the receipt; preparation does not reserve a nonce. */
+export interface PreparedSessionTransaction {
+    chainId: number;
+    to: Address;
+    data: Hex;
+    value: 0n;
+}
 export declare class Session {
     readonly handle: SessionHandle;
     readonly signer: SessionSigner;
@@ -84,6 +92,17 @@ export declare class Session {
     });
     private chain;
     status(): Promise<SessionState>;
+    /** Authorize a zero-relay-fee operation using chain reads only. An owner or
+     * independent gas payer can broadcast the returned calldata. The vault remains
+     * authoritative for scope, attestation, budget, revocation and replay checks. */
+    prepareCall<A extends OnChainAction>(action: A, args: ActionArgs[A], opts?: {
+        lane?: bigint;
+        deadlineSeconds?: number;
+    }): Promise<PreparedSessionTransaction>;
+    /** End and refund a session through any gas payer, without contacting a relay. */
+    prepareTermination(opts?: {
+        deadlineSeconds?: number;
+    }): Promise<PreparedSessionTransaction>;
     /** Check, quote, sign and submit one action. Throws SessionError with a code the
      *  caller can act on (budget -> top-up, expired -> extend, ...). */
     call<A extends OnChainAction>(action: A, args: ActionArgs[A], opts?: {
@@ -155,6 +174,20 @@ export declare function openSession(p: {
     sid: Hex;
     txHash: Hex;
     vault: Address;
+}>;
+/** Open a fresh session without relay discovery or submission. The caller chooses
+ * the factory explicitly. A budget uses an owner-signed, grant-bound USDC deposit;
+ * any gas payer may submit, but cannot alter the grant or redirect its funds. */
+export declare function prepareSessionOpen(p: {
+    publicClient: PublicClient;
+    factory: Address;
+    owner: OwnerSigner;
+    chainId: number;
+    grant: Grant;
+    usdc?: UsdcDomain;
+}): Promise<PreparedSessionTransaction & {
+    vault: Address;
+    sid: Hex;
 }>;
 export type OwnerOp = {
     op: "topUp";

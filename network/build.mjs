@@ -11,10 +11,12 @@ const bundle = (entry, file) => build({entryPoints:[path.join(root,entry)], outf
 // the host's privacy agent and its circuits' ingress worker (the SNI gate each Enclave-network circuit runs; the name is
 // historical: Linux hosts run the same worker)
 await bundle('privacy-agent.mjs', 'privacy-agent.mjs');
+await bundle('reconcile-apps.mjs', 'reconcile-apps.mjs');
 await bundle('windows-circuit-worker.mjs', 'windows-circuit-worker.mjs');
 // the Enclave network (docs/design/enclave-network.md): the provider daemon and the checker, one file each
 await bundle('wg-provider/main.mjs', 'wg-provider.mjs');
 await bundle('../scripts/network/wg-qualify.mjs', 'wg-qualify.mjs');
+await bundle('directory-server.mjs', 'enclave-directory.mjs');
 // enclave-wg: one WireGuard-in-WireGuard circuit, in-process (no OS interface)
 for (const goos of ['linux','windows'])
   execFileSync('go',['build','-trimpath','-o',path.join(out,'enclave-wg'+(goos==='windows'?'.exe':'')),'./cmd/enclave-wg'],{cwd:path.join(root,'wg'),stdio:'inherit',env:{...process.env,GOOS:goos,GOARCH:'amd64',CGO_ENABLED:'0'}});

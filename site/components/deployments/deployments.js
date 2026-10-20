@@ -1,3 +1,4 @@
+import {catalogStatus,catalogAdmissionRefusal} from "../../js/core/catalog-policy.js";
 /* ============================================================
    <c-deployments> - the "My Apps" panel: the signed-in
    customer's deployments, each with status, spend, its app origin,
@@ -20,7 +21,7 @@ import { $$, esc, hlJson, fmtDur, statusCls, copyText, showToast, lsGet, lsSet }
 import { APP_DOMAIN, DEPLOYMENTS_ADDRESS } from "../../js/core/config.js";
 import { Enclave } from "../../js/core/api.js";
 import { openStateOf, probeAppTls } from "../../js/core/app-tls.js";
-import { pad32, encUint, encCall, hexBig, DEP_SEL, APPROVAL, depPrices6, rate6Of, depMaxGpuMilli, depGet, depSchemaRev, depFeeOf, depCapOf, depRefundableOf, depCall, catVersionFee, catGetVersion, waitReceipt } from "../../js/core/chain.js";
+import { pad32, encUint, encCall, hexBig, DEP_SEL, depPrices6, rate6Of, depMaxGpuMilli, depGet, depSchemaRev, depFeeOf, depCapOf, depRefundableOf, depCall, catVersionFee, catGetApp, catGetVersion, waitReceipt } from "../../js/core/chain.js";
 import { authenticate, asHostOwner, connectWallet, refreshWallet, saveSession, ensureBaseChain, sendTx as walletSendTx, personalSign } from "../../js/core/wallet.js";
 // Every ledger call this panel sends goes through here. A row the wallet's SessionVault holds is acted on by this
 // browser's session (no wallet prompt; a prod version/config change becomes the owner's Promote signature); every
@@ -294,7 +295,7 @@ function shortImg(s){ if (!s) return ""; return s.length > 44 ? s.slice(0, 42) +
 const FILTER_KEY = "enclave_dash_filters";
 // Decline reasons that no amount of waiting resolves (mirrors the enclave's
 // claim-gauntlet wording; deploy.js's watchClaimAndRun keys on the same set)
-const WHY_TERMINAL = /below the app|minimum shares|yanked|not .{0,12}approved|rejected|delisted|unlisted|configcid|retired|deactivated/i;
+const WHY_TERMINAL = /below the app|minimum shares|configcid|retired|deactivated/i;
 // Who can act on a row: "wallet" rows are owned by the connected wallet
 // (on-chain txs + enclave-session reads); "vault" rows are owned by the
 // account's credit vault (money/control ops are passkey-signed through the
@@ -1248,7 +1249,10 @@ class Deployments extends EnclaveElement {
     if (!d) return fail("[x] couldn’t read this deployment from the ledger - try again shortly");
     const cr = parseCatalogRef(d.appRef);
     if (!cr) return fail("[x] this deployment doesn’t reference a catalog version (" + (d.appRef || "no appRef") + ") - only catalog deployments can switch versions");
-    const app = STORE.byId[cr.appId] || (sharesOnly ? { slug: 'app', versions: [] } : null);
+    let app = STORE.byId[cr.appId] || (sharesOnly ? { slug: 'app', versions: [] } : null);
+    try { const current = await catGetApp(cr.appId); if (app) app = {...app,active:current?.active}; }
+    catch { return fail('[x] Could not verify current app moderation. Close and reopen to retry.'); }
+
     if (!app || !app.versions) return fail("[x] the catalog doesn’t list this deployment’s app (delisted?) - nothing to switch to");
     let currentVersion = null;
     if (sharesOnly) {
@@ -1269,7 +1273,7 @@ class Deployments extends EnclaveElement {
     try {
       snapFee = (await depFeeOf(id)).feePerSec6;
       await Promise.all(versions.map(async ({ v, i }) => {
-        verFees[i] = (!v.yanked && v.approval === APPROVAL.approved) ? await catVersionFee(cr.appId, i) : 0n;
+        verFees[i] = await catVersionFee(cr.appId, i);
       }));
     } catch(e){ return fail("[x] couldn’t read the publisher fees involved - try again shortly"); }
     // Shares uses the stop/release/reclaim lifecycle on every backend. Save
@@ -1281,9 +1285,6 @@ class Deployments extends EnclaveElement {
     if (resizable){
       try { [prices, maxGpu] = await Promise.all([depPrices6(), depMaxGpuMilli()]); }
       catch(e){ resizable = false; resizeReason = "Current prices could not be loaded. Close and reopen Resources to retry."; }
-    }
-    if (sharesOnly && (currentVersion.yanked || currentVersion.approval !== APPROVAL.approved)) {
-      resizable = false; resizeReason = 'This app version is not approved for a new launch. Select an approved version before changing its allocation.';
     }
     // The owner's hourly ceiling (rev 8). Editable here whenever every live
     // runner honors it — the fleet-AND flag, same rule as the resize dials:
@@ -1348,20 +1349,19 @@ class Deployments extends EnclaveElement {
         gpuMilli > 0 && cardServesApp(hostAvail, r.mins) ? 1 : 0);
     const rows = versions
       .map(({ v, i }) => ({ v, i, mins: minPctsOf(specOf(v), hw && hw.spec) }))
-      .filter(r => sharesOnly || (!r.v.yanked && r.v.approval === APPROVAL.approved))
       .map(r => ({ ...r,
         shareFit: r.mins.gpuPct * 10 <= bought.gpuMilli && cpuNeedOf(r) * 10 <= bought.cpuMilli,
         feeFit: (verFees[r.i] || 0n) <= snapFee }))
-      .map(r => ({ ...r, fits: (r.shareFit || resizable) && r.feeFit }))
+      .map(r => ({ ...r, fits: (r.shareFit || resizable) && r.feeFit && !catalogAdmissionRefusal(app,r.v,{forPrivate:d.isPublic===false}) }))
       .reverse();
     const others = rows.filter(r => r.i !== cr.index);
     // Version may suggest a newer fitting release. Shares always keeps the
     // current release, even when an upgrade is available.
-    const newer = others.find(r => r.fits && r.i > cr.index);
+    const newer = others.find(r => r.fits && r.i > cr.index && !catalogStatus(app, r.v));
     const cur = rows.find(r => r.i === cr.index);
-    const pick = sharesOnly ? null : newer || ((cur && cur.fits) ? null : others.find(r => r.fits)) || null;
+    const pick = sharesOnly ? null : newer || ((cur && cur.fits) ? null : others.find(r => r.fits && !catalogStatus(app, r.v))) || null;
     if (!sharesOnly && !others.length)
-      return fail("// " + app.slug + " has no other approved version yet - new releases appear here once the catalog owner approves them");
+      return fail("// " + app.slug + " has no other version yet");
     const selId = (sharesOnly ? "esShares" : "euSel") + appLabel(id);
     box.innerHTML = '<div class="ap-attbar">' + title + ' · ' + esc(id) + '</div>'
       + (sharesOnly && resizeReason ? '<p class="enc-shares-note" role="status">' + esc(resizeReason) + '</p>' : '')
@@ -1370,12 +1370,13 @@ class Deployments extends EnclaveElement {
       +   '<select class="eu-sel" id="' + selId + '">'
       +     rows.map(r => '<option value="' + r.i + '"' + (((r.i === cr.index && !resizable) || !r.fits) ? " disabled" : "") + (pick && r.i === pick.i ? " selected" : (!pick && r.i === cr.index ? " selected" : "")) + '>'
       +       esc(app.slug + ":" + r.v.version)
+      +       (catalogStatus(app, r.v) ? " · " + esc(catalogStatus(app, r.v)) : "")
       +       (r.i === cr.index ? " · current" : "")
       +       (!r.shareFit && r.i !== cr.index ? " · needs ≥ " + (r.mins.gpuPct ? r.mins.gpuPct + "% GPU / " : "") + cpuNeedOf(r) + "% CPU"
                                                  + (hw ? " on " + hw.name : "") : "")
       +       (r.shareFit && !r.feeFit && r.i !== cr.index ? " · charges $" + (Number(verFees[r.i]) * 3600 / 1e6).toFixed(2) + "/hr publisher fee (above this deployment’s snapshot)" : "")
       +     '</option>').join("")
-      +   '</select>')
+      +   '</select><p class="enc-shares-note">Platform moderation and host admission apply to the selected release.</p>')
       +   (sharesOnly ? '' : '<button class="btn btn-sm btn-primary eu-go" type="button">Change version</button>')
       + '</div>'
       + (capEditable

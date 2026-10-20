@@ -19,6 +19,11 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 m2=$here/../m2
+if [ -n "${DOMAIN_RELEASE_DIR:-}${DOMAIN_RELEASE_ID:-}" ]; then
+  . "$here/pinned-domain-env.sh"
+  [ -z "${SHIELDED_IMAGE_TEMPLATE:-}" ] || { echo "pinned CPU release cannot select a Shield template" >&2; exit 2; }
+  APP_IMAGE_TEMPLATE=$DOMAIN_RELEASE_DIR/template
+fi
 bundle=$1; out=$2; vcpus=${3:-1}
 [ -f "$bundle" ] && [ -n "$out" ] || { echo "usage: build-app-guest.sh <app.bundle> <out.cpio.gz> [vcpus]"; exit 2; }
 
@@ -45,7 +50,7 @@ else
   "$here/app-image-template.sh" "$d/template"
 fi
 "$here/assemble-app-image.sh" "$d/template" "$bundle" "$out" > /dev/null
-. "$here/../m1/domain.env"
+if [ -z "${DOMAIN_RELEASE_DIR:-}" ]; then . "$here/../m1/domain.env"; fi
 echo "app_guest $out: app_id $app_id, $(stat -c %s "$out") bytes, vcpus $vcpus"
 
 # The launch digest this guest will have. vCPU count is part of the identity, so predict and boot with the

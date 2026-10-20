@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {privateKeyToAccount} from 'viem/accounts';
+import {recoverMessageAddress} from 'viem';
+import {directUploadHeaders,uploadMessage} from '../sdk/storage/upload-auth.mjs';
+const account=privateKeyToAccount('0x'+'42'.repeat(32)),audience='0x'+'ab'.repeat(32);
+test('direct upload signs the Rust protocol without calling a token issuer',async()=>{
+ const headers=await directUploadHeaders({audience,url:'https://adapter.example/add-json',address:account.address,bytes:new TextEncoder().encode('{}'),signMessage:args=>account.signMessage(args),now:()=>1792345700000});
+ assert.equal(headers['x-upload-expiry'],'1792346000');
+ assert.equal(headers['x-upload-sha256'],'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
+ const message=uploadMessage({audience,path:'/add-json',address:account.address.toLowerCase(),hash:headers['x-upload-sha256'],size:2,expiry:1792346000});
+ assert.equal(await recoverMessageAddress({message,signature:headers['x-upload-signature']}),account.address);
+ assert.equal(headers['x-upload-token'],undefined);
+});
+test('refuses ambiguous service and transport scope before asking the wallet',async()=>{
+ let calls=0;const opts={audience,url:'https://adapter.example/add-json',address:account.address,bytes:new Uint8Array(),signMessage:async()=>{calls++;throw Error('must not sign');}};
+ for(const url of ['http://adapter.example/add-json','https://a:b@adapter.example/add-json','https://adapter.example/add-json?a=b','https://adapter.example/add-json#x','https://adapter.example/other'])await assert.rejects(directUploadHeaders({...opts,url}));
+ await assert.rejects(directUploadHeaders({...opts,audience:'0x00'}));assert.equal(calls,0);
+});
+
+test('streaming upload authorization matches buffered authorization without hashing another full copy',async()=>{
+ const {directUploadDigestHeaders}=await import('../sdk/storage/upload-auth.mjs');
+ const opts={audience,url:'https://adapter.example/add-wasm',address:account.address,signMessage:args=>account.signMessage(args),now:()=>1792345700000};
+ const bytes=new TextEncoder().encode('large stream content');
+ const expected=await directUploadHeaders({...opts,bytes});
+ const actual=await directUploadDigestHeaders({...opts,hash:expected['x-upload-sha256'],size:bytes.length});
+ assert.deepEqual(actual,expected);
+ let calls=0;
+ for(const bad of [{hash:'bad',size:3},{hash:'ab'.repeat(32),size:-1},{hash:'ab'.repeat(32),size:1.5}]){
+  await assert.rejects(()=>directUploadDigestHeaders({...opts,...bad,signMessage:()=>{calls++;}}));
+ }
+ assert.equal(calls,0);
+});
+
+test('runtime file authorization is bound to its distinct route',async()=>{
+ const opts={audience,address:account.address,bytes:new TextEncoder().encode('kernel'),signMessage:args=>account.signMessage(args),now:()=>1792345700000};
+ const headers=await directUploadHeaders({...opts,url:'https://adapter.example/add-file'});
+ const fields={audience,address:account.address.toLowerCase(),hash:headers['x-upload-sha256'],size:6,expiry:1792346000};
+ assert.equal(await recoverMessageAddress({message:uploadMessage({...fields,path:'/add-file'}),signature:headers['x-upload-signature']}),account.address);
+ assert.notEqual(await recoverMessageAddress({message:uploadMessage({...fields,path:'/add-wasm'}),signature:headers['x-upload-signature']}),account.address);
+});

@@ -1,0 +1,217 @@
+{
+ "cases": [
+  {
+   "name": "hosts only",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"]}}",
+   "valid": true
+  },
+  {
+   "name": "hosts and explicit acme",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"a.example.org\",\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\"}}}",
+   "valid": true
+  },
+  {
+   "name": "custody eab by secret name",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"custody-v2\",\"custody\":{\"v\":2,\"chainId\":8453,\"vault\":\"0x8888888888888888888888888888888888888888\",\"policyRev\":\"1\",\"secretRev\":\"1\",\"epoch\":1,\"committeeId\":\"0x9999999999999999999999999999999999999999999999999999999999999999\",\"t\":2,\"bundle\":\"ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"commitments\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"machines\":[{\"encKey\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"endpoint\":\"https://custodian1.example\",\"enclave\":false,\"indices\":[1]},{\"encKey\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"endpoint\":\"https://custodian2.example\",\"enclave\":false,\"indices\":[2]},{\"encKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"endpoint\":\"https://custodian3.example\",\"enclave\":false,\"indices\":[3]}]},\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":{\"kid\":\"ACME_EAB_KID\",\"hmac\":\"ACME_EAB_HMAC\"}}}}",
+   "valid": true
+  },
+  {
+   "name": "punycode and path directory",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"xn--bcher-kva.example\",\"zz.example.com\"],\"acme\":{\"directory\":\"https://ca.example/acme/dir-v2\",\"challenge\":\"https://dns.example/api/\",\"zone\":\"zone.example\"}}}",
+   "valid": true
+  },
+  {
+   "name": "ten hosts",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"h0.example.com\",\"h1.example.com\",\"h2.example.com\",\"h3.example.com\",\"h4.example.com\",\"h5.example.com\",\"h6.example.com\",\"h7.example.com\",\"h8.example.com\",\"h9.example.com\"]}}",
+   "valid": true
+  },
+  {
+   "name": "names null",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":null}",
+   "valid": false
+  },
+  {
+   "name": "names array",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":[\"shop.example.com\"]}",
+   "valid": false
+  },
+  {
+   "name": "hosts empty",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[]}}",
+   "valid": false
+  },
+  {
+   "name": "eleven hosts",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"h00.example.com\",\"h01.example.com\",\"h02.example.com\",\"h03.example.com\",\"h04.example.com\",\"h05.example.com\",\"h06.example.com\",\"h07.example.com\",\"h08.example.com\",\"h09.example.com\",\"h10.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "unsorted",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"b.example.com\",\"a.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "duplicate host",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"a.example.com\",\"a.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "uppercase",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"Shop.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "wildcard",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"*.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "trailing dot",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com.\"]}}",
+   "valid": false
+  },
+  {
+   "name": "ip literal",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"192.0.2.1\"]}}",
+   "valid": false
+  },
+  {
+   "name": "platform zone",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"abcd1234.app.enclave.host\"]}}",
+   "valid": false
+  },
+  {
+   "name": "platform apex",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"enclave.host\"]}}",
+   "valid": false
+  },
+  {
+   "name": "single label",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"localhost\"]}}",
+   "valid": false
+  },
+  {
+   "name": "label too long",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "leading hyphen",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"-a.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "host number",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[1]}}",
+   "valid": false
+  },
+  {
+   "name": "unknown names key",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"extra\":1}}",
+   "valid": false
+  },
+  {
+   "name": "case alias key",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"Hosts\":[\"shop.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "duplicate names key",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"a.example.com\"],\"hosts\":[\"b.example.com\"]}}",
+   "valid": false
+  },
+  {
+   "name": "acme null",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":null}}",
+   "valid": false
+  },
+  {
+   "name": "acme http directory",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"http://acme.example/dir\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme credentials",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://u:p@dns.example\",\"zone\":\"acme.example.net\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme query",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory?x=1\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme port",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://dns.example:8443\",\"zone\":\"acme.example.net\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme missing zone",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme zone ip",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"192.0.2.1\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme zone too long",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.ab\"}}}",
+   "valid": false
+  },
+  {
+   "name": "acme extra contact",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"contact\":\"mailto:o@example.com\"}}}",
+   "valid": false
+  },
+  {
+   "name": "eab in public mode",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"public\",\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":{\"kid\":\"ACME_EAB_KID\",\"hmac\":\"ACME_EAB_HMAC\"}}}}",
+   "valid": false
+  },
+  {
+   "name": "eab same secret",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"custody-v2\",\"custody\":{\"v\":2,\"chainId\":8453,\"vault\":\"0x8888888888888888888888888888888888888888\",\"policyRev\":\"1\",\"secretRev\":\"1\",\"epoch\":1,\"committeeId\":\"0x9999999999999999999999999999999999999999999999999999999999999999\",\"t\":2,\"bundle\":\"ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"commitments\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"machines\":[{\"encKey\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"endpoint\":\"https://custodian1.example\",\"enclave\":false,\"indices\":[1]},{\"encKey\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"endpoint\":\"https://custodian2.example\",\"enclave\":false,\"indices\":[2]},{\"encKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"endpoint\":\"https://custodian3.example\",\"enclave\":false,\"indices\":[3]}]},\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":{\"kid\":\"ACME_EAB\",\"hmac\":\"ACME_EAB\"}}}}",
+   "valid": false
+  },
+  {
+   "name": "eab bad secret name",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"custody-v2\",\"custody\":{\"v\":2,\"chainId\":8453,\"vault\":\"0x8888888888888888888888888888888888888888\",\"policyRev\":\"1\",\"secretRev\":\"1\",\"epoch\":1,\"committeeId\":\"0x9999999999999999999999999999999999999999999999999999999999999999\",\"t\":2,\"bundle\":\"ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"commitments\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"machines\":[{\"encKey\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"endpoint\":\"https://custodian1.example\",\"enclave\":false,\"indices\":[1]},{\"encKey\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"endpoint\":\"https://custodian2.example\",\"enclave\":false,\"indices\":[2]},{\"encKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"endpoint\":\"https://custodian3.example\",\"enclave\":false,\"indices\":[3]}]},\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":{\"kid\":\"acme-kid\",\"hmac\":\"ACME_EAB_HMAC\"}}}}",
+   "valid": false
+  },
+  {
+   "name": "eab value smuggled",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"custody-v2\",\"custody\":{\"v\":2,\"chainId\":8453,\"vault\":\"0x8888888888888888888888888888888888888888\",\"policyRev\":\"1\",\"secretRev\":\"1\",\"epoch\":1,\"committeeId\":\"0x9999999999999999999999999999999999999999999999999999999999999999\",\"t\":2,\"bundle\":\"ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"commitments\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"machines\":[{\"encKey\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"endpoint\":\"https://custodian1.example\",\"enclave\":false,\"indices\":[1]},{\"encKey\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"endpoint\":\"https://custodian2.example\",\"enclave\":false,\"indices\":[2]},{\"encKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"endpoint\":\"https://custodian3.example\",\"enclave\":false,\"indices\":[3]}]},\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":{\"kid\":\"ACME_EAB_KID\",\"hmac\":\"ACME_EAB_HMAC\",\"value\":\"c2VjcmV0\"}}}}",
+   "valid": false
+  },
+  {
+   "name": "eab null",
+   "manifest": "{\"version\":1,\"chainId\":8453,\"ledger\":\"0x2222222222222222222222222222222222222222\",\"deployment\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"appRef\":\"catalog://explicit/1\",\"appId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"runtimeId\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"configText\":\"{ \\\"endpoint\\\": \\\"https://independent.example\\\" }\",\"secretsMode\":\"custody-v2\",\"custody\":{\"v\":2,\"chainId\":8453,\"vault\":\"0x8888888888888888888888888888888888888888\",\"policyRev\":\"1\",\"secretRev\":\"1\",\"epoch\":1,\"committeeId\":\"0x9999999999999999999999999999999999999999999999999999999999999999\",\"t\":2,\"bundle\":\"ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"commitments\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"machines\":[{\"encKey\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"endpoint\":\"https://custodian1.example\",\"enclave\":false,\"indices\":[1]},{\"encKey\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"endpoint\":\"https://custodian2.example\",\"enclave\":false,\"indices\":[2]},{\"encKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"endpoint\":\"https://custodian3.example\",\"enclave\":false,\"indices\":[3]}]},\"names\":{\"hosts\":[\"shop.example.com\"],\"acme\":{\"directory\":\"https://acme-v02.api.letsencrypt.org/directory\",\"challenge\":\"https://challenge.example.net\",\"zone\":\"acme.example.net\",\"eab\":null}}}",
+   "valid": false
+  }
+ ],
+ "aliases": [
+  {
+   "deployment": "0x1111111111111111111111111111111111111111111111111111111111111111",
+   "owner": "0x3333333333333333333333333333333333333333",
+   "zone": "acme.example.net",
+   "label": "69f91bde117f15a5cd6ff1d045eaa9b7",
+   "alias": "_acme-challenge.69f91bde117f15a5cd6ff1d045eaa9b7.acme.example.net"
+  },
+  {
+   "deployment": "0x1111111111111111111111111111111111111111111111111111111111111111",
+   "owner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "zone": "acme.example.net",
+   "label": "1e25b7c8f3824916cd06c7b9167eca5b",
+   "alias": "_acme-challenge.1e25b7c8f3824916cd06c7b9167eca5b.acme.example.net"
+  },
+  {
+   "deployment": "0x1212121212121212121212121212121212121212121212121212121212121212",
+   "owner": "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01",
+   "zone": "challenges.example.org",
+   "label": "41950b7a3605182b5c1b2ec6b58fe00a",
+   "alias": "_acme-challenge.41950b7a3605182b5c1b2ec6b58fe00a.challenges.example.org"
+  }
+ ]
+}

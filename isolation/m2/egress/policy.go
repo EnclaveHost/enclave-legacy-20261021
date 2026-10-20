@@ -32,7 +32,9 @@ import (
 	"strings"
 
 	"enclave.host/isolation/m2/appconfig"
+	"enclave.host/isolation/m2/bootstrap"
 	"enclave.host/isolation/m2/release"
+	"enclave.host/isolation/m2/shieldconfig"
 )
 
 // Origin is one allowed destination: https, a normalized lowercase DNS name, port 443.
@@ -130,12 +132,13 @@ func ParseOrigin(raw string) (Origin, error) {
 
 // Policy is the guest's allowlist.
 type Policy struct {
+	PublicWeb   bool     // Shield measured config explicitly permits public TCP; never inferred from secrets
 	PublicHTTPS bool     // owner explicitly opted into arbitrary public DNS origins on 443
 	Origins     []Origin // sorted, unique
 	Refused     []string // the reasons config URLs were NOT allowed, for the guest's own log (no URL text: it may be secret)
 }
 
-// FromRelease is the ONLY public way to build a guest's allowlist: from a release the release client OPENED (the
+// FromRelease builds the legacy allowlist from a release the release client OPENED (the
 // config the owner set on chain, sealed to this guest by the relay), resolved in-guest, plus the pinned relay origin.
 // A Release built any other way, e.g. from config the host handed over, is refused: the allowlist must be the
 // owner's, never the host's (enclave-99).
@@ -156,14 +159,117 @@ func FromRelease(rel *release.Release, relay Origin) (*Policy, error) {
 	return derive(resolved, relay)
 }
 
+// FromBootstrap accepts only a fresh owner package authenticated by the guest's
+// measured chain reader. No platform relay origin is implicitly authorized.
+// For custody mode, secrets must come from custodySecrets, which verifies the
+// bundle's exact ConfigSha256 before returning values to the front.
+func FromBootstrap(auth *bootstrap.Authorization, secrets map[string]string) (*Policy, error) {
+	text, err := auth.ConfigText()
+	if err != nil {
+		return nil, err
+	}
+	mode, err := auth.SecretsMode()
+	if err != nil {
+		return nil, err
+	}
+	if mode == "public" && len(secrets) != 0 {
+		return nil, errors.New("public startup cannot receive secret values")
+	}
+	resolved := ""
+	if text != "" {
+		resolved, err = appconfig.Resolve(text, secrets)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return deriveOrigins(resolved, nil)
+}
+
+// ForShield is the allowlist of a NucBox Shield domain (one app in a Hyper-V partition, isolation/m3) that serves a
+// secret deployment. Its two inputs arrive by two different measured paths, and both are required to be what they say:
+//
+//   - the secrets come from the release the front verified against the pinned relay keys and opened with its own seal
+//     key (m2/front shield_secrets.go): a Release built any other way is refused, exactly as FromRelease refuses one;
+//   - the config is the domain's measured /app.config (the monitor wrote it from the bundle it hashed). A Shield
+//     release carries secrets only, so a release that also carries a config is refused rather than one of the two
+//     silently winning.
+//
+// The config is RESOLVED with the secrets before anything is derived, so an endpoint that is itself a secret
+// ("$R2_ENDPOINT") is judged on its resolved value, which only the guest ever sees. Unlike FromRelease there is NO relay
+// origin: a Shield domain's release reaches it through its front, never through egress, so nothing outside the owner's
+// config is reachable.
+func ForShield(rel *release.Release, measuredConfig string) (*Policy, error) {
+	if rel == nil || !rel.Attested() {
+		return nil, errors.New("egress policy needs a release opened through the attested channel")
+	}
+	if text, err := rel.ConfigText(); err != nil || text != "" {
+		return nil, errors.New("a Shield release carries secrets only: the domain's config is its measured /app.config")
+	}
+	resolved := ""
+	if strings.TrimSpace(measuredConfig) != "" {
+		var err error
+		if resolved, err = appconfig.Resolve(measuredConfig, rel.Secrets); err != nil {
+			return nil, err
+		}
+	}
+	p, err := derivePolicy(resolved, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	p.PublicWeb = shieldconfig.PublicWebMode(measuredConfig) // the measured bytes, never a resolved secret, decide the mode
+	return p, nil
+}
+
+// FromShieldBootstrap derives Shield egress from the same verified owner package used
+// for custody. Public-web is selected by committed bytes, never by secret substitution.
+func FromShieldBootstrap(auth *bootstrap.Authorization, secrets map[string]string) (*Policy, error) {
+	text, err := auth.ConfigText()
+	if err != nil {
+		return nil, err
+	}
+	mode, err := auth.SecretsMode()
+	if err != nil {
+		return nil, err
+	}
+	if mode == "public" && len(secrets) != 0 {
+		return nil, errors.New("public startup cannot receive secret values")
+	}
+	resolved := ""
+	if text != "" {
+		resolved, err = appconfig.Resolve(text, secrets)
+		if err != nil {
+			return nil, err
+		}
+	}
+	p, err := derivePolicy(resolved, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	p.PublicWeb = shieldconfig.PublicWebMode(text)
+	return p, nil
+}
+
 // derive builds the allowlist from the RESOLVED config and the relay origin the measured image pins. An explicit
 // top-level "egress" list replaces derivation; the relay origin is always present and config can neither remove
 // nor redirect it.
 func derive(resolvedConfig string, relay Origin) (*Policy, error) {
-	if _, err := ParseOrigin(relay.String()); err != nil {
-		return nil, fmt.Errorf("the pinned relay origin: %w", err)
+	return deriveOrigins(resolvedConfig, []Origin{relay})
+}
+
+func deriveOrigins(resolvedConfig string, pinned []Origin) (*Policy, error) {
+	return derivePolicy(resolvedConfig, pinned, false)
+}
+
+// Shield transport modes preserve its configured-origin behavior. SNP public-https
+// remains an explicit grant of arbitrary public DNS origins on port 443.
+func derivePolicy(resolvedConfig string, pinned []Origin, shield bool) (*Policy, error) {
+	set := map[string]bool{}
+	for _, origin := range pinned {
+		if _, err := ParseOrigin(origin.String()); err != nil {
+			return nil, fmt.Errorf("the pinned platform origin: %w", err)
+		}
+		set[origin.Host] = true
 	}
-	set := map[string]bool{relay.Host: true}
 	p := &Policy{}
 	if strings.TrimSpace(resolvedConfig) != "" {
 		var doc any
@@ -171,7 +277,9 @@ func derive(resolvedConfig string, relay Origin) (*Policy, error) {
 			return nil, errors.New("the resolved config is not JSON")
 		}
 		var candidates []string
-		if obj, ok := doc.(map[string]any); ok && obj["egress"] != nil {
+		obj, _ := doc.(map[string]any)
+		mode, _ := obj["egress"].(string)
+		if obj["egress"] != nil && !(shield && (mode == "public-https" || mode == "public-web")) {
 			list, ok := obj["egress"].([]any)
 			if obj["egress"] == "public-https" {
 				p.PublicHTTPS = true

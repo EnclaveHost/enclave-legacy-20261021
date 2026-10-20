@@ -23,6 +23,8 @@ import { parseRules, admittedMeasurements } from "../rules.mjs";
 import { recoverOperator } from "../chain.mjs";
 import { Refusal, memoryHighWater } from "../custodian.mjs";
 import { runtimeId as runtimeIdOf } from "../../isolation/contract/runtime.mjs";
+import { parseShieldRules, shieldAdmittedMeasurements } from "./shield-rules.mjs";
+import { SHIELD_EVIDENCE_FORMAT } from "./shield-evidence.mjs";
 
 export { Refusal, memoryHighWater };
 const refuse = (status, code, message) => { throw new Refusal(status, code, message); };
@@ -33,12 +35,18 @@ const ENDPOINT_RE = /^https:\/\/[a-z0-9.-]{1,253}(\/[A-Za-z0-9._~-]+){0,4}$/;
 export const OPERATOR_SIG_TTL_SEC = 600;
 
 // keys: { encPrivateKey (32 bytes) }; shares: { get(committeeId, epoch) -> [{ k, x }] | null } (the sealed state's view)
-export function createCustodianV2({ chainId, vault, encPrivateKey, shares, chain, verifiers, highWater = memoryHighWater(),
+// shield: OPTIONAL (custody/v2/shield-evidence.mjs createShieldCustody), installed only by an operator who chooses to serve
+// Enclave Shield recipients. It is consulted only for a Shield-format document under owner-committed Shield rules; every
+// other request takes exactly the path below, unchanged.
+export function createCustodianV2({ chainId, vault, encPrivateKey, shares, chain, verifiers, shield = null, highWater = memoryHighWater(),
                                     nonceTtlSec = 120, maxNonces = 10_000, maxNoncesPerClient = 64, now = () => Date.now(), log = console.log }) {
   if (!(encPrivateKey instanceof Uint8Array) || encPrivateKey.length !== 32) throw new Error("custodian: the encryption key is 32 bytes");
   if (!verifiers || typeof verifiers !== "object") throw new Error("custodian: a verifier table is required");
   const encKey = hpke.publicKeyOf(encPrivateKey);
   const encKeyHex = Buffer.from(encKey).toString("hex");
+  // the host operator's attach signature names the custodian's party: it must be THIS custodian's committee key, never
+  // one the host or a configuration chose (the node targets each custodian by its encKey: windows/node/shield-sessions.mjs)
+  if (shield && shield.party !== encKeyHex) throw new Error("custodian: the Shield adapter's party must be this custodian's own encryption key");
   const vaultL = String(vault).toLowerCase();
   const nonces = new Map(), perClient = new Map();
 
@@ -114,14 +122,19 @@ export function createCustodianV2({ chainId, vault, encPrivateKey, shares, chain
     if (!s.endpointOperator) refuse(403, "not_registered", `${endpoint} has no active registry entry.`);
     const nowSec = Math.floor(now() / 1000);
     if (!Number.isInteger(opExpiry) || opExpiry <= nowSec || opExpiry > nowSec + OPERATOR_SIG_TTL_SEC) refuse(422, "bad_operator_expiry", `operator.expiry must be within the next ${OPERATOR_SIG_TTL_SEC} s.`);
-    // 8. rules, format, runtime
+    // 8. rules, format, runtime (a Shield document: only under the operator's Shield adapter AND the owner's Shield rules)
+    const isShield = req.evidence.format === SHIELD_EVIDENCE_FORMAT && !!shield;
     let rules;
-    try { rules = parseRules(pol.rules); } catch (e) { refuse(403, "bad_rules", `The deployment's rules do not parse: ${e.message}.`); }
-    const verify = Object.prototype.hasOwnProperty.call(verifiers, req.evidence.format) ? verifiers[req.evidence.format] : null;
+    if (isShield) {
+      try { rules = parseShieldRules(pol.rules); } catch (e) { refuse(403, "bad_rules", `The deployment's rules do not admit an Enclave Shield recipient: ${e.message}.`); }
+    } else {
+      try { rules = parseRules(pol.rules); } catch (e) { refuse(403, "bad_rules", `The deployment's rules do not parse: ${e.message}.`); }
+    }
+    const verify = isShield ? shield.verify : Object.prototype.hasOwnProperty.call(verifiers, req.evidence.format) ? verifiers[req.evidence.format] : null;
     if (!verify) refuse(403, "unsupported_evidence", `Evidence format ${JSON.stringify(String(req.evidence.format)).slice(0, 80)} is not one this custodian verifies.`);
     let rid;
     try { rid = runtimeIdOf(req.evidence.runtime); } catch (e) { refuse(403, "bad_runtime", e.message); }
-    const allowed = admittedMeasurements(rules, rid.toString("hex"));
+    const allowed = isShield ? shieldAdmittedMeasurements(rules, rid.toString("hex")) : admittedMeasurements(rules, rid.toString("hex"));
     if (!allowed.length) refuse(403, "runtime_not_admitted", "The guest's runtime is not one the owner admitted.");
     let transportSpki;
     try { transportSpki = new Uint8Array(Buffer.from(String(req.evidence.transportKey || ""), "base64")); } catch { transportSpki = new Uint8Array(0); }
@@ -132,7 +145,11 @@ export function createCustodianV2({ chainId, vault, encPrivateKey, shares, chain
     if (!signer || signer !== s.endpointOperator) refuse(403, "operator_sig", "The release is not signed by the lease holder's registered operator.");
     // 9. hardware evidence
     const v = await verify({ doc: req.evidence, allowedMeasurements: allowed, minTcb: rules.minTcb, vmpl: rules.vmpl, binding,
-                             appId: Buffer.from(rules.appId, "hex"), hostData: id32(id) });
+                             appId: Buffer.from(rules.appId, "hex"), hostData: id32(id),
+                             // A Shield report binds the LEDGER owner, the one the guest's own quorum reads (the row's owner: a
+                             // session vault's contract for a vault-owned deployment). Authorization by the policy's owner is
+                             // step 6 above, unchanged: beneficialOwnerOf(id) must still be pol.owner.
+                             ...(isShield ? { owner: s.lease.owner, endpoint, endpointOperator: s.endpointOperator, rules } : {}) });
     if (!v || v.ok !== true) refuse(403, "evidence_refused", (v && v.reason) || "The evidence did not verify.");
     // the partials
     const commitments = [];
@@ -156,6 +173,8 @@ export function createCustodianV2({ chainId, vault, encPrivateKey, shares, chain
       throw e;
     }
   }
-  return { encKey, encKeyHex, challenge, release, _nonces: nonces };
+  return { encKey, encKeyHex, challenge, release, _nonces: nonces,
+           // the Shield host-session routes, when the operator installed the adapter (POST bodies as in shield-host-session.mjs)
+           ...(shield ? { shieldChallenge: (b) => shield.challenge(b), shieldAttest: (b) => shield.attest(b), shieldLimits: shield.limits || null } : {}) };
 }
 export { ENDPOINT_RE };

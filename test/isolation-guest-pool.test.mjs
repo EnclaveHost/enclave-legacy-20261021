@@ -187,7 +187,8 @@ test("the claim path judges the pool with the version's policy and, on a resume,
   // ONE derivation for the spawn and the resume's test (enclave-e3): spawnContainer builds its record through it
   const spawn = src.slice(src.indexOf("async function spawnContainer("), src.indexOf("let r = await vmReq(\"POST\", \"/vms\", body, SPAWN_TIMEOUT_MS);"));
   assert.match(spawn, /const derive = isolationSpawnDerivation\(\{ catalogRef, wasmRef: image && image\.reference, versionMemMb,/);
-  assert.match(src, /function isolationHeldSameRecord[\s\S]{0,900}isolationSpawnDerivation\(\{ catalogRef: g\.ref, wasmRef: g\.wasmRef,/);
+  const sameRecord = src.slice(src.indexOf("function isolationHeldSameRecord("), src.indexOf("async function managerPrefetchBody("));
+  assert.match(sameRecord, /isolationSpawnDerivation\(\{ catalogRef: g\.ref, wasmRef: g\.wasmRef,/);
   assert.match(src, /const resume = leaseLive && d\.runner === _enclaveId;/, "a resume is this runner's own live lease");
 });
 

@@ -8,6 +8,10 @@
 // lying host can at most make this custodian useless (wrong endpoint, dropped state, unsent transactions); it cannot make
 // it release anything: every release is checked against the agreed chain, and the state opens only inside this guest.
 //
+// OPTIONAL, MEASURED: Enclave Shield release recipients (custody/v2/shield-operator.mjs). Only an image built with
+// --shield-recipients carries MEASURED.shieldRecipients (the operator's TPM EK roots, their pins and limits, and its
+// acknowledgement of tier hv-node/T0-hv). Without it this custodian is SNP-only, as before. Never from the host config.
+//
 // State: sealed with an SNP DERIVED key (snpkey: VCEK root, mixing the launch measurement and the guest policy), so only
 // this exact code on this exact chip opens it. The host stores the ciphertext (GET/PUT <host>/state).
 import fs from "node:fs";
@@ -20,29 +24,24 @@ import * as hpke from "../hpke.mjs";
 import { createChainReaderV2 } from "./chain.mjs";
 import { createCustodianV2, Refusal } from "./custodian.mjs";
 import { createMember } from "./member.mjs";
-import { rateLimiter } from "../custodian.mjs";
 import { productionVerifiers } from "../verifiers.mjs";
 import { cachedCollateral, httpCollateral } from "../../verifier/consumer.mjs";
 import { verifyQuote, parseSnpReport } from "../../relay/snp-verify.mjs";
 import { MEASURED } from "./measured.mjs";
 import { receiptCapacityCheck } from "./capacity.mjs";
+import { ownerAdmissionCheck } from "./admission.mjs";
+import { dkgHelper } from "./independent-genesis.mjs";
+import { independentPolicy, ownerPermitAdmission } from "./governance.mjs";
+import { createIndependentService } from "./independent-runtime.mjs";
+import { parseHostConfig } from "./host-config.mjs";
+import { createCustodyRouter, validateTrustedProxies } from "./http.mjs";
+import { shieldCustodyFor, validateShieldOperator } from "./shield-operator.mjs";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const FW = "/sys/firmware/qemu_fw_cfg/by_name/opt/org.enclave.custody/raw";
 const TSM = "/sys/kernel/config/tsm/report";
 
-function readHostConfig() {
-  const c = JSON.parse(fs.readFileSync(process.env.CUSTODY_HOST_CONFIG || FW, "utf8"));
-  const out = {
-    endpoint: String(c.endpoint || ""), registryId: String(c.registryId || "").toLowerCase(), hostUrl: String(c.hostUrl || "http://10.0.2.2:8796"),
-    committeeId: c.committeeId ? String(c.committeeId).toLowerCase() : null, genesis: c.genesis === true, port: Number(c.port || 8787),
-    vcek: c.vcek ? Buffer.from(String(c.vcek), "base64") : null,
-  };
-  if (!/^https:\/\/[a-z0-9.-]{1,253}(\/[A-Za-z0-9._~-]+){0,4}$/.test(out.endpoint)) throw new Error("host config: endpoint must be an https URL (an optional plain path prefix)");
-  if (!/^0x[0-9a-f]{64}$/.test(out.registryId)) throw new Error("host config: registryId must be bytes32");
-  if (out.committeeId && !/^0x[0-9a-f]{64}$/.test(out.committeeId)) throw new Error("host config: committeeId must be bytes32");
-  return out;
-}
+const readHostConfig = () => parseHostConfig(fs.readFileSync(process.env.CUSTODY_HOST_CONFIG || FW, "utf8"));
 
 // ---- the chip: derived sealing key and reports ----
 const derivedKey = () => Buffer.from(execFileSync("/opt/custodian/snpkey", ["derive"], { encoding: "utf8" }).trim(), "hex");
@@ -81,6 +80,10 @@ async function hostPut(hostUrl, p, body) { const r = await fetch(hostUrl + p, { 
 
 async function main() {
   const hc = readHostConfig();
+  // a measured Shield opt-in that does not validate is a bad build: refuse before any state is touched
+  if (MEASURED.shieldRecipients !== undefined && MEASURED.shieldRecipients !== null) validateShieldOperator(MEASURED.shieldRecipients);
+  // likewise the measured forwarder list (absent: the TCP peer keys every client's rate bucket)
+  const trustedProxies = validateTrustedProxies(MEASURED.trustedProxies ?? []);
   const key = derivedKey();
   // 1. the sealed state (keys + shares), or a fresh identity
   let state = null;
@@ -101,9 +104,16 @@ async function main() {
   const machine = { identity: identity.address.toLowerCase(), encKey, endpoint: hc.endpoint, chipId: sha(probe.chipId), registryId: hc.registryId, measurement: sha(probe.measurement) };
   log(`machine ${machine.identity} measurement ${probe.measurement.toString("hex").slice(0, 16)}... chip ${machine.chipId.slice(0, 12)}...`);
 
-  const chain = createChainReaderV2({ rpcs: MEASURED.rpcs, vault: MEASURED.vault, minAgree: MEASURED.minAgree, maxAgeSec: MEASURED.maxAgeSec });
-  const store = { load: () => state.member, save: (m) => { state.member = m; hostPut(hc.hostUrl, "/state", seal(key, state)).catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
-  const saveNow = async () => hostPut(hc.hostUrl, "/state", seal(key, state));
+  if (!/^0x[0-9a-f]{40}$/.test(MEASURED.hostOwnership || "") || /^0x0{40}$/.test(MEASURED.hostOwnership)) throw new Error("measured host wallet authority is required");
+  // Serialize snapshots so an older asynchronous member save cannot overwrite
+  // a newer DKG phase. DKG awaits persistence before it emits a phase response.
+  let writes=Promise.resolve();
+  const saveNow = () => { const blob=seal(key,state);const next=writes.catch(()=>{}).then(()=>hostPut(hc.hostUrl,"/state",blob));writes=next;return next; };
+  const chain = createChainReaderV2({ chainId:MEASURED.chainId, hostOwnership:MEASURED.hostOwnership,
+    rpcs:MEASURED.rpcs, vault:MEASURED.vault, minAgree:MEASURED.minAgree, maxAgeSec:MEASURED.maxAgeSec,
+    confirmations:MEASURED.confirmations,
+    checkpoint:{load:()=>state.chainCheckpoint,save:async mark=>{state.chainCheckpoint=mark;await saveNow();}} });
+  const store = { load: () => state.member, save: (m) => { state.member = m; saveNow().catch((e) => log(`STATE SAVE FAILED: ${e.message}`)); } };
   const submit = async (fn, args) => {
     const r = await fetch(hc.hostUrl + "/submit", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ fn, args }, (k, v) => (typeof v === "bigint" ? v.toString() : v)) });
@@ -112,7 +122,7 @@ async function main() {
     return j.tx;
   };
   const fetchJson = async (url, body) => {
-    const r = await fetch(url, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(url, {signal:AbortSignal.timeout(15000),...(body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })});
     const j = await r.json(); if (!r.ok) throw new Error(j.message || j.error || String(r.status)); return j;
   };
   const verifyPeerQuote = async (report, { binding, auxblob, minTcb }) => {
@@ -122,43 +132,33 @@ async function main() {
     if (!v.ok) return { ok: false, reason: v.reasons.slice(-1)[0] };
     return { ok: true, measurement: p.measurement.toString("hex"), chipId: p.chipId.toString("hex") };
   };
+  // The measured independent policy: an explicit owner list, or owner permits (any distinct non-Enclave owners that sign);
+  // with neither, the legacy Enclave-founded admission (capacity receipts) applies.
+  const policy = independentPolicy(MEASURED);
+  const admissionCheck = policy?.mode === "owner-list" ? ownerAdmissionCheck(policy.owners)
+    : policy?.mode === "owner-permits" ? ownerPermitAdmission({ enclaveOwner: MEASURED.enclaveOwner })
+    : null;
   const member = createMember({ chainId: MEASURED.chainId, vault: MEASURED.vault, identity, encPrivateKey, machine, chain, store, submit, fetchJson,
                                 attestSelf: async (b) => tsmReport(b, hc.vcek), verifyPeerQuote, enclaveOwner: MEASURED.enclaveOwner, log,
                                 // a non-Enclave candidate proves capacity with the audit witness's receipt for its chip (§5 item 2)
+                                admissionCheck,
                                 capacityCheck: receiptCapacityCheck({ chainId: MEASURED.chainId, contract: MEASURED.capacityContract, witnesses: MEASURED.witnesses }),
                                 // this machine's own receipts, which its host fetches from the witness (unverified here: every member checks them)
                                 capacityReceipts: async () => { const r = await fetch(hc.hostUrl + "/receipts"); return r.ok ? (await r.json()).slice(0, 8) : []; } });
+  // the measured Shield opt-in, for THIS custodian's own committee key (absent: SNP only; malformed: refuse to start)
+  const shield = shieldCustodyFor(MEASURED.shieldRecipients, { party: encKey.slice(2) });
+  if (shield) log(`Shield recipients ON (measured): tier hv-node/T0-hv, hostExcluded false, ${shield.limits.maxSessions} host sessions, party ${encKey.slice(2, 14)}...`);
   const custodian = createCustodianV2({ chainId: MEASURED.chainId, vault: MEASURED.vault, encPrivateKey, shares: member.shares, chain,
-                                        verifiers: productionVerifiers({ collateral: cachedCollateral({ dir: "/tmp/amd-collateral", upstream: httpCollateral({ timeoutMs: 8000 }) }) }), log });
+                                        verifiers: productionVerifiers({ collateral: cachedCollateral({ dir: "/tmp/amd-collateral", upstream: httpCollateral({ timeoutMs: 8000 }) }) }), shield, log });
 
-  // 3. HTTP (the tunnel agent forwards the relay's /t/<name>/... here)
-  const rate = rateLimiter();
-  const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(body)); };
-  const srv = http.createServer(async (req, res) => {
-    const u = new URL(req.url, "http://x");
-    const client = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "-").split(",")[0].trim().slice(0, 64);
-    try {
-      if (req.method === "GET" && (u.pathname === "/health" || u.pathname === "/")) return json(res, 200, { ok: true, role: "custodian-v2" });
-      if (req.method === "GET" && u.pathname === "/v2/custody/info") return json(res, 200, { ...member.info(hc.committeeId), chainId: MEASURED.chainId, vault: MEASURED.vault });
-      if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed", message: "POST only." });
-      if (!rate(client)) return json(res, 429, { error: "rate_limited", message: "Too many requests; retry shortly." });
-      const chunks = []; let n = 0;
-      for await (const ch of req) { n += ch.length; if (n > 262144) return json(res, 413, { error: "too_large", message: "Body too large." }); chunks.push(ch); }
-      let body; try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { return json(res, 400, { error: "bad_json", message: "Body must be JSON." }); }
-      switch (u.pathname) {
-        case "/v2/custody/challenge": return json(res, 200, custodian.challenge({ client }));
-        case "/v2/custody/release": return json(res, 200, await custodian.release(body));
-        case "/v2/custody/evidence": return json(res, 200, await member.evidence(String(body.nonce || "")));
-        case "/v2/custody/join": return json(res, 200, await member.join(body, hc.committeeId));
-        case "/v2/custody/approve": return json(res, 200, await member.approve({ ...body, next: body.next || [] }));
-        case "/v2/custody/host-binding": return json(res, 200, await member.setHostSig(String(body.sig || "")));
-        default: return json(res, 404, { error: "not_found", message: "Unknown custody route." });
-      }
-    } catch (e) {
-      if (e instanceof Refusal) return json(res, e.status, { error: e.code, message: e.message });
-      return json(res, 422, { error: "refused", message: String(e.message).slice(0, 300) });
-    }
-  });
+  const runIndependent = createIndependentService({ policy, member, chain, identity, encPrivateKey, invoke: dkgHelper("/opt/custodian/dkg"),
+    state, persist: saveNow, fetchJson, submit, log });
+  // the committee this custodian serves: the host's choice, else the one it adopted (an independent genesis sets none)
+  const servedCommittee = () => hc.committeeId || member.committees()[0] || null;
+
+  // 3. HTTP (the tunnel agent forwards the relay's /t/<name>/... here): custody/v2/http.mjs
+  const srv = http.createServer(createCustodyRouter({ custodian, member, runIndependent, servedCommittee, policyMode: policy?.mode || null,
+                                                      chainId: MEASURED.chainId, vault: MEASURED.vault, trustedProxies }));
   srv.listen(hc.port, "0.0.0.0", () => log(`custodian-v2 on :${hc.port} for ${hc.endpoint}`));
 
   // 4. genesis, if the host asked for it and there is no committee yet; then the engine
@@ -173,7 +173,8 @@ async function main() {
     log(`GENESIS ${g.committeeId}: set committeeId in the host config`);
   }
   const loop = async () => {
-    const cid = hc.committeeId || Object.keys(member._state().epochs || {}).map((k) => k.split(":")[0])[0];
+    try { await runIndependent.adoptIfCreated(); } catch (e) { log(`[independent] ${e.message}`); }
+    const cid = servedCommittee();
     if (cid) { try { const r = await member.tick(cid); if (r.state !== "steady" && r.state !== "idle") log(`[engine] ${JSON.stringify(r)}`); } catch (e) { log(`[engine] ${e.message}`); } }
     setTimeout(loop, 60_000);
   };

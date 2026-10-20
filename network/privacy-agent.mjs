@@ -38,6 +38,8 @@ import {ShieldIngress} from './shield-ingress.mjs';
 import {guardedFetch} from './guarded-fetch.mjs';
 import {delegatedIPNS} from './discovery-http.mjs';
 import {validateAppNames} from './app-ingress.mjs';
+import {DirectoryClient} from './directory-client.mjs';
+import {createProviderBootstrap,providerRegistryReader,createNetworkFetch} from './provider-bootstrap.mjs';
 
 // Settings of the retired TUNA transport (and of the TUNA-era direct hosting it carried) that an older configuration may
 // still hold. They are ignored, never acted on: no NKN wallet, provider inventory, control guard or currency conversion runs.
@@ -189,8 +191,11 @@ export async function runPrivacy(configFile){
   const guestd=cfg.guestd?new GuestdIngress({...cfg.guestd,expected:id=>apps.find(a=>a.deploymentId===id)?.expected}):
     cfg.shield?.ingress?new ShieldIngress({...cfg.shield.ingress,expected:id=>apps.find(a=>a.deploymentId===id)?.expected,key:id=>agent?.admission.proofs.get(id)?.spkiSha256}):null;
   const scheduleProbe=createProbeScheduler();
-  let wgControl=null,paid=null;
-  const close=()=>{hostProof?.close();void Promise.all([agent?.close(),wgControl?.close()]).then(()=>paid?.close()).catch(e=>log(e.message));};
+  let wgControl=null,paid=null,stopping=false;
+  // The network host is closed LAST and always (enclave-network-host.mjs close(), idempotent): its direct runtime and the
+  // qualification canary hold public listeners from startup, and a daemon that keeps them cannot exit.
+  const closeNetwork=()=>Promise.resolve(networkHost?.close()).catch(e=>log('network host: '+e.message));
+  const close=()=>{stopping=true;hostProof?.close();void Promise.all([agent?.close(),wgControl?.close()]).then(()=>paid?.close()).catch(e=>log(e.message)).finally(closeNetwork);};
   process.once('SIGTERM',close);process.once('SIGINT',close);
   // SIGHUP re-reads the app list: each app's expectation, names and mirror
   // flag, and any new app, and the operator's host-egress offer (enclaveNetwork.hostEgress). Everything is validated before anything changes; no
@@ -225,22 +230,28 @@ export async function runPrivacy(configFile){
   setInterval(()=>void fs.stat(configFile).then(st=>{if(st.mtimeMs!==configStamp){configStamp=st.mtimeMs;return reloadApps();}}).catch(e=>log('config watch: '+e.message)),30000).unref();
   const starting=windows&&cfg.shield?.manager?startingShieldTransport(cfg.shield.manager,id=>apps.find(a=>a.deploymentId===id)?.expected):null;
   if(apps.some(a=>a.startupEgress)&&!starting)throw new Error('startup egress needs the local Shield manager');
-  // The Enclave network, before the lease reader: with enclaveNetwork.control the host's own chain reads and relay calls
-  // leave through two guarded Enclave-network circuits (docs/design/enclave-network.md).
-  let leaseReaderLate;
+  // Provider registry bootstrap precedes control circuits. App authorization
+  // reads use those circuits once available, never the bootstrap reader.
   const directFetch=globalThis.fetch;
-  // through the control circuits when they are up; otherwise (or if they fail) directly, with a fresh deadline (the
-  // caller's signal may already have expired on the failed attempt)
-  const networkFetch=async(url,init={})=>{if(wgControl){try{await wgControl.proxies();return await guardedFetch(wgControl.proxies,{timeoutMs:15000,maxBytes:4194304})(url,init);}catch(e){if(cfg.enclaveNetwork?.controlRequired)throw e;}}
-    return directFetch(url,{...init,signal:AbortSignal.timeout(15000)});};
-  const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,
-    leaseReader:{registryEntries:(...a)=>leaseReaderLate?leaseReaderLate.registryEntries(...a):Promise.reject(new Error('lease reader not ready yet')),
-      bookAddress:(...a)=>leaseReaderLate?leaseReaderLate.bookAddress(...a):Promise.reject(new Error('lease reader not ready yet'))},directory:cfg.directory,log,fetch:networkFetch,
-    authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
+  const bootstrap=createProviderBootstrap({chain:cfg.chain,network:cfg.enclaveNetwork,fetch:directFetch});
+  const leaseReader=new LeaseReader({...cfg.chain,...(cfg.enclaveNetwork.paid?{includeConnectivity:'auto',includeHostPayout:true}:{}),
+    ...(cfg.enclaveNetwork.control===true?{proxy:async()=>{if(!wgControl)throw Error('control transport not started');return wgControl.proxies();}}:{})});
+  const providerReader=providerRegistryReader({bootstrap,liveReader:leaseReader,control:()=>wgControl,controlEnabled:cfg.enclaveNetwork.control===true});
+  // Prefer control circuits, then the explicitly selected bootstrap. Legacy
+  // optional-control hosts retain their existing direct public-record fallback.
+  const networkFetch=createNetworkFetch({bootstrap,control:()=>wgControl,controlRequired:cfg.enclaveNetwork.controlRequired,fetch:directFetch});
+  const network=await createNetworkHost({config:cfg.enclaveNetwork,account,runner:cfg.runner,rpc:cfg.chain?.rpc,addressBook:cfg.chain?.addressBook,authorityPins:cfg.chain?.authorityPins,
+    leaseReader,providerReader,directory:cfg.directory,log,fetch:networkFetch,
+    authorize:id=>!agent?.closed&&!!agent?.admission.allows(id),
+    // owner-name routing pins the key of the CURRENT attested local proof (enclave-network-host.mjs direct.ownerNames)
+    attestedKey:id=>!agent?.closed&&agent?.admission.allows(id)?agent.admission.proofs.get(id)?.spkiSha256||null:null,forward:pvm?pvmForwarder(pvm.appPort):guestd?guestd.forward:localAppForwarder(cfg.upstream)});
   networkHost=network;
-  if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,log});await wgControl.start();}
+  // a stop that arrived while the host was being created, or a step below that fails, must not leave its listeners open
+  if(stopping){await closeNetwork();throw new Error('privacy agent stopped during startup');}
+  try{
+  if(cfg.enclaveNetwork.control===true){wgControl=new WgControlTransport({runtime:network.runtime,providers:network.providers,
+    probeUrls:(cfg.enclaveNetwork.directories||[cfg.enclaveNetwork.relay]).map(origin=>new URL('/v1/network/providers',origin).href),log});await wgControl.start();}
   // paid providers (enclaveNetwork.paid): the lease must carry the on-chain connectivity authorization
-  const leaseReader=new LeaseReader({...cfg.chain,...(cfg.enclaveNetwork.paid?{includeConnectivity:'auto',includeHostPayout:true}:{}),...(wgControl?{proxy:wgControl.proxies}:{})});leaseReaderLate=leaseReader;
   paid=cfg.enclaveNetwork.paid?await createPaidNetwork({config:cfg.enclaveNetwork.paid,directory:path.join(cfg.directory,'paid'),leaseReader,providers:network.providers,fetchFn:networkFetch,log}):null;
   agent=new PrivacyAgent({apps,runner:cfg.runner,account,leaseReader,directory:cfg.directory,dns:cfg.dns,network,paid,log,
     // the route publisher attaches the host's direct-hosting qualification to a direct route (v5)
@@ -250,9 +261,15 @@ export async function runPrivacy(configFile){
       const circuits=agent.manager.apps.get(id)?.circuits.filter(c=>c.healthy&&!c.closed&&c.egress)||[];
       // the paths a publication may leave by: the app's own circuits, else (an app with website-only circuits) the
       // host's Enclave-network control circuits; never the host's own address
-      const paths=circuits.length?circuits.map(c=>c.transport==='direct'?fetch:guardedFetch(c.egress,{timeoutMs:5000})):wgControl?[guardedFetch(wgControl.proxies,{timeoutMs:8000})]:[];
+      const paths=circuits.length?circuits.map(c=>c.transport==='direct'?fetch:guardedFetch(c.egress,{timeoutMs:5000,publicRecords:true})):wgControl?[guardedFetch(wgControl.proxies,{timeoutMs:8000,publicRecords:true})]:[];
       if(!paths.length)return;
       const tasks=[];
+      if(cfg.enclaveNetwork?.directories?.length)tasks.push((async()=>{
+        let error;for(const publishFetch of paths){try{
+          const client=new DirectoryClient({origins:cfg.enclaveNetwork.directories,fetch:publishFetch,timeoutMs:5000});
+          await client.publish('/v1/network/routes',{publication:{version:2,endpoint:cfg.endpoint,policy:value.policy,bundle:value.bundle}});return;
+        }catch(e){error=e;}}throw error;
+      })());
       // Publishing to Nan's DNS mirror moves an app off the shared route for good
       // (the mirror remembers it), so it is opted into per app, never all at once.
       if(cfg.mirror&&apps.find(a=>a.deploymentId===id)?.publishToMirror===true)tasks.push((async()=>{
@@ -278,7 +295,9 @@ export async function runPrivacy(configFile){
       ...(!circuit&&pvm?{pvm}:!circuit&&windows?{shield,hostSession:await hostProof.get()}:!circuit?{linux:{...linux,measurement:expected.measurement,release:expected.release},verifySnp}:{}),
       ...(circuit?{address:circuit.address,direct:circuit.transport==='direct',proxy:circuit.transport==='direct'?undefined:circuit.isolation.guardAddress,domainIndependent:circuit.transport!=='direct'&&apps.find(a=>a.deploymentId===id)?.startupEgress===true}:apps.find(a=>a.deploymentId===id)?.startupEgress===true?{openApp:starting,startupEgress:true}:guestd?{openApp:id=>guestd.open(id)}:pvm?{openApp:()=>openPvmApp(pvm.appPort)}:{localUpstream:cfg.upstream})});
     })});
-  try{await agent.start();}catch(e){hostProof?.close();await agent.close();await wgControl?.close();throw e;}
+  }catch(e){await closeNetwork();throw e;}
+  try{if(stopping)throw new Error('privacy agent stopped during startup');await agent.start();}
+  catch(e){try{hostProof?.close();await agent.close();await wgControl?.close();}finally{await closeNetwork();}throw e;}
   return agent;
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){

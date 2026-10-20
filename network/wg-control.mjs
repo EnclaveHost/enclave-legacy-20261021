@@ -6,8 +6,14 @@ import {guardedFetch} from './guarded-fetch.mjs';
 const ZERO='0x'+'0'.repeat(64),COOLDOWN_MAX_MS=30*60000;
 
 export class WgControlTransport {
- constructor({runtime,providers,routes=2,probeUrl='https://api.enclave.host/v1/network/providers',now=Date.now,log=()=>{}}){
-  Object.assign(this,{runtime,providers,routes,probeUrl,now,log});this.circuits=[];this.cooldown=new Map();this.strikes=new Map();this.closed=false;this.busy=false;
+ constructor({runtime,providers,routes=2,probeUrl,probeUrls,now=Date.now,log=()=>{}}){
+  Object.assign(this,{runtime,providers,routes,probeUrl,now,log});this.probeUrls=probeUrls||(probeUrl?[probeUrl]:[]);
+  if(!Array.isArray(this.probeUrls)||!this.probeUrls.length||this.probeUrls.length>8)throw Error('control probe URLs required');
+  this.circuits=[];this.cooldown=new Map();this.strikes=new Map();this.closed=false;this.busy=false;
+ }
+ async probe(c,timeoutMs){
+  const transport=guardedFetch(c.egress,{timeoutMs,maxBytes:4194304,publicRecords:true});
+  await Promise.any(this.probeUrls.map(async url=>{const r=await transport(new URL(url));if(r.status!==200)throw Error('control probe HTTP '+r.status);}));
  }
  // loopback SOCKS entries of the live control circuits (guardedFetch / LeaseReader `proxy`)
  proxies=async()=>{const live=this.circuits.filter(c=>!c.closed&&c.healthy).map(c=>c.egress);if(!live.length)throw new Error('Enclave-network control transport unavailable');return live;};
@@ -26,7 +32,7 @@ export class WgControlTransport {
    // a live circuit must still carry traffic: a provider that lost this peer (or whose egress refuses it) can leave the
    // tunnel handshaking while nothing passes. Two failed probes in a row and the circuit is replaced.
    await Promise.all(this.circuits.map(async c=>{
-    try{const r=await guardedFetch(c.egress,{timeoutMs:10000,maxBytes:1048576})(new URL(this.probeUrl));if(r.status>=500)throw new Error('HTTP '+r.status);c.misses=0;}
+    try{await this.probe(c,10000);c.misses=0;}
     catch(e){c.misses=(c.misses||0)+1;if(c.misses>=2)this.drop(c,'control probe failed twice: '+e.message);}
    }));
    const keep=this.circuits.map(c=>({guard:c.providers.guard,exit:c.providers.exit}));
@@ -38,8 +44,7 @@ export class WgControlTransport {
     try{
      c=await this.runtime.start({deploymentId:ZERO,names:[],kind:'network',guard,exit,egress:true,exitRole:'control',gate:()=>!this.closed});
      c.on('down',reason=>this.drop(c,reason));
-     const r=await guardedFetch(c.egress,{timeoutMs:15000,maxBytes:1048576})(new URL(this.probeUrl));
-     if(r.status>=500)throw new Error('control probe HTTP '+r.status);
+     await this.probe(c,15000);
      c.healthy=true;this.circuits.push(c);this.strikes.delete(guard.providerId);this.strikes.delete(exit.providerId);
      this.log(`control circuit up: guard ${guard.region} -> exit ${exit.region}`);
     }catch(e){

@@ -29,11 +29,10 @@ $Binaries = [ordered]@{
   # GOOS=windows CGO_ENABLED=0 go build -trimpath ./cmd/shield-egress, from isolation/m2 - the 1dad2bb50 build
   # reproduced byte for byte first)
   "bin\shield-egress.exe"   = @("vbs-like\releases\egress-bytes-20261013\shield-egress.exe",  "ab08c73dfa09c6f1feb80a22a4c11694d5dea7003b20a14cce58df3b8f447e02")
-  # bridge-slots-20261014: cargo build --release --locked --bin shielded-bridge of windows/vbslike/host at 87ce2b2fd
-  # (persistent streams: no write timeout; each end half-closes; an errored stream says how, a big one its bytes;
-  # 64 slots for a persistent bridge, and a half-closed stream idle 120 s toward the guest is shut - 8 slots leaked to
-  # Sia hosts' idle mux connections cut sia-s3 off entirely)
-  "bin\shielded-bridge.exe" = @("vbs-like\releases\bridge-slots-20261014\shielded-bridge.exe", "87caf7e9486eb4c55c141982f5858936ff56070bbcaec7d019876ece0208824a")
+  # Native build of windows/vbslike/host at 45801c22, including --worker-auth-stdin for direct startup and custody.
+  # Preserves the legacy egress/GPU invocation and persistent-stream handling.
+  # Source hashes, compiler, exact build command and native loopback results: builds/bridge-auth-45801c22.json.
+  "bin\shielded-bridge.exe" = @("vbs-like\releases\bridge-auth-45801c22\shielded-bridge.exe", "03bf48b04218ceba55d53a63b4285a26f9232aa7cc8af22150138e1412f7e11b")
   "bin\tpmattest.exe"       = @("vbs-like\hvnode\bin\tpmattest.exe",                       "ebc30d9fa54cf70043900165ce12631224075b3301653eaf8527342d18de6982")
   "bin\wasmtime.exe"        = @("vbs\apps\wasmtime-v49.0.0-x86_64-windows\wasmtime.exe",   "cbe3e2ddc1d449a029b1f581b84688b94fc7e5758cdfe24241609a92b16a5cc2")
   "guest\runtime.bin"       = @("vbs-like\releases\public-web-20261005\runtime.bin",        "5fbfb947884367f1af2b76b4deb8a6ebaad00a5c90577ae7d8c4db95f9ddfa5d")
@@ -65,13 +64,20 @@ New-Item -ItemType Directory -Force $B, (Join-Path $Out "dl") | Out-Null
 tar.exe -xzf $Control -C $B
 if ($LASTEXITCODE) { Die "tar could not expand $Control" }
 $n = 0
+$sourceIdentityChecked = $false
 foreach ($line in Get-Content $Manifest) {
   if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { continue }
   $p = Join-Path $B ($Matches[2] -replace '/', '\')
   if (-not (Test-Path -LiteralPath $p)) { Die "missing from the control archive: $($Matches[2])" }
   if ((Sha $p) -ne $Matches[1]) { Die "hash mismatch in the control archive: $($Matches[2])" }
+  if ($Matches[2] -ceq 'control-source.json') { $sourceIdentityChecked = $true }
   $n++
 }
+if (-not $sourceIdentityChecked) { Die 'the control manifest must hash control-source.json with the full source commit' }
+$sourceIdentity = Get-Content -LiteralPath (Join-Path $B 'control-source.json') -Raw | ConvertFrom-Json
+if ($sourceIdentity.format -cne 'enclave-control-source/1' -or $sourceIdentity.commit -cnotmatch '^[0-9a-f]{40}$') { Die 'invalid control source identity' }
+$c8 = [IO.Path]::GetFileNameWithoutExtension($Control) -replace '^control-', '' -replace '\.tar$', ''
+if ($c8 -cnotmatch '^[0-9a-f]{8}$' -or -not $sourceIdentity.commit.StartsWith($c8, [StringComparison]::Ordinal)) { Die 'control archive name differs from its full source commit' }
 "control: $n files match their manifest"
 
 # --- 2. the prebuilt binaries, each against its pin -------------------------------------------------------------------
@@ -163,8 +169,7 @@ Remove-Item $setup -Recurse -Force
 # --- 5. manifest, zip, sums -------------------------------------------------------------------------------------------
 $files = Get-ChildItem $B -Recurse -File | Sort-Object FullName
 $entries = foreach ($f in $files) { [ordered]@{ path = $f.FullName.Substring($B.Length + 1).Replace('\', '/'); sha256 = (Sha $f.FullName); bytes = $f.Length } }
-$commit = ((Get-Content $Manifest -TotalCount 0) -join ""); $c8 = [IO.Path]::GetFileNameWithoutExtension($Control) -replace '^control-', '' -replace '\.tar$', ''
-[ordered]@{ product = "Enclave host for Windows"; version = $Version; control = $c8; files = @($entries) } |
+[ordered]@{ product = "Enclave host for Windows"; version = $Version; control = $c8; commit = $sourceIdentity.commit; controlManifestSha256 = (Sha $Manifest); files = @($entries) } |
   ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $B "manifest.json")
 # the staged files carry mtime 0 (deterministic tar); a zip cannot hold dates before 1980, so give every file one fixed date
 $stamp = [datetime]::new(2026, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)

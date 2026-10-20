@@ -1431,7 +1431,8 @@ function ownerServedDeployments(row) {
 const BOX_OWN_SURFACES = new Set(["/availability", "/health", "/v1/health", "/v1/version", "/v1/pricing", "/v1/session-jwks",
                                   "/v1/net-map", "/v1/udp-map", "/v1/attestation", "/.well-known/tinfoil-attestation"]);
 const CUSTODY_SURFACES = new Map([["/v2/custody/info", "GET"], ["/v2/custody/challenge", "POST"], ["/v2/custody/release", "POST"],
-                                   ["/v2/custody/evidence", "POST"], ["/v2/custody/join", "POST"], ["/v2/custody/approve", "POST"]]);
+                                   ["/v2/custody/evidence", "POST"], ["/v2/custody/join", "POST"], ["/v2/custody/approve", "POST"],
+                                   ["/v2/custody/code-approve", "POST"]]);
 function canonicalBoxPath(path) {
   let p = String(path || "/");
   for (let i = 0; i < 3; i++) {

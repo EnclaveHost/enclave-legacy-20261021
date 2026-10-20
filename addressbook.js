@@ -16,6 +16,9 @@
 
 import { createPublicClient, http, fallback, getAddress } from "viem";
 import { base } from "viem/chains";
+import {loadContractPins} from './windows/node/host-admission.bundle.mjs';
+
+export const CONTRACT_PINS=loadContractPins();
 
 export let REGISTRY_ADDRESS      = process.env.REGISTRY_ADDRESS || "";
 export let DEPLOYMENTS_ADDRESS   = process.env.DEPLOYMENTS_ADDRESS || "";
@@ -39,6 +42,12 @@ const KEYS = {
 const current = () => ({ registry: REGISTRY_ADDRESS, deployments: DEPLOYMENTS_ADDRESS,
   appCatalog: APP_CATALOG_ADDRESS, enclavePay: FORWARDER_ADDRESS,
   proofOfTime: PROOF_OF_TIME_ADDRESS });
+
+// Pin at process start. A book owner cannot redirect an explicitly pinned host,
+// even while the book is unavailable, cleared or publishing different addresses.
+if(CONTRACT_PINS)for(const [name,[env,set]] of Object.entries(KEYS)){
+  const address=CONTRACT_PINS[name];set(address);process.env[env]=address;
+}
 
 let client = null;
 async function readBook() {
@@ -68,6 +77,7 @@ async function readBook() {
 /// Boot: block on one read (with the baked env as the fallback on failure),
 /// then poll. Call this BEFORE anything derives state from the addresses.
 export async function initAddressBook(log = console) {
+  if(CONTRACT_PINS){log.log('[addressbook] immutable host contract pins active; book polling disabled');return false;}
   if (!BOOK) return false;
   try {
     const changed = await readBook();

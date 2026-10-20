@@ -69,6 +69,7 @@ type provisioned struct {
 	config   string // ENCLAVE_CONFIG, resolved; "" = the release carried no config
 	envelope string // the ledger envelope's sha256 (hex): public (it is on chain), stated on the console
 	fwd      *egress.Forwarder
+	owner    *ownerStartup // direct startup only: owner-committed names (names.go)
 }
 
 func (p *provisioner) run(ctx context.Context, hostData, spki []byte, rt *runtimeState, appSha []byte) (*provisioned, error) {
@@ -179,7 +180,10 @@ func (p *provisioner) run(ctx context.Context, hostData, spki []byte, rt *runtim
 	// tenant cannot reach (the runtime gives it no access to other processes).
 	rel.Secrets = nil
 	secrets = nil
+	return p.startForwarders(ctx, id, out, pol)
+}
 
+func (p *provisioner) startForwarders(ctx context.Context, id [32]byte, out *provisioned, pol *egress.Policy) (*provisioned, error) {
 	out.fwd = &egress.Forwarder{Policy: pol, Port: p.fwdPort, Upstream: p.egress, Logf: domLogf(p.logf)}
 	if err := out.fwd.Start(ctx); err != nil {
 		return nil, err

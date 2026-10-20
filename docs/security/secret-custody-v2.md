@@ -1,10 +1,18 @@
 # Secret custody v2: custodians run by the hosts, inside their TEEs
 
-Status: LIVE on Base and metal0 (2026-10-14 23:35Z), verified on hardware. Successor to
+Initial production deployment: Base and metal0 (2026-10-14 23:35Z), verified on hardware. Successor to
 [secret-custody.md](secret-custody.md) (v1, still serving v1 bundles). The decisions in §11 are made; §6.2 adds Steven's
 Enclave-seat rules. Interfaces: [secret-custody-v2-spec.md](secret-custody-v2-spec.md).
 
-**What is live:**
+The table below is the original deployment snapshot, not the current migration
+inventory. Nan's control services have since moved to minipc. The 2026-10-19
+source also adds independent committee genesis, distributed key generation and
+measured accepted-owner admission without an Enclave capacity witness; these
+changes are not active in the legacy vault below. See
+[independent custody formation](../design/decentralized-architecture.md#independent-custody-formation)
+for the current implementation, validation and remaining activation gates.
+
+**Original deployment (2026-10-14):**
 
 | Part | Where |
 |---|---|
@@ -220,9 +228,9 @@ held by live members when it restarts, so shares follow membership, never usage.
 
 ### 6.2 The Enclave seat (Steven, 2026-10-14)
 
-A member is **Enclave-owned** when its host's EnclaveRegistry entry has `payoutWallet = 0x0b2d009c0c9Af05b12100D77F3c815fea822eE61`.
-That field is set only by that wallet itself (`setPayoutWallet`), so the governance Trezor consented. The vault reads
-it on chain at admission.
+The nan-retirement source proposal replaces payout-based classification with accepted host ownership. A member is **Enclave-owned** when the pinned `EnclaveHostOwnership` contract names `0x0b2d009c0c9Af05b12100D77F3c815fea822eE61` as its host's accepted owner. Initial ownership requires both the registered operator's nomination and the wallet's acceptance. A payout declaration alone is insufficient. The vault reads ownership at admission/handover and snapshots the classification for the epoch.
+
+This requires a new vault and measured runtime. The live legacy committee has not been migrated; replacing its runtime or discovery pointer alone would not migrate encrypted bundles or shares.
 
 1. **All Enclave-owned members share ONE seat.** Each holds a copy of the same share(s). However many machines Enclave
    runs, they count once. **Enclave machines can never make up the threshold among themselves once `n >= 3`.** This is

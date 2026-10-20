@@ -9,17 +9,27 @@
 //   node custody/v2/host.mjs <config.json>
 // config: { dist, ovmf, sevDevice, qemu?, cpus, memMiB, tunnelName, endpoint, registryEndpoint, hostPort, mgmtPort, stateDir,
 //           committeeId?, genesis?, vcekFile?, relayUrl?, vault, rpc, registryKeyFile (JSON with registryKey), submitterKeyEnv }
+// New images include a transport + accepted-owner pin in their manifest. Direct
+// ingress forwards only public API routes to mgmtPort; hostPort stays private.
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { createPublicClient, createWalletClient, http as viemHttp, keccak256, toBytes, stringToHex } from "viem";
+import { createPublicClient, createWalletClient, http as viemHttp, keccak256, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
-import { VAULT_V2_ABI, REGISTRY_V4_ABI } from "./chain.mjs";
-import * as D from "./digests.mjs";
+import { VAULT_V2_ABI, createChainReaderV2 } from "./chain.mjs";
+import { prepareHostBinding } from './host-binding.mjs';
+import { MEASURED } from './measured.mjs';
 
 const cfg = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const manifest=JSON.parse(fs.readFileSync(path.join(cfg.dist,'manifest.json'),'utf8'));
+if(manifest.role!=='enclave-custodian-v2'||String(manifest.vault).toLowerCase()!==String(cfg.vault).toLowerCase()||
+   !/^0x[0-9a-f]{40}$/i.test(manifest.hostOwnership||'')||/^0x0{40}$/i.test(manifest.hostOwnership)||
+   !['direct','tunnel'].includes(manifest.transport))throw Error('compatible measured custody manifest required');
+const bindingRpcs=cfg.rpcs||MEASURED.rpcs;
+const bindingChain=createChainReaderV2({rpcs:bindingRpcs,vault:cfg.vault,hostOwnership:manifest.hostOwnership,
+  chainId:8453,minAgree:Math.floor(bindingRpcs.length/2)+1,confirmations:2});
 const log = (...a) => console.log(new Date().toISOString(), "[custodian-host]", ...a);
 const STATE = path.join(cfg.stateDir, "state.bin");
 fs.mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
@@ -27,13 +37,14 @@ const registryId = keccak256(toBytes(cfg.registryEndpoint));
 const pub = createPublicClient({ chain: base, transport: viemHttp(cfg.rpc || "https://mainnet.base.org") });
 const submitter = process.env[cfg.submitterKeyEnv || "CUSTODY_SUBMITTER_KEY"] ? privateKeyToAccount(process.env[cfg.submitterKeyEnv || "CUSTODY_SUBMITTER_KEY"]) : null;
 const wallet = submitter ? createWalletClient({ chain: base, account: submitter, transport: viemHttp(cfg.rpc || "https://mainnet.base.org") }) : null;
-const ALLOWED = new Set(["createCommittee", "proposeHandover", "postDeal", "ackHandover", "proposeCode", "removeCode"]);
+const ALLOWED = new Set(["createCommittee", "createIndependentCommittee", "proposeHandover", "postDeal", "ackHandover", "proposeCode", "removeCode"]);
 
 // ---- fw_cfg for the guest (unmeasured) ----
 const fwPath = path.join(cfg.stateDir, "fwcfg.json");
 fs.writeFileSync(fwPath, JSON.stringify({
   endpoint: cfg.endpoint, tunnelName: cfg.tunnelName, registryId, hostUrl: `http://10.0.2.2:${cfg.hostPort}`, port: 8787,
-  committeeId: cfg.committeeId || null, genesis: cfg.genesis === true, relayUrl: cfg.relayUrl || "wss://api.enclave.host/v1/fleet-tunnel",
+  committeeId: cfg.committeeId || null, genesis: cfg.genesis === true,
+  ...(manifest.transport==='tunnel'?{relayUrl:cfg.relayUrl||'wss://api.enclave.host/v1/fleet-tunnel'}:{}),
   vcek: cfg.vcekFile ? fs.readFileSync(cfg.vcekFile).toString("base64") : null }), { mode: 0o600 });
 
 // ---- state store + submitter (loopback; the guest reaches it as 10.0.2.2) ----
@@ -52,7 +63,11 @@ const srv = http.createServer(async (req, res) => {
     if (req.url === "/state" && req.method === "PUT") {
       if (body.length < 28 || body.length > 4 << 20) return send(400, { error: "bad state" });
       if (fs.existsSync(STATE)) fs.copyFileSync(STATE, `${STATE}.${Date.now()}`);   // keep history; prune below
-      const tmp = `${STATE}.tmp`; fs.writeFileSync(tmp, body, { mode: 0o600 }); fs.renameSync(tmp, STATE);
+      const tmp = `${STATE}.tmp`;
+      const fd=fs.openSync(tmp,'w',0o600);
+      try{fs.writeFileSync(fd,body);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      fs.renameSync(tmp, STATE);
+      const dir=fs.openSync(cfg.stateDir,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
       const old = fs.readdirSync(cfg.stateDir).filter((f) => /^state\.bin\.\d+$/.test(f)).sort();
       for (const f of old.slice(0, Math.max(0, old.length - 20))) fs.unlinkSync(path.join(cfg.stateDir, f));
       return send(200, { ok: true });
@@ -76,17 +91,16 @@ srv.listen(cfg.hostPort, "127.0.0.1", () => log(`state/submit on 127.0.0.1:${cfg
 async function bindLoop() {
   const reg = JSON.parse(fs.readFileSync(cfg.registryKeyFile, "utf8"));
   const op = privateKeyToAccount(reg.registryKey.startsWith("0x") ? reg.registryKey : "0x" + reg.registryKey);
-  const book = await pub.readContract({ address: cfg.vault, abi: VAULT_V2_ABI, functionName: "book" });
-  const regAddr = await pub.readContract({ address: book, abi: [{ type: "function", name: "addr", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "address" }] }], functionName: "addr", args: [stringToHex("registry", { size: 32 })] });
-  const e = await pub.readContract({ address: regAddr, abi: REGISTRY_V4_ABI, functionName: "get", args: [registryId] });
-  if (!e.active || e.operator.toLowerCase() !== op.address.toLowerCase()) { log(`REFUSING to bind: ${cfg.registryEndpoint}'s registry operator is ${e.operator}, not this key`); return; }
   for (;;) {
     try {
-      const i = await (await fetch(`http://127.0.0.1:${cfg.mgmtPort}/v2/custody/info`)).json();
-      if (i.hostSig) { log(`guest ${i.identity} bound (${i.epochs?.length || 0} epoch(s) held)`); return; }
-      const sig = await D.signDigest(op, D.hostDigest({ chainId: 8453, vault: cfg.vault.toLowerCase(), machine: i.machine }));
-      const r = await fetch(`http://127.0.0.1:${cfg.mgmtPort}/v2/custody/host-binding`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sig }) });
-      log(`host binding for ${i.identity}: ${r.status} ${await r.text()}`);
+      const response=await fetch(`http://127.0.0.1:${cfg.mgmtPort}/v2/custody/info`,{signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw Error(`guest info HTTP ${response.status}`);
+      const i=await response.json();
+      const binding=await prepareHostBinding({chain:bindingChain,operator:op,chainId:8453,vault:cfg.vault,registryId,
+        registryEndpoint:cfg.registryEndpoint,endpoint:cfg.endpoint,info:i});
+      if(binding.alreadyBound){log(`guest ${i.identity} bound (${i.epochs?.length||0} epoch(s) held)`);return;}
+      const r = await fetch(`http://127.0.0.1:${cfg.mgmtPort}/v2/custody/host-binding`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sig:binding.signature }),signal:AbortSignal.timeout(10000) });
+      log(`host binding for ${i.identity}: HTTP ${r.status}`);
       if (r.ok) return;
     } catch (err) { log(`waiting for the guest: ${err.message}`); }
     await new Promise((r) => setTimeout(r, 10_000));
@@ -108,7 +122,7 @@ const args = [
 ];
 let child = null, stopping = false, restarts = 0;
 function launch() {
-  log(`launching ${cfg.tunnelName} from ${dist}`);
+  log(`launching ${manifest.transport} custodian for ${cfg.endpoint} from ${dist}`);
   child = spawn(cfg.qemu || "qemu-system-x86_64", args, { stdio: ["ignore", "inherit", "inherit"] });
   child.on("exit", (code, sig) => { if (stopping) return; restarts++; const d = Math.min(5000 * restarts, 60000); log(`guest exited ${code}/${sig}; relaunch in ${d} ms`); setTimeout(launch, d); });
   setTimeout(() => bindLoop().catch((e) => log(`bind: ${e.message}`)), 20_000);

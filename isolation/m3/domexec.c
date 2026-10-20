@@ -50,6 +50,8 @@
 
 #include "../m2/app-seccomp.h"   /* the app runtime's seccomp filter, shared with the SNP guest's m2/dominit.c */
 
+static int shield_on = 0;
+static char shield_workers[192], shield_vram[80];
 static const char *dom_id = "?";
 static volatile sig_atomic_t front_pid_g = -1;
 
@@ -77,6 +79,32 @@ static void lo_up(void) {
     ifr.ifr_flags |= IFF_UP;
     if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0) die("lo up");
     close(s);
+}
+
+/* A SECRET domain's egress (m2/front shield_egress.go): once the release is verified, the FRONT binds one forwarder per
+ * allowed origin on 127.64.0.N:443 in THIS network namespace, then fills /etc/hosts. 443 is below the kernel's default
+ * unprivileged floor (1024), and the front holds no capability; so this namespace's floor is lowered to exactly 443.
+ * net.ipv4.ip_unprivileged_port_start is PER NETWORK NAMESPACE: no other domain and not the guest's own namespace is
+ * touched. Nothing gains a capability. The runtime that shares the namespace gains nothing it can use against the front:
+ * its tenant code starts only after the forwarders are bound (secretrun waits on the front's pipe), a bound address it
+ * cannot take over (another uid's listener), and anything it binds is reachable only from inside this domain, whose one
+ * interface is lo. Read back; a floor that did not hold ends the domain. Called as root, before any workload starts.
+ * A PUBLIC-WEB domain (the monitor's root-owned /egress.public-web, from the measured config) also gets the front's DNS
+ * stub on 127.0.0.2:53, which resolv.conf names and which glibc can only reach on port 53: its floor is 53 instead,
+ * with the same reasoning (the stub is bound before the tenant starts, and the namespace's one interface is lo). */
+static void unprivileged_https_bind(int public_web) {
+    static const char path[] = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
+    const char *floor = public_web ? "53\n" : "443\n";
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) die("open ip_unprivileged_port_start");
+    if (write(fd, floor, strlen(floor)) != (ssize_t)strlen(floor)) die("set ip_unprivileged_port_start");
+    close(fd);
+    char b[16] = {0};
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0 || read(fd, b, sizeof b - 1) <= 0 || strcmp(b, floor) != 0) { errno = EPERM; die("ip_unprivileged_port_start did not hold"); }
+    close(fd);
+    printf("DOM%s egress: this namespace's unprivileged port floor is %s (the front's %s, no capability)\n", dom_id,
+           public_web ? "53" : "443", public_web ? "forwarders, SOCKS front and DNS stub" : "forwarders");
 }
 
 /* What this domain can reach, printed once the workloads are running (so the process count is the
@@ -131,6 +159,37 @@ static void probe_report_as_root(void) {
  * the null device and marks it close-on-exec, so no workload inherits it except through the quiet spawn's dup2s.
  * enclave-d1's canary of 4cdd5169 (252602c8): the quiet runtime opened "/dev/null" INSIDE the chroot, got ENOENT and
  * exited 126 on every m3 domain, so domexec ended each domain before it served (enclave-87 chose this design). */
+#define CONFIG_MAX_BYTES 32768
+static int secret_pipe[2] = {-1,-1};
+static char app_config_env[CONFIG_MAX_BYTES + sizeof "ENCLAVE_CONFIG="];
+/* Read only the monitor's immutable copy from the measured bundle. Never print it. */
+static void read_app_config(void) {
+    int fd = open("/app.config", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) { if (errno == ENOENT) return; die("open app config"); }
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0222)
+        || st.st_size <= 0 || st.st_size > CONFIG_MAX_BYTES) die("app config permissions or size");
+    const size_t prefix = sizeof "ENCLAVE_CONFIG=" - 1;
+    memcpy(app_config_env, "ENCLAVE_CONFIG=", prefix);
+    size_t n = 0;
+    while (n < (size_t)st.st_size) {
+        ssize_t got = read(fd, app_config_env + prefix + n, (size_t)st.st_size - n);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) die("read app config");
+        n += (size_t)got;
+    }
+    if (memchr(app_config_env + prefix, 0, n)) die("app config contains NUL");
+    app_config_env[prefix + n] = 0;
+    close(fd);
+}
+static void config_argument(char **args) {
+    if (!app_config_env[0]) return;
+    size_t n = 0; while (args[n]) n++;
+    /* The artifact is last; put inherited --env before it, with no value in argv. */
+    char *artifact = args[n - 1];
+    args[n - 1] = "--env"; args[n] = "ENCLAVE_CONFIG";
+    args[n + 1] = artifact; args[n + 2] = NULL;
+}
 #define NULL_FD 3
 /* The seccomp STATEMENT channel, fd SECCOMP_FD: a pipe the MONITOR hands this process (its read end stays with the
  * monitor). Close-on-exec from the start and closed here once the runtime is spawned, so only the runtime's child - this
@@ -190,7 +249,37 @@ static pid_t spawn(char *const argv[], uid_t uid, int quiet, int filter) {
                 _exit(1);
             }
         }
-        char *envp[] = {"HOME=/tmp", "PATH=/plat", NULL};
+        if (secret_pipe[0] >= 0) {
+            int keep = filter ? secret_pipe[0] : secret_pipe[1];
+            if (dup2(keep, 7) < 0 || fcntl(7, F_SETFD, 0) < 0) _exit(126);
+            if (secret_pipe[0] != 7) close(secret_pipe[0]);
+            if (secret_pipe[1] != 7) close(secret_pipe[1]);
+        }
+        char *envp[48] = {"HOME=/tmp", "PATH=/plat", NULL};
+        if (shield_on && filter) {
+            const char *fixed[] = {
+                "ENCLAVE_GGML_BACKEND_DIR=/plat/rt-shield/backends",
+                "GGML_BACKEND_PATH=/plat/rt-shield/backends/libggml-shielded.so",
+                "SHIELDED_HOST=unix:/run/enclave-shield/gpu0", "SHIELDED_PORT=19595",
+                "SHIELDED_CALIB=/plat/rt-shield/calib/qwen2.5-0.5b-q8-gguf.calib",
+                "ENCLAVE_GGML_EXTRA_BUFTS=0", "ENCLAVE_GGML_N_GPU_LAYERS=0", "ENCLAVE_GGML_N_CTX=512",
+                "ENCLAVE_GGML_MAX_SESSIONS=8", "ENCLAVE_GGML_POOLED=1",
+                "ENCLAVE_GGML_PARK_SLOTS=0", "ENCLAVE_GGML_PREFIX_SLOTS=0",
+                "ENCLAVE_NN_SERVE_BYTES=2147483648", "ENCLAVE_NN_SERVE_KIND=RAM",
+                "ENCLAVE_GGML_N_THREADS=2", "ENCLAVE_GGML_N_THREADS_BATCH=2",
+                "ENCLAVE_GGML_N_BATCH=16", "ENCLAVE_GGML_N_UBATCH=16",
+                "SHIELDED_REFILL_THREADS=2", "SHIELDED_POOL_DEPTH=8", "OMP_NUM_THREADS=2",
+                "SHIELDED_MAX_M=64", "SHIELDED_OVERLAP_VERIFY=1", "SHIELDED_WEIGHT_BUDGET_FRAC=0.95",
+                "ENCLAVE_MODELS=qwen2.5-0.5b-q8-gguf", "ENCLAVE_NN_PRELOADS=qwen2.5-0.5b-q8-gguf", NULL
+            };
+            int i=2;
+            for (int j=0; fixed[j]; j++) envp[i++]=(char *)fixed[j];
+            envp[i++]=shield_workers; envp[i++]=shield_vram; envp[i]=NULL;
+        }
+        if (filter && app_config_env[0]) {
+            size_t n = 0; while (envp[n]) n++;
+            envp[n] = app_config_env; envp[n + 1] = NULL;
+        }
         execve(argv[0], argv, envp);
         if (con >= 0) dprintf(con, "DOM%s ERROR exec %s: %s\n", dom_id, argv[0], strerror(errno));
         _exit(127);
@@ -248,9 +337,10 @@ int main(int argc, char **argv) {
      * m2/dominit.c: wasmtime caches compiled modules by default, and an unauthenticated compiled cache is
      * refused by the portable-runtime contract (isolation/contract/RUNTIME.md rule 5). It also matters more
      * here than in M2, because several domains share this guest's filesystem. */
-    char *rt[] = {"/plat/rt/ld-linux-x86-64.so.2", "--library-path", "/plat/rt", "/plat/rt/wasmtime",
-                  "serve", "-S", "cli", "-C", "cache=n", "--addr", "127.0.0.1:8080", "/app.wasm", NULL};
-    char *front[] = {"/plat/front", "-runtime-identity", "/plat/rt/runtime.json",
+    read_app_config();
+    char *rt[64] = {"/plat/rt/ld-linux-x86-64.so.2", "--library-path", "/plat/rt", "/plat/rt/wasmtime",
+                  "serve", "-S", "cli", "-W", "threads,shared-everything-threads,component-model-threading,shared-memory,memory64,component-model-memory64", "-C", "cache=n", "--addr", "127.0.0.1:8080", "/app.wasm", NULL};
+    char *front[32] = {"/plat/front", "-runtime-identity", "/plat/rt/runtime.json",
                      "-listen-unix", "/run/front.sock", "-report-unix", "/run/monitor.sock",
                      "-upstream", "127.0.0.1:8080", "-app-sha", "/app.sha256", "-app-mode", "serve",
                      "-cert-name-file", "/cert.name", NULL};
@@ -260,11 +350,15 @@ int main(int argc, char **argv) {
      * inherit-network, ENCLAVE_PORTS=http:N=N, a private 64 MiB scratch /data, lost when the domain ends. Here
      * inherit-network reaches only this domain's OWN network namespace, whose one interface is its loopback. */
     int run_port = 0;
-    char ports_env[64], upstream[32], data_opts[96];
-    char *run[] = {"/plat/rt/ld-linux-x86-64.so.2", "--library-path", "/plat/rt", "/plat/rt/wasmtime", "run",
+    char ports_env[2048], memory_env[64], memory_limit[64], upstream[32], data_opts[96];
+    unsigned long app_mib = argc > 4 ? strtoul(argv[4], NULL, 10) : 0;
+    if (app_mib < 64 || app_mib > 1048576) die("invalid app memory");
+    snprintf(memory_env, sizeof memory_env, "ENCLAVE_MEM_MB=%lu", app_mib);
+    snprintf(memory_limit, sizeof memory_limit, "max-memory-size=%llu", (unsigned long long)app_mib << 20);
+    char *run[64] = {"/plat/rt/ld-linux-x86-64.so.2", "--library-path", "/plat/rt", "/plat/rt/wasmtime", "run",
                    "-S", "cli", "-S", "tcp", "-S", "udp", "-S", "inherit-network", "-S", "allow-ip-name-lookup",
-                   "-C", "cache=n", "--dir", "/data::/data", "--env", ports_env, "/app.wasm", NULL};
-    char *run_front[] = {"/plat/front", "-runtime-identity", "/plat/rt/runtime.json",
+                   "-C", "cache=n", "-W", "threads,shared-everything-threads,component-model-threading,shared-memory,memory64,component-model-memory64", "-W", memory_limit, "--dir", "/data::/data", "--env", ports_env, "--env", memory_env, "/app.wasm", NULL};
+    char *run_front[32] = {"/plat/front", "-runtime-identity", "/plat/rt/runtime.json",
                          "-listen-unix", "/run/front.sock", "-report-unix", "/run/monitor.sock",
                          "-upstream", upstream, "-app-sha", "/app.sha256", "-app-mode", "run",
                          "-cert-name-file", "/cert.name", NULL};
@@ -275,16 +369,102 @@ int main(int argc, char **argv) {
             return 2;
         }
         snprintf(ports_env, sizeof ports_env, "ENCLAVE_PORTS=http:%d=%d", run_port, run_port);
+        FILE *pf = fopen("/app.ports", "r");
+        if (pf) {
+            char line[32], proto[4]; int pn;
+            while (fgets(line, sizeof line, pf)) {
+                if (sscanf(line, "%3[^:]:%d", proto, &pn) != 2 ||
+                    (strcmp(proto,"tcp") && strcmp(proto,"udp")) || pn < 1 || pn > 49999) die("invalid measured ports");
+                size_t used = strlen(ports_env);
+                int n = snprintf(ports_env+used, sizeof ports_env-used, ",%s:%d=%d", proto,pn,pn);
+                if (n < 0 || (size_t)n >= sizeof ports_env-used) die("too many measured ports");
+            }
+            if (ferror(pf)) die("read measured ports");
+            fclose(pf);
+        } else if (errno != ENOENT) die("open measured ports");
         snprintf(upstream, sizeof upstream, "127.0.0.1:%d", run_port);
         snprintf(data_opts, sizeof data_opts, "size=64m,mode=0700,uid=%u,gid=%u", (unsigned)uid, (unsigned)uid);
         mkdir("/data", 0700);
         if (mount("tmpfs", "/data", "tmpfs", 0, data_opts) != 0) die("mount /data");
     }
+    config_argument(rt); config_argument(run);
     char *probe_argv[] = {"/plat/domprobe", (char *)dom_id, argc > 4 ? argv[4] : "0", NULL};
     struct sigaction sa_term = {0};
     sa_term.sa_handler = on_term;
     sigaction(SIGTERM, &sa_term, NULL);
 
+    pid_t shield_pid = -1;
+    struct stat profile_st;
+    if (stat("/shield.profile", &profile_st) == 0) {
+        if (!S_ISREG(profile_st.st_mode) || profile_st.st_uid != 0 || (profile_st.st_mode & 0222)) die("Shield profile permissions");
+        FILE *f = fopen("/shield.profile", "r");
+        int milli=0; char extra=0;
+        if (!f || fscanf(f, "%d %c", &milli, &extra) != 1 || milli < 500 || milli > 1000) die("Shield profile");
+        fclose(f);
+        unsigned long long bytes = (12ULL<<30) * (unsigned)milli / 1000;
+        snprintf(shield_workers,sizeof shield_workers,"SHIELDED_WORKERS=unix:/run/enclave-shield/gpu0|19595|0|%llu",bytes);
+        snprintf(shield_vram,sizeof shield_vram,"ENCLAVE_VRAM_BYTES=%llu",bytes);
+        shield_on=1;
+        shield_pid=fork();
+        if (shield_pid < 0) die("fork Shield broker");
+        if (shield_pid == 0) {
+            char uid_arg[32]; snprintf(uid_arg,sizeof uid_arg,"%u",(unsigned)uid);
+            // This measured broker alone retains AF_VSOCK. It authenticates the runtime UID.
+            char *av[]={"/plat/shieldbroker",uid_arg,NULL};
+            char *env[]={"PATH=/plat",NULL};
+            execve(av[0],av,env); _exit(127);
+        }
+        for (int i=0; access("/run/enclave-shield/gpu0",F_OK)!=0; i++) {
+            int st;
+            if (i>=1000 || waitpid(shield_pid,&st,WNOHANG)!=0) die("Shield broker readiness");
+            usleep(10000);
+        }
+        front[2]="/plat/rt-shield/runtime.json";
+        front[4]="/run/front/front.sock"; front[6]="/run/front/monitor.sock";
+        run_front[4]="/run/front/front.sock"; run_front[6]="/run/front/monitor.sock";
+        run_front[2]="/plat/rt-shield/runtime.json";
+    } else if (errno != ENOENT) die("stat Shield profile");
+    char **base = run_port ? run : rt;
+    char *shield_app[64]; int ai=0;
+    for (int i=0; base[i]; i++) {
+        char *v=base[i];
+        if (shield_on) {
+            if (!strcmp(v,"/plat/rt/ld-linux-x86-64.so.2")) v="/plat/rt-shield/ld-linux-x86-64.so.2";
+            else if (!strcmp(v,"/plat/rt")) v="/plat/rt-shield";
+            else if (!strcmp(v,"/plat/rt/wasmtime")) v="/plat/rt-shield/wasmtime";
+            else if (!strcmp(v,"/app.wasm")) {
+                shield_app[ai++]="-S"; shield_app[ai++]="nn";
+                shield_app[ai++]="-S"; shield_app[ai++]="nn-graph=ggml::/plat/models/qwen2.5-0.5b-q8-gguf";
+            }
+        }
+        shield_app[ai++]=v;
+    }
+    shield_app[ai]=NULL;
+    struct stat secret_st, web_st;
+    char *secret_app[66];
+    int public_web = 0;
+    if (lstat("/egress.public-web", &web_st) == 0) {
+        if (!S_ISREG(web_st.st_mode) || web_st.st_uid != 0 || (web_st.st_mode & 0222)) die("public web marker");
+        public_web = 1;
+    } else if (errno != ENOENT) die("public web marker stat");
+    if (public_web && stat("/secret.id", &secret_st) != 0) die("public web needs a secret domain");
+    if (stat("/secret.id", &secret_st) == 0) {
+        if (shield_on || !S_ISREG(secret_st.st_mode) || secret_st.st_uid != 0 || (secret_st.st_mode & 0222) || secret_st.st_size != 66) die("secret deployment");
+        /* 443 belongs to the front's authenticated egress listeners. A command app needs
+         * an unprivileged HTTP port distinct from those listeners. */
+        if (run_port && run_port < 1024) die("secret command HTTP port");
+        unprivileged_https_bind(public_web);   /* the front's egress listeners, before anything is spawned */
+        int raw[2]; if (pipe2(raw, O_CLOEXEC) != 0) die("secret pipe");
+        // Keep both originals away from the fixed inherited fd before duplicating it.
+        secret_pipe[0]=fcntl(raw[0],F_DUPFD_CLOEXEC,20);
+        secret_pipe[1]=fcntl(raw[1],F_DUPFD_CLOEXEC,20);
+        close(raw[0]);close(raw[1]);
+        if (secret_pipe[0]<0 || secret_pipe[1]<0) die("secret pipe fds");
+        secret_app[0]="/plat/secretrun";
+        int i=0;for (;shield_app[i];i++) secret_app[i+1]=shield_app[i];secret_app[i+1]=NULL;
+        char **secret_front = run_port ? run_front : front;
+        int j=0;while(secret_front[j])j++;secret_front[j++]="-shield-secrets-fd";secret_front[j++]="7";secret_front[j]=NULL;
+    } else if (errno != ENOENT) die("secret deployment stat");
     pid_t rt_pid, front_pid;
     if (argc > 3 && strcmp(argv[3], "probe") == 0) {
         if (seccomp_fd >= 0) { close(seccomp_fd); seccomp_fd = -1; }   /* the probe states no filter */
@@ -292,19 +472,20 @@ int main(int argc, char **argv) {
         front_pid = -1;
         printf("DOM%s started adversary probe=%d (no app, no front)\n", dom_id, rt_pid);
     } else if (run_port) {
-        rt_pid = spawn(run, uid, 1, 1);                 /* the runtime: quiet and filtered */
+        rt_pid = spawn(secret_pipe[0]>=0 ? secret_app : shield_app, uid, 1, 1);                 /* the runtime: quiet and filtered */
         if (seccomp_fd >= 0) { close(seccomp_fd); seccomp_fd = -1; }   /* its child holds the statement pipe until exec */
         front_pid = spawn(run_front, front_uid, 0, 0);  /* the front: its own uid, neither quiet nor filtered */
         front_pid_g = front_pid;
         printf("DOM%s started runtime=%d front=%d mode=run http=%d (/data 64 MiB scratch)\n", dom_id, rt_pid, front_pid,
                run_port);
     } else {
-        rt_pid = spawn(rt, uid, 1, 1);                  /* the runtime: quiet and filtered */
+        rt_pid = spawn(secret_pipe[0]>=0 ? secret_app : shield_app, uid, 1, 1);                  /* the runtime: quiet and filtered */
         if (seccomp_fd >= 0) { close(seccomp_fd); seccomp_fd = -1; }   /* its child holds the statement pipe until exec */
         front_pid = spawn(front, front_uid, 0, 0);      /* the front: its own uid, neither quiet nor filtered */
         front_pid_g = front_pid;
         printf("DOM%s started runtime=%d front=%d mode=serve\n", dom_id, rt_pid, front_pid);
     }
+    if (secret_pipe[0]>=0) { close(secret_pipe[0]);close(secret_pipe[1]);secret_pipe[0]=secret_pipe[1]=-1; }
     usleep(200000);
     probe(uid, front_uid);
 
@@ -313,8 +494,8 @@ int main(int argc, char **argv) {
         pid_t w = wait(&st);
         if (w < 0 && errno == EINTR) continue;   /* the SIGTERM we forwarded, not a child exiting */
         if (w < 0 && errno == ECHILD) break;
-        if (w == rt_pid || w == front_pid) {
-            printf("DOM%s ERROR %s exited status=%d\n", dom_id, w == rt_pid ? "runtime" : "front",
+        if (w == rt_pid || w == front_pid || w == shield_pid) {
+            printf("DOM%s ERROR %s exited status=%d\n", dom_id, w == rt_pid ? "runtime" : w == front_pid ? "front" : "Shield broker",
                    WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st));
             break;
         }

@@ -4,6 +4,11 @@
 // starts on the owner's PC) and, when it names a version newer than the one installed (Program Files\Enclave's
 // manifest.json), starts the \Enclave\Update task: update-host.ps1 downloads, checks and installs it (and rolls back if it
 // fails). That task also runs at boot and hourly, which only matters when this node is not running.
+//
+// WHERE `latest` COMES FROM is the caller's choice and the whole security question: a host with a release policy
+// (release-channel.mjs createSignedLatest) only ever sees versions its pinned key(s) signed, served by the mirrors its
+// operator chose; a host without one reads the legacy, UNSIGNED get.enclave.host/windows/latest.json. This module only
+// decides "newer than installed, not tried too recently", and the update task re-verifies everything before installing.
 const parts = (v) => String(v || "").split(".").map((x) => (/^\d+$/.test(x) ? Number(x) : NaN));
 /** a > b for dotted numeric versions (2026.10.12.10 > 2026.10.12.9); false when either is unreadable. */
 export function newer(a, b) {

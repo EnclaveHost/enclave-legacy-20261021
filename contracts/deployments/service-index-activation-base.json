@@ -1,0 +1,88 @@
+{
+  "at": "2026-10-20T00:41:17.987703+00:00",
+  "indexPin": {
+    "chainId": 8453,
+    "address": "0x54dEcb43DE6f9Cc953Ba582B190b56C5a60B5941",
+    "codeHash": "0x696944fed82d8b312e4db3ab89069240f8063a6a49b47e8a322804cdfd127898"
+  },
+  "readerSourceCommit": "48d9efb1",
+  "advertisement": {
+    "at": "2026-10-20T00:35:14.121Z",
+    "operator": "0xC9D0835Cd8eBc7eaE84304d9DB0A76253EebE6aB",
+    "index": "0x54dEcb43DE6f9Cc953Ba582B190b56C5a60B5941",
+    "slot": 0,
+    "kind": "directory",
+    "sequence": "1",
+    "expiresAt": "1795048468",
+    "endpoints": [
+      "http://134.199.235.187:8188/",
+      "http://134.209.248.172:8188/",
+      "http://165.245.191.129:8188/",
+      "http://146.190.246.39:8188/"
+    ],
+    "transaction": "0x0553d9f8495e48af5472eb1952d1680264a378c3e9e0a7ef84f105cf3c16eab4",
+    "receipt": {
+      "hash": "0x0553d9f8495e48af5472eb1952d1680264a378c3e9e0a7ef84f105cf3c16eab4",
+      "blockNumber": "52833570",
+      "status": "success",
+      "gasUsed": "309440",
+      "effectiveGasPrice": "6000000"
+    },
+    "executionFeeETH": "0.00000185664",
+    "notice": "These are existing Enclave-operated directories, advertised as untrusted candidates. This does not establish independent operators or authorize their contents."
+  },
+  "discovery": {
+    "blockNumber": "52833587",
+    "blockHash": "0xe2ea3b3004da768fe54d3dafe1c77375beff2d384a21b2dffe451fb1ec891c23",
+    "candidateCount": 1,
+    "agreeingRPCs": [
+      "https://base.drpc.org",
+      "https://mainnet.base.org"
+    ]
+  },
+  "coldDiscovery": {
+    "at": "2026-10-20T00:37:58.251Z",
+    "coldState": true,
+    "indexPin": {
+      "chainId": 8453,
+      "address": "0x54dEcb43DE6f9Cc953Ba582B190b56C5a60B5941",
+      "codeHash": "0x696944fed82d8b312e4db3ab89069240f8063a6a49b47e8a322804cdfd127898"
+    },
+    "explicitlySelectedOperator": "0xc9d0835cd8ebc7eae84304d9db0a76253eebe6ab",
+    "lookupBlock": "52833663",
+    "lookupBlockHash": "0x621152650a223a1a460cf24279633db3dd0890f4aa4c1ddaf1bbe94216bfbeb7",
+    "discoveredDirectoryOrigins": [
+      "http://134.199.235.187:8188",
+      "http://134.209.248.172:8188",
+      "http://165.245.191.129:8188",
+      "http://146.190.246.39:8188"
+    ],
+    "verifiedSignedProviderCount": 4,
+    "providerIds": [
+      "6332f4fac85df4c6a81216a8b86af1e3",
+      "4ffeb0241847858ae891694f58d03d53",
+      "50e9d7b6aff4c5cd4416321f214e31b6",
+      "c4c7888e4741dcbe2c092dd81e888bf7"
+    ],
+    "contactedOrigins": [
+      "https://base-rpc.publicnode.com",
+      "https://base.drpc.org",
+      "https://base.public.blockpi.network",
+      "https://mainnet.base.org",
+      "http://134.199.235.187:8188",
+      "http://134.209.248.172:8188",
+      "http://165.245.191.129:8188",
+      "http://146.190.246.39:8188"
+    ],
+    "unexpectedForbiddenAttempts": 0,
+    "guardPositiveControlPassed": true,
+    "limits": "Cold discovery and operator-signature validation only. No lease admission, checker eligibility, independent organization, whole-host recovery or full Enclave-refusal claim. All advertised directories remain Enclave-operated."
+  },
+  "activation": {
+    "contractDeployed": true,
+    "operatorAdvertisementPublished": true,
+    "cliDiscoveryVerified": true,
+    "browserHostRollout": false,
+    "authorityProfileChanged": false
+  }
+}

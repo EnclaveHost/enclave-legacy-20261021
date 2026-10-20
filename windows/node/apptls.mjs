@@ -113,6 +113,8 @@ export function makeCsr(name) {
  * not ours, a clock outside ±600s).
  */
 export async function requestCert({ name, csrPem, spkiHash, endpoint, sign, base = "https://api.enclave.host" }) {
+  // "" is a host with no certificate service (independent mode without RELAY_BASE): say so, sign nothing, ask nobody.
+  if (!String(base || "").trim()) return { ok: false, error: "no_certificate_service", why: "no certificate service is configured on this host" };
   const ts = Math.floor(Date.now() / 1000);
   const ep = String(endpoint).replace(/\/+$/, "");
   // The relay builds this message from what IT parsed, so the pieces are signed in the spelling it
@@ -149,6 +151,9 @@ export async function ensureCert({ id, endpoint, sign, base, dir, zone = "app.en
   // owner proved the DNS - so the only thing that changes is which name is asked for and where the
   // key is filed. Absent, this is the app's own subdomain exactly as before.
   const name = hostname ? String(hostname).toLowerCase().replace(/\.+$/, "") : appHostFor(id, zone);
+  // An explicit "" is a host with no certificate service: refused before a key is minted or a file written for an order
+  // that can never be placed. (undefined is the legacy default service, as before.)
+  if (base !== undefined && !String(base || "").trim()) throw new Error(`no_certificate_service: no certificate service is configured on this host, so ${name} keeps its fallback certificate`);
   // One file per NAME, not per deployment: a deployment with three hostnames has three keys and
   // three orders in flight, and filing them together would have each one overwrite the last -
   // which is the orphaned-order failure this function's next comment exists to prevent.

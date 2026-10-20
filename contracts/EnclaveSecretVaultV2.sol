@@ -35,6 +35,10 @@ interface IVaultV2Ledger {
     function get(bytes32 id) external view returns (Deployment memory);
 }
 interface IVaultV2Registry { function get(bytes32 id) external view; }   // decoded by hand: only the schema-4 prefix
+interface IVaultV2HostOwnership {
+    function registry() external view returns (address);
+    function authority(bytes32 hostId) external view returns (address owner, address pendingOwner, uint64 revision, bytes32 policyHash);
+}
 interface IVaultV2Factory { function isVault(address v) external view returns (bool); }
 interface IVaultV2Session { function owner() external view returns (address); }
 interface IVaultV21271 { function isValidSignature(bytes32 hash, bytes calldata sig) external view returns (bytes4); }
@@ -42,7 +46,6 @@ interface IVaultV21271 { function isValidSignature(bytes32 hash, bytes calldata 
 contract EnclaveSecretVaultV2 {
     bytes32 private constant BOOK_DEPLOYMENTS = "deployments";
     bytes32 private constant BOOK_SESSION_FACTORY = "sessionVaultFactory";
-    bytes32 private constant BOOK_REGISTRY = "registry";
     uint256 public constant MAX_SEATS = 64;
     uint256 public constant MAX_MACHINES = 96;
     uint256 public constant MAX_ENDPOINT = 190;
@@ -57,6 +60,10 @@ contract EnclaveSecretVaultV2 {
 
     IVaultV2Book public immutable book;
     address public immutable enclaveOwner;
+    IVaultV2HostOwnership public immutable hostOwnership;
+    address public immutable hostRegistry;
+    address public immutable deploymentLedger;
+    address public immutable sessionVaultFactory;
 
     // ---------------------------------------------------------------- committees
     struct Machine {
@@ -150,9 +157,20 @@ contract EnclaveSecretVaultV2 {
     error BadDeal();
     error BadAck();
 
-    constructor(address book_, address enclaveOwner_) {
+    constructor(address book_, address enclaveOwner_, address hostOwnership_) {
         if (book_ == address(0) || enclaveOwner_ == address(0)) revert();
+        if (hostOwnership_.code.length == 0) revert BadHost();
+        hostOwnership = IVaultV2HostOwnership(hostOwnership_);
+        address registry_ = IVaultV2HostOwnership(hostOwnership_).registry();
+        if (registry_.code.length == 0) revert NoRegistry();
+        hostRegistry = registry_;
         book = IVaultV2Book(book_);
+        address ledger_ = IVaultV2Book(book_).addr(BOOK_DEPLOYMENTS);
+        if (ledger_.code.length == 0) revert NoLedger();
+        deploymentLedger = ledger_;
+        address factory_ = IVaultV2Book(book_).addr(BOOK_SESSION_FACTORY);
+        if (factory_ != address(0) && factory_.code.length == 0) revert();
+        sessionVaultFactory = factory_;
         enclaveOwner = enclaveOwner_;
     }
 
@@ -184,36 +202,36 @@ contract EnclaveSecretVaultV2 {
     }
 
     // ================================================================= machines and seats
-    /// the host's registry entry, schema-4 prefix: (endpoint, repo, measurement, operator, registeredAt, lastSeen, active,
-    /// cpu, gpu, proofKey, payoutWallet). Later schemas append fields, so only the head words 3, 6 and 10 are read.
-    function _hostOf(bytes32 registryId) private view returns (address operator, bool active, address payout) {
-        address reg = book.addr(BOOK_REGISTRY);
-        if (reg == address(0)) revert NoRegistry();
-        (bool ok, bytes memory ret) = reg.staticcall(abi.encodeCall(IVaultV2Registry.get, (registryId)));
+    /// The ownership contract pins the registry. A mutable address-book entry
+    /// cannot reclassify a host. Only operator and active from its stable prefix
+    /// are read here; payout declarations never confer custody authority.
+    function _hostOf(bytes32 registryId) private view returns (address operator, bool active) {
+        (bool ok, bytes memory ret) = hostRegistry.staticcall(abi.encodeCall(IVaultV2Registry.get, (registryId)));
         if (!ok || ret.length < 32) revert BadHost();
         uint256 base;
         assembly ("memory-safe") { base := mload(add(ret, 32)) }
-        if (base > ret.length || ret.length - base < 11 * 32) revert BadHost();
-        uint256 wOp; uint256 wActive; uint256 wPayout;
+        if (base > ret.length || ret.length - base < 7 * 32) revert BadHost();
+        uint256 wOp; uint256 wActive;
         assembly ("memory-safe") {
             let p := add(add(ret, 32), base)
             wOp := mload(add(p, 96))
             wActive := mload(add(p, 192))
-            wPayout := mload(add(p, 320))
         }
-        if (wOp >> 160 != 0 || wActive > 1 || wPayout >> 160 != 0) revert BadHost();
-        return (address(uint160(wOp)), wActive == 1, address(uint160(wPayout)));
+        if (wOp >> 160 != 0 || wActive > 1) revert BadHost();
+        return (address(uint160(wOp)), wActive == 1);
     }
 
     /// shape checks, the host binding, and the computed Enclave flag (spec §1.1)
     function _admit(Machine calldata m, bytes calldata hostSig) private view returns (bool enclave) {
         uint256 len = bytes(m.endpoint).length;
         if (m.identity == address(0) || m.encKey == bytes32(0) || m.chipId == bytes32(0) || len == 0 || len > MAX_ENDPOINT) revert BadMachine();
-        (address operator, bool active, address payout) = _hostOf(m.registryId);
+        (address operator, bool active) = _hostOf(m.registryId);
         if (!active || operator == address(0)) revert BadHost();
         address got = _recover(_hostDigest(machineHash(m)), hostSig);
         if (got == address(0) || got != operator) revert BadHost();
-        return payout == enclaveOwner;
+        (address owner,,,) = hostOwnership.authority(m.registryId);
+        if (owner == address(0)) revert BadHost();
+        return owner == enclaveOwner;
     }
 
     /// protocol.mjs seatLayout: -> (seats n, threshold t, share count W, Enclave seat weight wE (0 = no Enclave seat))
@@ -291,6 +309,59 @@ contract EnclaveSecretVaultV2 {
         for (uint256 i = 0; i < codeSet.length; i++) _codeActiveAt[committeeId][codeSet[i]] = uint64(block.timestamp);
         emit CommitteeCreated(committeeId, m.identity, Y);
         emit EpochActivated(committeeId, 1);
+    }
+
+    /// An independent committee starts at its full threshold, without an Enclave
+    /// founder. Each measured member must verify distributed key generation and
+    /// persist its own share before signing this exact roster/code/commitment set.
+    /// Anyone may submit the signatures; no caller gains authority over the key.
+    function createIndependentCommittee(bytes32 salt, Machine[] calldata machines, bytes calldata commitments,
+                                        bytes32[] calldata codeSet, bytes[] calldata identitySigs,
+                                        bytes[] calldata hostSigs) external returns (bytes32 cid) {
+        uint256 n = machines.length;
+        if (n < 3 || n > MAX_SEATS || identitySigs.length != n || hostSigs.length != n) revert BadSeats();
+        uint256 t = (2 * n + 2) / 3;
+        if (commitments.length != t * POINT) revert BadCommittee();
+        for (uint256 i = 0; i < t; i++) {
+            if (commitments[i * POINT] != 0x02 && commitments[i * POINT] != 0x03) revert BadCommittee();
+        }
+        if (codeSet.length == 0 || codeSet.length > MAX_CODESET) revert BadCode();
+        for (uint256 i = 0; i < codeSet.length; i++) if (codeSet[i] == bytes32(0)) revert BadCode();
+        bytes32[] memory hashes = new bytes32[](n);
+        address[] memory owners = new address[](n);
+        for (uint256 i = 0; i < n; i++) {
+            Machine calldata m = machines[i];
+            if (_admit(m, hostSigs[i])) revert BadSeats();
+            (owners[i],,,) = hostOwnership.authority(m.registryId);
+            bool admittedCode;
+            for (uint256 j = 0; j < codeSet.length; j++) if (m.measurement == codeSet[j]) admittedCode = true;
+            if (!admittedCode) revert BadCode();
+            for (uint256 j = 0; j < i; j++) {
+                if (machines[j].identity == m.identity || machines[j].encKey == m.encKey ||
+                    machines[j].chipId == m.chipId || machines[j].registryId == m.registryId ||
+                    owners[j] == owners[i]) revert BadMachine();
+            }
+            hashes[i] = machineHash(m);
+        }
+        bytes memory Y = commitments[0:POINT];
+        cid = keccak256(abi.encode(block.chainid, address(this), salt, keccak256(Y)));
+        Committee storage c = _committees[cid];
+        if (c.epoch != 0) revert BadCommittee();
+        bytes32 digest = keccak256(abi.encode("enclave-custody-v2 independent genesis", block.chainid,
+            address(this), cid, keccak256(commitments), keccak256(abi.encode(hashes)), keccak256(abi.encode(codeSet))));
+        for (uint256 i = 0; i < n; i++) _checkSig(machines[i].identity, digest, identitySigs[i]);
+        c.Y = Y;
+        c.epoch = 1;
+        c.lastEpoch = 1;
+        c.activatedAt = uint64(block.timestamp);
+        Epoch storage e = _epochs[cid][1];
+        e.t = uint8(t);
+        e.W = uint8(n);
+        e.commitments = commitments;
+        for (uint256 i = 0; i < n; i++) { e.machines.push(machines[i]); e.enclave.push(false); }
+        for (uint256 i = 0; i < codeSet.length; i++) _codeActiveAt[cid][codeSet[i]] = uint64(block.timestamp);
+        emit CommitteeCreated(cid, machines[0].identity, Y);
+        emit EpochActivated(cid, 1);
     }
 
     function proposeHandover(bytes32 cid, Machine[] calldata next, bytes[] calldata hostSigs, uint32[] calldata dealerIndices,
@@ -457,16 +528,14 @@ contract EnclaveSecretVaultV2 {
 
     // ================================================================= ownership (as v1)
     function _ledger() private view returns (IVaultV2Ledger) {
-        address a = book.addr(BOOK_DEPLOYMENTS);
-        if (a == address(0)) revert NoLedger();
-        return IVaultV2Ledger(a);
+        return IVaultV2Ledger(deploymentLedger);
     }
     /// the ledger's owner of `id`, or, for a SessionVault-held record, that vault's owner (who alone may set secrets: a
     /// session key never can). address(0) for no such deployment.
     function beneficialOwnerOf(bytes32 id) public view returns (address o) {
         o = _ledger().get(id).owner;
         if (o == address(0) || o.code.length == 0) return o;
-        address f = book.addr(BOOK_SESSION_FACTORY);
+        address f = sessionVaultFactory;
         if (f != address(0)) {
             try IVaultV2Factory(f).isVault(o) returns (bool v) {
                 if (v) return IVaultV2Session(o).owner();

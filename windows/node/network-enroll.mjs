@@ -36,14 +36,24 @@ export function baseConfig({ agentDir, binDir, nodeBinary, operatorKeyFile, runn
 }
 
 /** The privacy agent's enclaveNetwork section: every app, the box's own control circuits, the bundled binaries. */
-export function networkConfig({ binDir, nodeBinary, relayBase, checkers, paid }) {
+export function networkConfig({ binDir, nodeBinary, relayBase, checkers, paid, directories }) {
   const bin = (f) => path.join(binDir, f);
   if (!Array.isArray(checkers) || !checkers.length || checkers.some((c) => !/^0x[0-9a-f]{40}$/.test(c))) throw new Error("Enclave network: trusted checker addresses required");
   return { relay: relayBase, checkers, apps: "all", control: true, wgBinary: bin("enclave-wg.exe"), nodeBinary,
     workerModule: bin("windows-circuit-worker.mjs"), firewallBinary: bin("enclave-circuit-firewall.exe"),
+    ...(directories ? { directories: validDirectories(directories) } : {}),
     // paid providers (used only for apps whose owners authorized them on chain): this box's registry proof key signs
     // the bandwidth receipts, its operator key pays the settlement gas; up to 0.01 USDC per provider is settled in a batch
     ...(paid ? { paid: { proofKeyFile: paid.proofKeyFile, gasKeyFile: paid.gasKeyFile, rpc: paid.rpc || "https://base-rpc.publicnode.com", maxPending6: paid.maxPending6 || "10000" } } : {}) };
+}
+
+export function validDirectories(values) {
+  if (!Array.isArray(values) || !values.length || values.length > 8) throw new Error("1..8 public directory origins required");
+  return [...new Set(values.map(value => {
+    const u = new URL(value);
+    if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.pathname !== "/" || u.search || u.hash) throw new Error("public directory origin required");
+    return u.origin;
+  }))];
 }
 
 /** An operator's hostEgress block kept as it is when its shape is right (apps: deployment ids, own: IP addresses); else none. */
@@ -90,7 +100,10 @@ export function createNetworkEnroll({ agentDir, binDir, runner, relayBase, confi
     const hostEgress = validHostEgress(cfg?.enclaveNetwork?.hostEgress);
     // PACING (main d476cc0f9): the operator's uplink in Mbps, set by hand like hostEgress and kept the same way
     const paceMbps = validPaceMbps(cfg?.enclaveNetwork?.paceMbps);
-    const want = { ...networkConfig({ binDir, nodeBinary: config.nodeBinary, relayBase, ...config.enclaveNetwork }), ...(hostEgress ? { hostEgress } : {}), ...(paceMbps ? { paceMbps } : {}) };
+    // Directory choice belongs to the host operator; enrollment must not silently
+    // restore the default relay each time a new app appears.
+    const directories = cfg?.enclaveNetwork?.directories || config.enclaveNetwork.directories;
+    const want = { ...networkConfig({ binDir, nodeBinary: config.nodeBinary, relayBase, ...config.enclaveNetwork, directories }), ...(hostEgress ? { hostEgress } : {}), ...(paceMbps ? { paceMbps } : {}) };
     // a box whose config predates the current enclaveNetwork section (or still runs TUNA): switched once, then restarted
     let switched = false;
     if (JSON.stringify(cfg.enclaveNetwork) !== JSON.stringify(want)) {

@@ -14,9 +14,9 @@ export async function cmdCustodyV2(sub, f, h) {
   if (!/^0x[0-9a-f]{64}$/.test(id)) throw new Error("custody needs an on-chain deployment (bytes32 id)");
   const vault = (await h.vaultV2Address()).toLowerCase();
   const clients = h.pubEachClients();
-  const minAgree = Math.min(2, clients.length);
+  const minAgree = Math.floor(clients.length / 2) + 1;
   if (minAgree < 2) h.warn("! one RPC configured: the committee key your secrets are encrypted to is only as trustworthy as it (pass --rpc a,b)");
-  const reader = createChainReaderV2({ clients, vault, minAgree });
+  const reader = createChainReaderV2({ clients, vault, minAgree, chainId:h.chainId });
   const chainId = h.chainId;
   const st = await reader.readRelease({ id, endpoint: null });
   const pol = st.policy;

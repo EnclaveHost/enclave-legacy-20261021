@@ -124,7 +124,7 @@ export class WgProvider {
  // request carrying an older nonce than either this provider has seen is refused, and so is "no policy" once one exists.
  async policyFor(id,owner,sent){
   const opts={owner,deploymentId:id,verify:this.verifyOwner,memory:this.policyMemory};
-  const published=await this.currentPolicy(id).catch(()=>null);
+  const published=await this.currentPolicy(id,owner).catch(()=>null);
   let best=null;
   for(const env of [published,sent])if(env){const p=await admitNetworkPolicy(env,opts);if(!best||p.nonce>best.nonce)best=p;}
   if(sent&&best&&sent.policy.nonce<best.nonce)throw new Error('stale network policy');

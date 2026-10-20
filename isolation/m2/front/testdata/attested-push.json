@@ -1,0 +1,6 @@
+{
+ "Body": "{\"v\":1,\"op\":\"set\",\"name\":\"_acme-challenge.69f91bde117f15a5cd6ff1d045eaa9b7.acme.example.net\",\"value\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"deploymentId\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"owner\":\"0x3333333333333333333333333333333333333333\",\"ts\":1792452308,\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQaQ0OPdneBy0W/2cj4GHnI5B+w/bLGi9BeOXBQtWjghgAmcHD5bYNrlKn24mOpGifu3tVu/l0Q24py/rIZ5/Qg==\",\"attestation\":{\"tier\":\"T0\",\"format\":\"none\",\"transportKey\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQaQ0OPdneBy0W/2cj4GHnI5B+w/bLGi9BeOXBQtWjghgAmcHD5bYNrlKn24mOpGifu3tVu/l0Q24py/rIZ5/Qg==\",\"appSha256\":\"4400000000000000000000000000000000000000000000000000000000000000\",\"nonce\":\"a87102faafd91666f6eb08a1b144975640b08ba17be5fa44238a3fd011466611\",\"reason\":\"T0 domain: an ordinary KVM guest with no hardware attestation; the host can read its memory\",\"abi\":\"enclave-domain-abi/1\"}}",
+ "Sig": "MEYCIQCODG92Yzg4JMAg7EPQE9ddUHDxCSH9f43oND5ciPYOBgIhAMUq3N6jzAVg2xB7FlBISegkmedbZls2MRDCoufTlfFR",
+ "Nonce": "a87102faafd91666f6eb08a1b144975640b08ba17be5fa44238a3fd011466611",
+ "Alias": "_acme-challenge.69f91bde117f15a5cd6ff1d045eaa9b7.acme.example.net"
+}

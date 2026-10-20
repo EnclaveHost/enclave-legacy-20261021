@@ -6,9 +6,14 @@ contract, the custodian HTTP API, guestd/supervisor authorization and the guest'
 
 ## 1. `EnclaveSecretVaultV2` (Base)
 
-No owner, no admin, no proxy. Constructor: `(address book, address enclaveOwner)`.
-- `book` is the EnclaveAddressBook (`addr(bytes32)`), as in v1.
+Source migration proposal (not the live deployed vault): wallet-based admission requires a new vault and compatible measured custodian runtime. Existing committees and encrypted bundles must be migrated explicitly before changing discovery.
+
+No owner, no admin, no proxy. Constructor: `(address book, address enclaveOwner, address hostOwnership)`.
+- `book` is the EnclaveAddressBook (`addr(bytes32)`), consulted once at construction to pin `deploymentLedger` and `sessionVaultFactory`. The ledger must have code; the factory may be zero (no SessionVault unwrapping) or a contract. Later book edits cannot redirect ownership or release decisions.
+- `hostOwnership` is a deployed `EnclaveHostOwnership`. It and its registry are pinned immutably. Registry operators nominate initial wallet owners; those wallets must accept.
 - `enclaveOwner` is `0x0b2d009c0c9Af05b12100D77F3c815fea822eE61` on Base.
+
+The compatible release reader obtains the ledger and host registry from the vault's immutable getters. It refuses older vaults without these getters instead of falling back to address-book lookups. The deployment script reads back these pins; a mismatch must not be activated. This binds a committee to one ledger and registry, so migrating either requires an explicit new-vault/bundle migration.
 
 ### 1.1 Machines and seats
 
@@ -25,14 +30,14 @@ machineHash(m) = keccak256(abi.encode(m.identity, m.encKey, keccak256(bytes(m.en
 ```
 
 **Enclave-owned** is computed on chain, never supplied:
-1. `registry = book.addr("registry")`.
-2. Read `registry.get(registryId)`, decoding only the schema-4 prefix
-   `(string endpoint, string repo, bytes32 measurement, address operator, uint64 registeredAt, uint64 lastSeen, bool active,
-   uint64 cpu, uint64 gpu, address proofKey, address payoutWallet)`. Later schemas append fields, so this prefix holds.
+1. `registry = hostRegistry`, pinned from `hostOwnership.registry()` at construction.
+2. Read `registry.get(registryId)`, decoding the stable operator/active prefix
+   `(string endpoint, string repo, bytes32 measurement, address operator, uint64 registeredAt, uint64 lastSeen, bool active)`. Later schemas append fields, so this prefix holds.
 3. The entry must be `active`.
 4. The host binding signature `hostSig` must recover to `operator`, over
    `hostDigest(m) = keccak256(abi.encode("enclave-custody-v2 host", block.chainid, address(this), machineHash(m)))`.
-5. The machine is Enclave-owned iff `payoutWallet == enclaveOwner`.
+5. Read `hostOwnership.authority(registryId)`. Ownership must have been accepted (nonzero). The machine is Enclave-owned iff that owner equals `enclaveOwner`. Payout declarations confer no authority.
+6. Admission and handover snapshot that classification for the epoch; a wallet transfer does not retroactively redistribute stored shares.
 
 **Seats** are `custody/v2/protocol.mjs seatLayout`, over the machine list in order:
 - all Enclave machines form one seat;
@@ -151,8 +156,8 @@ POST /v2/custody/release    { v:2, id, endpoint, committeeId, epoch, policyRev, 
                             -> { v:2, encKey, count, sealed (base64 HPKE of count x 101-byte partial records) }
 ```
 
-A member's release checks are v1's (`custody/custodian.mjs decide`): its own challenge, consumed; chain state at the
-agreed highest head, with high-water marks; policy present and not paused; revisions current; ownership; a live lease
+A member's release checks include its own challenge, consumed; chain state at a
+fresh majority-supported height and canonical block hash, with high-water marks; policy present and not paused; revisions current; ownership; a live lease
 held by `endpoint`; the operator signature over the v2 `operatorMessage`; rules and runtime; the hardware evidence bound
 to the v2 `releaseBinding`. In addition:
 - `committeeId` and `epoch` are the committee's CURRENT ones, and the bundle's committee is that committee;
@@ -160,6 +165,20 @@ to the v2 `releaseBinding`. In addition:
 - the member answers with one partial per index it holds in that epoch.
 
 Errors are `{error, message}` with v1's codes.
+
+The replacement v2 reader uses three of four measured RPC peers and two block
+confirmations. The chosen height is the third-highest reported head minus two;
+it does not fall back to older blocks after disagreement. Every contract call
+uses EIP-1898 `blockHash` with `requireCanonical: true`. Full result, block hash,
+height and timestamp must agree. All read methods reject blocks older than 120
+seconds or over 10 seconds in the future. Each peer has a bounded deadline;
+a single refusal, inconsistent answer or inflated head cannot veto three
+agreeing peers. The daemon persists its accepted block checkpoint in sealed
+state before returning the result. Restoring that state retains the checkpoint;
+this is not hardware anti-rollback protection against replaying an older sealed
+file. RPC agreement still assumes an honest configured majority and clock; it
+is not a consensus light client. These are replacement-image requirements,
+not evidence that the old production image has been upgraded.
 
 ## 3. guestd and the supervisor (operator authorization)
 

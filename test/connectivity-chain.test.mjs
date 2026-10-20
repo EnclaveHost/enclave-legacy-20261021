@@ -4,7 +4,7 @@ const {LeaseReader}=await import(process.env.ENCLAVE_TEST_RELAY_BUNDLE||'../netw
 const address='0x'+'11'.repeat(20),ledger='0x'+'22'.repeat(20),owner='0x'+'33'.repeat(20),id='0x'+'aa'.repeat(32),runner='0x'+'bb'.repeat(32),now=1700000000000;
 const providerId='0x'+'ee'.repeat(32);
 function peer({nonce=1n,expires=1700000600n,boundLedger=ledger,viaTuna=false,providerKey=owner}={}) {
- return {getChainId:async()=>8453,getBlockNumber:async()=>1000n,getBlock:async()=>({timestamp:1699999995n,hash:'0x'+'cc'.repeat(32)}),
+ return {getChainId:async()=>8453,getBlockNumber:async()=>1000n,getBlock:async({blockNumber})=>({number:blockNumber,timestamp:1699999995n,hash:'0x'+'cc'.repeat(32)}),
   readContract:async({functionName,args,blockNumber})=>{
    assert.equal(blockNumber,998n);
    if(functionName==='addr')return args[0].startsWith('0x6465706c6f796d656e7473')?ledger:address;

@@ -308,6 +308,7 @@ const (
 )
 
 type custodyWorldV2 struct {
+	shieldOwner string // optional Shield evidence fixture; report bytes stand in for a monitor, never hardware proof
 	*provWorld
 	flags    []bool
 	keys     []*ecdh.PrivateKey
@@ -420,8 +421,9 @@ func (w *custodyWorldV2) custodianV2(i int, prefix string, R []byte) http.Handle
 			Epoch                                                         uint32
 			Challenges                                                    []struct{ EncKey, Nonce string }
 			Evidence                                                      struct {
-				Format, Abi, TransportKey, Report string
-				Runtime                           json.RawMessage
+				Format, Abi, TransportKey, Report, Tier, AppSha256 string
+				Nonce                                              *string
+				Runtime                                            json.RawMessage
 			}
 			Operator struct {
 				Sig    string
@@ -454,10 +456,14 @@ func (w *custodyWorldV2) custodianV2(i int, prefix string, R []byte) http.Handle
 		bind, err := custody.BindingV2(custody.BindingInputV2{Ctx: w.ctx, ID: w.id, PolicyRev: 11, SecretRev: 6, CommitteeID: w.cid, Epoch: 7,
 			Challenges: chs, RuntimeID: runtimeID, TransportSPKI: spki, RecipientKey: rk32})
 		rep, _ := base64.StdEncoding.DecodeString(req.Evidence.Report)
+		evidenceOK := len(rep) >= 0xe0 && bytes.Equal(rep[0x50:0x70], bind[:]) && bytes.Equal(rep[0x70:0x90], w.appSha) && bytes.Equal(rep[0xc0:0xe0], w.id[:]) && req.Evidence.Format == contract.FormatSNP
+		if w.shieldOwner != "" {
+			input, e := custody.ShieldReleaseInput(bind, w.shieldOwner)
+			evidenceOK = e == nil && len(rep) == 64 && bytes.Equal(rep[:32], input[:]) && bytes.Equal(rep[32:], w.appSha) && req.Evidence.Format == contract.FormatHyperV && req.Evidence.Tier == contract.TierHyperV && req.Evidence.AppSha256 == hex.EncodeToString(w.appSha) && req.Evidence.Nonce == nil
+		}
 		if err != nil || !mine || req.V != 2 || req.ID != "0x"+hex.EncodeToString(w.id[:]) || req.CommitteeID != "0x"+hex.EncodeToString(w.cid[:]) ||
 			req.Epoch != 7 || req.PolicyRev != "11" || req.SecretRev != "6" ||
-			len(rep) < 0xe0 || !bytes.Equal(rep[0x50:0x70], bind[:]) || !bytes.Equal(rep[0x70:0x90], w.appSha) ||
-			!bytes.Equal(rep[0xc0:0xe0], w.id[:]) || req.Evidence.Format != contract.FormatSNP || req.Evidence.Abi != contract.ABI2 ||
+			!evidenceOK || req.Evidence.Abi != contract.ABI2 ||
 			req.Endpoint != "https://api.enclave.host/t/host-a" || req.Operator.Sig != "0x"+strings.Repeat("5a", 65) {
 			rw.WriteHeader(403)
 			io.WriteString(rw, `{"error":"evidence_refused","message":"composition"}`)
@@ -522,7 +528,7 @@ var v2Env = map[string]string{"MCP_ADAPTER_API_KEY": "custody-v2-k", "IMAGE_ENDP
 
 const v2Config = `{"api_key":"custody-v2-k","http":[{"url":"https://images.example/v1/images"}]}`
 
-func TestProvisionCustodyV2EnclaveRule(t *testing.T) {
+func TestProvisionCustodyV2IndependentQuorum(t *testing.T) {
 	// two Enclave replicas (one seat, index 1) + three other hosts (2, 3, 4): n = 4, t = 3
 	flags := []bool{true, true, false, false, false}
 	enclaveUsed := func(t *testing.T, w *custodyWorldV2) int {
@@ -566,21 +572,23 @@ func TestProvisionCustodyV2EnclaveRule(t *testing.T) {
 			t.Fatalf("combined from machines %v", got)
 		}
 	})
-	t.Run("Enclave online but every Enclave machine refuses: REFUSED although the others reach t", func(t *testing.T) {
+	t.Run("Enclave online but refusing cannot veto an independent quorum", func(t *testing.T) {
 		w := newCustodyWorldV2(t, flags, v2Env)
 		w.behave[0], w.behave[1] = v2Refuse, v2Refuse
-		if _, err := w.run(t); err == nil || !strings.Contains(err.Error(), "Enclave") {
-			t.Fatalf("the Enclave rule did not hold: %v", err)
+		ok(t, w)
+		if got := w.combined(t); fmt.Sprint(got) != "[2 3 4]" {
+			t.Fatalf("independent quorum combined from machines %v", got)
 		}
 		if w.released[2].Load() != 1 || w.released[3].Load() != 1 || w.released[4].Load() != 1 {
 			t.Fatal("the other seats should have answered")
 		}
 	})
-	t.Run("Enclave online, its only answering machine lies: REFUSED", func(t *testing.T) {
+	t.Run("Enclave online but lying cannot veto an independent quorum", func(t *testing.T) {
 		w := newCustodyWorldV2(t, flags, v2Env)
 		w.behave[0], w.behave[1] = v2Lie, v2Down
-		if _, err := w.run(t); err == nil || !strings.Contains(err.Error(), "Enclave") {
-			t.Fatalf("the Enclave rule did not hold: %v", err)
+		ok(t, w)
+		if got := w.combined(t); fmt.Sprint(got) != "[2 3 4]" {
+			t.Fatalf("independent quorum combined from machines %v", got)
 		}
 	})
 	t.Run("no Enclave machine online: the other seats suffice", func(t *testing.T) {

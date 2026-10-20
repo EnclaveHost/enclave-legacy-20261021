@@ -189,7 +189,7 @@ MOCK         = os.environ.get("WASM_MOCK", "") not in ("", "0", "false")
 LOG_DIR      = pathlib.Path(os.environ.get("WASM_LOG_DIR", "/tmp/enclave-wasm-logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 # run-by-CID: fetch an app's bytes from IPFS and verify they hash to the CID.
-IPFS_GATEWAY   = os.environ.get("IPFS_GATEWAY", "https://ipfs.enclave.host").rstrip("/")
+IPFS_GATEWAY   = os.environ.get("IPFS_GATEWAYS") or os.environ.get("IPFS_GATEWAY", "https://ipfs.enclave.host").rstrip("/")
 # cap on a fetched app: models ride inside the wasm (llm-chat 0.2 embeds a
 # 460MB q4f16 LLM), so the ceiling is set by fetch/compile budgets, not code.
 # Note wasm32's 4GiB linear memory still bounds what an EMBEDDED model can be:

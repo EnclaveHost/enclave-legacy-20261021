@@ -191,6 +191,28 @@ const logsUrl = (id, q = "?tail=5") => `${API}/v1/deployments/${id}/logs${q}`;
 const logsPath = (id, q = "?tail=5") => `/v1/deployments/${id}/logs${q}`;
 const rejects401 = (p, re) => assert.rejects(p, (e) => e instanceof A.SessionAuthError && e.status === 401 && (!re || re.test(e.message)));
 
+test("pinned factory and ledger verify real sessions with the book forbidden, and zero never restores legacy factories", { skip }, async () => {
+  let bookReads=0;
+  const pc=new Proxy(chain.pc,{get(target,key){
+    if(key==='readContract')return q=>{
+      if(q.address.toLowerCase()===P.book.toLowerCase()){bookReads++;throw Error('book forbidden');}
+      return target.readContract(q);
+    };
+    return target[key];
+  }});
+  const config={pc,authorityPins:{deployments:P.ledger,sessionVaultFactory:P.factory},
+    book:()=>{bookReads++;throw Error('book forbidden');},ledger:()=>P.book,factories:[P.book]};
+  const v=verifier(config);
+  const session=await v.verify({header:await hdr('browser','GET',logsUrl(R.prod.id)),method:'GET',path:logsPath(R.prod.id),scope:'api.logs'});
+  assert.equal(await v.refusal(session,R.prod),null);
+  await sendToLedger(sdk.setDelegateCall(S.browser.vault,true).data);
+  try{assert.equal(await v.refusal(session,R.wallet,{fresh:true}),null);}
+  finally{await sendToLedger(sdk.setDelegateCall(S.browser.vault,false).data);}
+  const disabled=verifier({...config,factories:[P.factory],authorityPins:{deployments:P.ledger,sessionVaultFactory:'0x'+'0'.repeat(40)}});
+  await rejects401(disabled.verify({header:await hdr('browser','GET',logsUrl(R.prod.id)),method:'GET',path:logsPath(R.prod.id)}),/not a SessionVault/);
+  assert.equal(bookReads,0);
+});
+
 test("a good signature verifies, names the vault, the session and the owner's wallet, and reports what it was signed for", { skip }, async () => {
   const v = verifier();
   const s = await v.verify({ header: await hdr("browser", "GET", logsUrl(R.prod.id)), method: "GET", path: logsPath(R.prod.id), scope: "api.logs" });

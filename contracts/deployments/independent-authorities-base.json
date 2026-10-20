@@ -1,0 +1,177 @@
+{
+  "chainId": 8453,
+  "deployer": "0xE388a05b025583951F41aF05171440d4FE53aA8A",
+  "inputs": {
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "ledger": "0xB1783B61E1FDee6a6163DC3CdaC27bF32E7d117B",
+    "catalog": "0x18419CA2b502D423A8de6269AEeE171a378626e3",
+    "registry": "0x868eB7fc5B5A84B2FF082eafc9bf40b7AAc5CCAC",
+    "router": "0xf17157b42ebbd65E33dD592878A8f1769C69d56A",
+    "enclaveOwner": "0x0b2d009c0c9Af05b12100D77F3c815fea822eE61",
+    "keyAttestations": "0xB49241eFE5AF6078BE6aa84850ae45eed34dF61b",
+    "maxVault6": "250000000"
+  },
+  "addresses": {
+    "SessionVaultLib": "0xcc2824CdD4be8AD2656B5201662E60E025BF12b4",
+    "PinnedSessionVaultFactory": "0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b",
+    "EnclaveHostOwnership": "0xF5E9E6C02449001f6E8e95E5d87413f2cb6790ea",
+    "EnclaveSecretVaultV2": "0x56b81b3970a8ac2c52f9874Bd2758eDE30758228",
+    "PinnedSessionAuthority": "0xF76A138cEb162Aa4bAB47D4787793C569759CAc8",
+    "SessionVault": "0x87bc7Bfc8cA8b857FB43eBc6F4E49c807351Ff5c"
+  },
+  "transactions": {
+    "funding": {
+      "transactionHash": "0xde9b98a248966bcbbe6a300261946915cb2f15c9d484b8eb306f61408469c604",
+      "blockNumber": "52823596",
+      "contractAddress": null,
+      "gasUsed": "21000",
+      "effectiveGasPrice": "6000000",
+      "l1Fee": "0x42bf2d3c"
+    },
+    "SessionVaultLib": {
+      "transactionHash": "0x25d40e69834f75c85299fb85e258d0a7cb05eb03b638e56972dcddc22525f5f1",
+      "blockNumber": "52823625",
+      "contractAddress": "0xcc2824cdd4be8ad2656b5201662e60e025bf12b4",
+      "gasUsed": "2362868",
+      "effectiveGasPrice": "6049395",
+      "l1Fee": "0x108a339070"
+    },
+    "PinnedSessionVaultFactory": {
+      "transactionHash": "0x987081338fba079f21e072406807792af74c43b85a5f0bafb795930179403263",
+      "blockNumber": "52823640",
+      "contractAddress": "0xec9277a32f98ad3108747fe3da78c35e1bee097b",
+      "gasUsed": "5964407",
+      "effectiveGasPrice": "6000000",
+      "l1Fee": "0x4a30e0ea"
+    },
+    "EnclaveHostOwnership": {
+      "transactionHash": "0x1b28c32d4d503153066d8532d9f31dead181d715b6859f113a019bf88f92ea5a",
+      "blockNumber": "52823640",
+      "contractAddress": "0xf5e9e6c02449001f6e8e95e5d87413f2cb6790ea",
+      "gasUsed": "490333",
+      "effectiveGasPrice": "6000000",
+      "l1Fee": "0x595e688d"
+    },
+    "EnclaveSecretVaultV2": {
+      "transactionHash": "0xcda78f4d6ccfc0115d364bd4cce0f10d351ed887d3af55b69aca81fa779259e8",
+      "blockNumber": "52823641",
+      "contractAddress": "0x56b81b3970a8ac2c52f9874bd2758ede30758228",
+      "gasUsed": "4825359",
+      "effectiveGasPrice": "6003183",
+      "l1Fee": "0x8b928ba8"
+    }
+  },
+  "verified": {
+    "contracts": {
+      "SessionVaultLib": {
+        "address": "0xcc2824CdD4be8AD2656B5201662E60E025BF12b4",
+        "runtimeBytes": 10681,
+        "codeHash": "0x26117a09e75f60c5aa2449339b32110ee05a07268088636c061e90b6bc5a9b06"
+      },
+      "PinnedSessionVaultFactory": {
+        "address": "0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b",
+        "runtimeBytes": 2610,
+        "codeHash": "0xf985ee527a6ae282a8ca8a67adcc0034faabe3d0317c6b989d7a95aa523a694c",
+        "bindings": {
+          "implementation": "0x87bc7Bfc8cA8b857FB43eBc6F4E49c807351Ff5c"
+        }
+      },
+      "EnclaveHostOwnership": {
+        "address": "0xF5E9E6C02449001f6E8e95E5d87413f2cb6790ea",
+        "runtimeBytes": 1999,
+        "codeHash": "0xe38a0e160dd929c366bccd30636285458c288ada475f1b74ffc3289febf1d5dd",
+        "bindings": {
+          "registry": "0x868eB7fc5B5A84B2FF082eafc9bf40b7AAc5CCAC"
+        }
+      },
+      "EnclaveSecretVaultV2": {
+        "address": "0x56b81b3970a8ac2c52f9874Bd2758eDE30758228",
+        "runtimeBytes": 21956,
+        "codeHash": "0xb27f04b1bc81e2db3e6913c84016f1f2b75083abe5a87dcc65afafcc207a48c5",
+        "bindings": {
+          "book": "0xF76A138cEb162Aa4bAB47D4787793C569759CAc8",
+          "enclaveOwner": "0x0b2d009c0c9Af05b12100D77F3c815fea822eE61",
+          "hostOwnership": "0xF5E9E6C02449001f6E8e95E5d87413f2cb6790ea",
+          "hostRegistry": "0x868eB7fc5B5A84B2FF082eafc9bf40b7AAc5CCAC",
+          "deploymentLedger": "0xB1783B61E1FDee6a6163DC3CdaC27bF32E7d117B",
+          "sessionVaultFactory": "0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b"
+        }
+      },
+      "PinnedSessionAuthority": {
+        "address": "0xF76A138cEb162Aa4bAB47D4787793C569759CAc8",
+        "runtimeBytes": 562,
+        "codeHash": "0x81b24e366984840a2f94a5f92a6704f755a172b9d0ac46bc6cfe3ad6106bd557",
+        "bindings": {
+          "deployments": "0xB1783B61E1FDee6a6163DC3CdaC27bF32E7d117B",
+          "appCatalog": "0x18419CA2b502D423A8de6269AEeE171a378626e3",
+          "sessionVaultFactory": "0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b"
+        }
+      },
+      "SessionVault": {
+        "address": "0x87bc7Bfc8cA8b857FB43eBc6F4E49c807351Ff5c",
+        "runtimeBytes": 23664,
+        "codeHash": "0xbd05cd680b27bd879809787189430fa3dd3789064004aff6347a3af53b9f9f31",
+        "bindings": {
+          "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "book": "0xF76A138cEb162Aa4bAB47D4787793C569759CAc8",
+          "router": "0xf17157b42ebbd65E33dD592878A8f1769C69d56A",
+          "keyAttestations": "0xB49241eFE5AF6078BE6aa84850ae45eed34dF61b",
+          "maxVault6": "250000000",
+          "factory": "0xEc9277a32f98Ad3108747FE3Da78c35E1BeE097b",
+          "owner": "0x0000000000000000000000000000000000000001"
+        }
+      }
+    },
+    "blockNumber": "52823641",
+    "blockHash": "0xe7a5b52ba50e0688bf8e812e1e0462f22bb6f5433339702df575b38fe569b8a7",
+    "blockTimestamp": 1792436629,
+    "checkedAt": "2026-10-19T19:04:00.617Z"
+  },
+  "activation": {
+    "bookChanged": false,
+    "hostOwnersAssigned": false,
+    "sessionGrantsMoved": false,
+    "secretBundlesMoved": false,
+    "productionRuntimeChanged": false
+  },
+  "sourceCommit": "d8fac3c44b32115e80501c45ee0fb919ca2df56c",
+  "deployedAt": "2026-10-19T19:05:36.096880+00:00",
+  "compiler": "0.8.35+commit.47b9dedd.Emscripten.clang",
+  "sourceSha256": {
+    "SessionVault.sol": "a447add6f44ca65ecdf19625450623dce5c41270a28f0ab2b3240382d3ceeb1c",
+    "PinnedSessionVaultFactory.sol": "fe071b7178476ae0938b3f8f94e6b40d6468ee327bbb0c8568ce3b7dec1a6d16",
+    "EnclaveHostOwnership.sol": "20c1485fc5682038fbd881106de23bfa5ac5bf1b5baa9a57c88470a3db228224",
+    "EnclaveSecretVaultV2.sol": "fc43ab52da0bca1fb62e0289a254332b49faea0990322ab39dbd03d4d8e2ef9b"
+  },
+  "verificationScope": "Compiled runtimes and immutable bindings, majority-agreed on Base; no runtime, bundle, session or owner-policy cutover.",
+  "rehearsal": {
+    "block": "52823514",
+    "localChainId": 31337,
+    "liveRegistryOwnerAcceptance": true,
+    "foreignOperatorRejected": true,
+    "bindingsSurviveMutableBookDeletion": true
+  },
+  "costs": {
+    "fundedETH": "0.00025",
+    "deploymentFeesETH": "0.000082405485674447",
+    "refundETH": "0.000166594514325553",
+    "refundTransaction": "0x8cf2d568aff94bcadf294e8d6180cd894d9c612a519c081009a1667cd7e14365",
+    "remainingFeeReserveETH": "0.0000008727526662",
+    "deployer": "0xE388a05b025583951F41aF05171440d4FE53aA8A",
+    "funder": "0xC9D0835Cd8eBc7eaE84304d9DB0A76253EebE6aB",
+    "refundVerification": [
+      {
+        "rpc": "https://mainnet.base.org",
+        "refundStatus": "success",
+        "refundBlock": "52823695",
+        "balanceWei": "872752666200"
+      },
+      {
+        "rpc": "https://base.public.blockpi.network/v1/rpc/public",
+        "refundStatus": "success",
+        "refundBlock": "52823695",
+        "balanceWei": "872752666200"
+      }
+    ]
+  }
+}

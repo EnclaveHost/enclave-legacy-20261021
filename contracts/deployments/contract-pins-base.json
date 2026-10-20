@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chainId": 8453,
+  "contracts": {
+    "registry": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac",
+    "deployments": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+    "appCatalog": "0x18419ca2b502d423a8de6269aeee171a378626e3",
+    "proofOfTime": "0x6f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+    "enclavePay": "0x580270e88e5df35dad59e7fe3d907ebea96673a6",
+    "verificationFees": "0x87c7266543ff5839b2c20226bd9b3cd511a23641",
+    "sessionVaultFactory": "0xec9277a32f98ad3108747fe3da78c35e1bee097b",
+    "secretVaultV2": "0x56b81b3970a8ac2c52f9874bd2758ede30758228"
+  }
+}

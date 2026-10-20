@@ -11,7 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {preparePackage} from '../sdk/bootstrap/package.mjs';
 import { encodeFunctionData, keccak256, toHex } from "viem";
 import { decodeFunctionData, encodeFunctionResult, parseTransaction, verifyMessage, recoverMessageAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -87,6 +88,7 @@ const VAULT_DEP_ID = "0x" + "f1".repeat(32);   // a deployment the account's cre
 // ---- the platform double -----------------------------------------------------
 // state the tests poke at between runs
 const S = {
+  rpcCalls: [],
   logins: 0, apiCalls: [], txs: [],            // recorded traffic
   claimed: false,                              // get(ID) shows a live lease?
   active: true,                                // get(ID).active (false = suspended)
@@ -265,7 +267,7 @@ function rpcServer() {
       capOf: () => [S.cap6],                 // rev-8 surface: the deployment's spend ceiling
       refundableOf: () => [S.refundable6],   // rev-10 surface: what refund() would pay back now
       getAppsPage: () => [Number(args[0]) === 0 ? [{ appId: APP_ID, publisher: OWNER, slug: "hello-world",
-        name: "Hello World", description: "first app", versionCount: S.versionCount, createdAt: 1n, updatedAt: 1n, active: true }] : []],
+        name: "Hello World", description: "first app", versionCount: S.versionCount, createdAt: 1n, updatedAt: 1n, active: S.catalogActive !== false }] : []],
       getVersionsPage: () => [Number(args[1]) === 0 ? [version, version2()].slice(0, S.versionCount) : []],
       numVersions: () => [S.numVersions],
       appIdOf: () => [APP_ID],
@@ -278,6 +280,7 @@ function rpcServer() {
   return http.createServer(async (req, res) => {
     let body = ""; for await (const c of req) body += c;
     const { id, method, params } = JSON.parse(body);
+    S.rpcCalls.push({ method, params });
     const reply = (result) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id, result })); };
     try {
       switch (method) {
@@ -368,6 +371,7 @@ function run(cliArgs, { input, env } = {}) {
              ENCLAVE_IPFS_UPLOAD: `http://127.0.0.1:${ipfsPort}/add-wasm`,
              ENCLAVE_IPFS_JSON_UPLOAD: `http://127.0.0.1:${ipfsPort}/add-json`,
              ENCLAVE_ADDRESS_BOOK: "",   // opt out of the on-chain address book: the double must stay offline (and the 4s resolve cap × every invocation would blow the suite timeout)
+             ENCLAVE_CONTRACT_PINS_FILE: "",
              XDG_CONFIG_HOME: confDir,
              ...env },                   // per-test overrides (ENCLAVE_KEY: "" = the passkey-only, wallet-less user)
     });
@@ -1210,4 +1214,301 @@ test("--unsigned and --signer refuse to guess which wallet they are acting as", 
     assert.notEqual(r.code, 0);
     assert.match(r.err, /needs --from/);
   }
+});
+
+
+test("explicit deploy and upgrade enforce platform moderation before spending", async () => {
+  S.versionCount = 2;
+  try {
+    for (const status of [{active:false,approval:1}, {approval:2}, {approval:1,yanked:true}, {approval:0}]) {
+      S.catalogActive=status.active!==false;S.v2={memMb:64,cpuGflops:2,...status};
+      for (const args of [["deploy","hello-world:2","--fund","2","--no-wait"],["upgrade",ID,"2"]]) {
+        S.txs.length=0;const r=await run(args);assert.notEqual(r.code,0,r.out);assert.equal(S.txs.length,0);
+      }
+      if(status.approval!==0){
+        S.txs.length=0;const r=await run(["deploy","hello-world:2","--private","--fund","2","--no-wait"]);
+        assert.notEqual(r.code,0);assert.equal(S.txs.length,0);
+      }
+    }
+    S.catalogActive=true;S.v2={memMb:64,cpuGflops:2,approval:0};S.txs.length=0;
+    const dev=await run(["deploy","hello-world:2","--private","--fund","2","--no-wait"]);
+    assert.equal(dev.code,0,dev.err);assert.equal(S.txs.find(t=>t.functionName==="create").args[5],false);
+    S.txs.length=0;
+    const implicit=await run(["deploy","hello-world","--fund","2","--no-wait"]);
+    assert.equal(implicit.code,0,implicit.err);assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/0`);
+  } finally {S.catalogActive=true;S.versionCount=1;S.v2=null;S.txs.length=0;}
+});
+
+/* Explicit authority pins: mutable discovery cannot redirect an operation. */
+function writeAuthorityPins(overrides = {}) {
+  const file = path.join(confDir, 'contract-pins.json');
+  const zero = '0x' + '00'.repeat(20);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, chainId: 8453, contracts: {
+    registry: REGISTRY, deployments: DEPLOYMENTS, appCatalog: BOOK_CATALOG,
+    proofOfTime: '0x' + '91'.repeat(20), enclavePay: zero, verificationFees: zero,
+    sessionVaultFactory: zero, secretVaultV2: zero, ...overrides,
+  } }));
+  return file;
+}
+const callsTo = (address) => S.rpcCalls.filter(x => x.method === 'eth_call' && x.params[0].to.toLowerCase() === address.toLowerCase());
+
+test('explicit pins publish to the selected catalog without consulting an unavailable address book', async () => {
+  S.rpcCalls.length = 0; S.txs.length = 0; S.numVersions = 0n; S.book = 'fail';
+  try {
+    const r = await run(['publish', component(), '--slug', 'hello-world', '--contract-pins', writeAuthorityPins()],
+      { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(S.txs.find(t => t.functionName === 'publishVersion')?.to, BOOK_CATALOG);
+    assert.equal(callsTo(BOOK_ADDR).length, 0);
+    assert.equal(callsTo(CATALOG).length, 0, 'no baked-catalog fallback');
+    assert.ok(callsTo(BOOK_CATALOG).length > 0);
+  } finally { S.book = 'ok'; }
+});
+
+test('invalid authority pins refuse before RPC, API or transaction activity', async () => {
+  const file = writeAuthorityPins({ deployments: '0x' + '00'.repeat(20) });
+  S.rpcCalls.length = 0; S.apiCalls.length = 0; S.txs.length = 0;
+  const r = await run(['apps'], { env: { ENCLAVE_CONTRACT_PINS_FILE: file, ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /invalid contract pin: deployments/);
+  assert.equal(S.rpcCalls.length, 0); assert.equal(S.apiCalls.length, 0); assert.equal(S.txs.length, 0);
+});
+
+test('a missing pin file does not fall back to address-book or baked discovery', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['apps', '--contract-pins', path.join(confDir, 'missing.json')]);
+  assert.notEqual(r.code, 0); assert.match(r.err, /ENOENT/); assert.equal(S.rpcCalls.length, 0);
+});
+
+test('zero custody pin refuses instead of the baked v2 vault or an environment override', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['custody', 'status', ID, '--v2', '--contract-pins', writeAuthorityPins()],
+    { env: { ENCLAVE_SECRET_VAULT_V2: '0x' + 'a1'.repeat(20) } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /pins disable secretVaultV2/);
+  assert.equal(S.rpcCalls.length, 0);
+});
+
+test('custody environment cannot replace an explicit vault pin', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['custody', 'status', ID, '--v2', '--contract-pins',
+    writeAuthorityPins({ secretVaultV2: '0x' + 'a1'.repeat(20) })],
+    { env: { ENCLAVE_SECRET_VAULT_V2: '0x' + 'a2'.repeat(20) } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /override conflicts/); assert.equal(S.rpcCalls.length, 0);
+});
+
+test('disabled session factory cannot fall back to the address book or baked factory', async () => {
+  S.rpcCalls.length = 0;
+  const r = await run(['session', 'delegate', '--contract-pins', writeAuthorityPins()],
+    { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+  assert.notEqual(r.code, 0); assert.match(r.err, /pins disable sessionVaultFactory/);
+  assert.equal(S.rpcCalls.length, 0);
+});
+
+test('chain-only wallet deployment creates and funds without API, upload gateway or address-book requests', async () => {
+  S.rpcCalls.length = 0; S.apiCalls.length = 0; S.txs.length = 0; S.pinnedWasm = 0; S.pinnedJson.length = 0;
+  const previous = { depRev: S.depRev, catRev: S.catRev, versionCount: S.versionCount, v2: S.v2, book: S.book };
+  S.depRev = 15n; S.catRev = 5n; S.versionCount = 2;
+  S.v2 = { approval: 1, yanked: false, config: '{"wasi":"0.3"}' }; S.book = 'fail';
+  try {
+    const r = await run(['deploy', 'hello-world:2', '--chain-only', '--contract-pins', writeAuthorityPins(),
+      '--cpu', '0.1', '--gpu', '0', '--max-rate', '1', '--fund', '2', '--isolation', 'snp-guest-per-app', '--config', '{"hello":"world"}', '--json'],
+      { env: { ENCLAVE_ADDRESS_BOOK: BOOK_ADDR } });
+    assert.equal(r.code, 0, r.err);
+    const create = S.txs.find(x => x.functionName === 'create');
+    assert.equal(create.to, DEPLOYMENTS);
+    assert.equal(create.args[0], `catalog://${APP_ID}/1`);
+    assert.equal(create.args[2], 100);
+    assert.deepEqual(JSON.parse(create.args[6]), { isolation: { require: 'snp-guest-per-app' }, config: { hello: 'world' } });
+    assert.equal(create.args.at(-1), 278n, 'owner spend ceiling, not an invented quote');
+    assert.ok(S.txs.some(x => x.functionName === 'fundWithAuthorization'));
+    assert.match(r.out, /"readinessVerified": false/);
+    assert.equal(S.apiCalls.length, 0); assert.equal(callsTo(BOOK_ADDR).length, 0);
+    assert.equal(S.pinnedWasm, 0); assert.equal(S.pinnedJson.length, 0);
+  } finally { Object.assign(S, previous); }
+});
+
+test('chain-only refuses incomplete intent and relay secrets before spending', async () => {
+  for (const [extra, why] of [
+    [[], /explicit --cpu, --gpu and --max-rate/],
+    [['--cpu','0.1','--gpu','0','--max-rate','1','--secrets','{"TOKEN":"test"}'], /cannot stage relay-held secrets/],
+  ]) {
+    S.txs.length = 0; S.apiCalls.length = 0;
+    const r = await run(['deploy','hello-world:1','--chain-only','--contract-pins',writeAuthorityPins(),'--fund','2',...extra]);
+    assert.notEqual(r.code, 0); assert.match(r.err, why); assert.equal(S.txs.length, 0); assert.equal(S.apiCalls.length, 0);
+  }
+});
+
+test('chain-only preparation creates a disabled unfunded record without central API calls',async()=>{
+ const prev=S.depRev;S.depRev=16n;S.txs.length=0;S.apiCalls.length=0;
+ try{
+  const r=await run(['deploy','hello-world:1','--chain-only','--prepare-only','--contract-pins',writeAuthorityPins(),'--cpu','0.1','--gpu','0','--max-rate','1','--json']);
+  assert.equal(r.code,0,r.err);assert.equal(S.apiCalls.length,0);
+  const c=S.txs.find(x=>x.functionName==='create');assert.ok(c);
+  assert.equal(JSON.parse(c.args[6]).guestBootstrap.sha256,'f'.repeat(64));
+  assert.equal(S.txs.some(x=>/fund/i.test(x.functionName)),false);assert.match(r.out,/awaiting-startup-package/);
+ }finally{S.depRev=prev;}
+});
+test('bootstrap prepare preserves exact config bytes and refuses overwrite without API or transactions',async()=>{
+ const prev=S.depRev;S.depRev=16n;S.txs.length=0;S.apiCalls.length=0;
+ const cfg=path.join(confDir,'bootstrap-config.json'),out=path.join(confDir,'owner-startup.json');fs.writeFileSync(cfg,'{ "public": true }');
+ try{
+  const args=['bootstrap','prepare',ID,'--contract-pins',writeAuthorityPins(),'--config-file',cfg,'--app-id','44'.repeat(32),'--runtime-id','55'.repeat(32),'--public','--out',out,'--json'];
+  const r=await run(args);assert.equal(r.code,0,r.err);assert.equal(JSON.parse(fs.readFileSync(out)).configText,'{ "public": true }');
+  assert.equal(S.apiCalls.length,0);assert.equal(S.txs.length,0);assert.match(r.out,/"committed": false/);
+  const again=await run(args);assert.notEqual(again.code,0);assert.match(again.err,/EEXIST/);
+ }finally{S.depRev=prev;fs.rmSync(out,{force:true});}
+});
+
+test('owner startup packages prevent legacy config edits and preserve WAF-only changes',async()=>{
+ const prev=S.depRev,old=S.envelope;S.depRev=16n;
+ const guestBootstrap={version:1,sha256:'ab'.repeat(32)};
+ try{
+  S.envelope=JSON.stringify({guestBootstrap,waf:{rps:10}});
+  for(const args of [['set',ID,'{}'],['clear',ID,'config'],['clear',ID,'all']]){
+   S.txs.length=0;S.apiCalls.length=0;
+   const r=await run(['config',...args,'--wallet','--contract-pins',writeAuthorityPins()]);
+   assert.notEqual(r.code,0);assert.match(r.err,/bootstrap prepare/);assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);
+  }
+  const show=await run(['config','show',ID,'--json']);assert.equal(show.code,0,show.err);
+  assert.equal(JSON.parse(show.out).configSource,'owner-startup-package');
+  for(const args of [['set',ID,'--waf','{"rps":20}'],['clear',ID,'waf']]){
+   S.txs.length=0;S.apiCalls.length=0;
+   const r=await run(['config',...args,'--wallet','--contract-pins',writeAuthorityPins()]);assert.equal(r.code,0,r.err);
+   const e=JSON.parse(S.txs.find(x=>x.functionName==='setConfig').args[1]);assert.deepEqual(e.guestBootstrap,guestBootstrap);
+   assert.equal(e.config,undefined);assert.equal(S.apiCalls.length,0);
+  }
+ }finally{S.depRev=prev;S.envelope=old;}
+});
+
+test('bootstrap publication and activation verify exact bytes before committing without central API calls',async()=>{
+ const prev=S.depRev,old=S.envelope;S.depRev=16n;
+ const pkg=preparePackage({version:1,chainId:8453,ledger:DEPLOYMENTS,deployment:ID,owner:OWNER,
+  appRef:`catalog://${APP_ID}/0`,appId:'44'.repeat(32),runtimeId:'55'.repeat(32),configText:'{ "value": 1 }',secretsMode:'public'});
+ const file=path.join(confDir,'workflow-package.json'),preload=path.join(confDir,'bootstrap-fetch.mjs'),calls=path.join(confDir,'bootstrap-fetch.jsonl');
+ fs.writeFileSync(file,pkg.bytes);
+ // Keep the real JSON-RPC HTTP double. Only the explicitly chosen storage
+ // endpoints are simulated, including corrupt bodies and unbounded replies.
+ fs.writeFileSync(preload,`import fs from 'node:fs';
+const real=globalThis.fetch;
+globalThis.fetch=async (url,opts={})=>{
+ if(!['independent.example','independent2.example','independent3.example'].includes(new URL(url).hostname))return real(url,opts);
+ fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({url,method:opts.method||'GET',headers:opts.headers,body:opts.body?Buffer.from(opts.body).toString():null,redirect:opts.redirect})+'\\n');
+ if(process.env.BOOTSTRAP_TEST_DOWN==='one'&&String(url).startsWith('https://independent.example/'))return new Response('',{status:503});
+ if(process.env.BOOTSTRAP_TEST_DOWN==='two'&&!String(url).startsWith('https://independent3.example/'))return new Response('',{status:503});
+ if(process.env.BOOTSTRAP_TEST_RESPONSE==='oversize')return new Response('x'.repeat(4097));
+ if(process.env.BOOTSTRAP_TEST_RESPONSE==='corrupt')return new Response('{}');
+ return new Response(opts.method==='POST'?JSON.stringify({cid:${JSON.stringify(pkg.cid)}}):fs.readFileSync(${JSON.stringify(file)}));
+};`);
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`},common=['--wallet','--contract-pins',writeAuthorityPins(),'--json'];
+ try{
+  S.envelope=JSON.stringify({config:{old:true},waf:{rps:10},placement:{hostId:'0x'+'66'.repeat(32)}});S.apiCalls.length=0;S.txs.length=0;
+  const publish=['bootstrap','publish',ID,'--file',file,'--upload','https://independent.example/add-json','--audience',ID,...common];
+  const r=await run(publish,{env});assert.equal(r.code,0,r.err);assert.equal(S.txs.length,0);
+  const request=JSON.parse(fs.readFileSync(calls,'utf8').trim().split('\n')[0]);
+  assert.equal(request.body,pkg.bytes.toString());assert.match(request.headers['x-upload-signature'],/^0x[0-9a-f]{130}$/);
+  assert.equal(request.headers['x-upload-token'],undefined);assert.equal(request.redirect,'error');
+  const activate=['bootstrap','activate',ID,'--file',file,'--gateways','https://independent.example/ipfs',...common];
+  const activated=await run(activate,{env});assert.equal(activated.code,0,activated.err);
+  const envelope=JSON.parse(S.txs.find(x=>x.functionName==='setConfig').args[1]);
+  assert.deepEqual(envelope.guestBootstrap,pkg.intent);assert.equal(envelope.config,undefined);assert.deepEqual(envelope.waf,{rps:10});
+  assert.equal(envelope.placement.hostId,'0x'+'66'.repeat(32));assert.equal(envelope.isolation.require,'snp-guest-per-app');
+  assert.equal(JSON.parse(activated.out).readinessVerified,false);assert.equal(S.apiCalls.length,0);
+  S.txs.length=0;
+  const unsigned=await run([...activate,'--unsigned','--from',OWNER],{env});assert.equal(unsigned.code,0,unsigned.err);
+  const prepared=JSON.parse(unsigned.out);assert.equal(prepared.unsigned.to.toLowerCase(),DEPLOYMENTS);assert.equal(prepared.committed,undefined);assert.equal(S.txs.length,0);
+  const planFile=path.join(confDir,'replicated-storage.json');
+  fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({
+   upload:`https://independent${n===1?'':n}.example/add-json`,gateway:`https://independent${n===1?'':n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+  for(const sub of ['publish','activate']){
+   S.txs.length=0;
+   const args=['bootstrap',sub,ID,'--file',file,'--storage-plan',planFile,...common];
+   const good=await run(args,{env:{...env,BOOTSTRAP_TEST_DOWN:'one'}});assert.equal(good.code,0,good.err);
+   assert.equal(JSON.parse(good.out).storage.verifiedCopies,2);assert.equal(S.txs.length,sub==='activate'?1:0);
+   S.txs.length=0;
+   const bad=await run(args,{env:{...env,BOOTSTRAP_TEST_DOWN:'two'}});assert.notEqual(bad.code,0);assert.match(bad.err,/storage availability requirement/);assert.equal(S.txs.length,0);
+  }
+  const mixed=await run([...publish,'--storage-plan',planFile],{env});assert.notEqual(mixed.code,0);assert.match(mixed.err,/cannot be combined/);
+  assert.equal(S.apiCalls.length,0);
+  for(const args of [activate,publish]){
+   const bad=await run(args,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'corrupt'}});assert.notEqual(bad.code,0);assert.equal(S.txs.length,0);
+  }
+  const large=await run(publish,{env:{...env,BOOTSTRAP_TEST_RESPONSE:'oversize'}});assert.notEqual(large.code,0);assert.match(large.err,/size limit/);
+ }finally{S.depRev=prev;S.envelope=old;}
+});
+
+test('replicated app publication bypasses the token issuer and commits only after WASM and config readback',async()=>{
+ const prev=S.catRev;S.catRev=7n;
+ const planFile=path.join(confDir,'artifact-storage.json'),preload=path.join(confDir,'artifact-fetch.mjs');
+ fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({upload:`https://artifact${n}.example/add-json`,gateway:`https://artifact${n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+ const identityModule=pathToFileURL(path.join(REPO,'sdk/storage/unixfs.mjs')).href;
+ fs.writeFileSync(preload,`import {artifactIdentity} from ${JSON.stringify(identityModule)};
+const real=globalThis.fetch,stores=new Map();
+globalThis.fetch=async(url,opts={})=>{
+ const u=new URL(url);if(!['artifact1.example','artifact2.example','artifact3.example'].includes(u.hostname))return real(url,opts);
+ if(u.hostname==='artifact1.example'||process.env.ARTIFACT_TEST_DOWN==='two'&&u.hostname==='artifact2.example')return new Response('',{status:503});
+ if(opts.method==='POST'){
+  const chunks=[];for await(const chunk of opts.body)chunks.push(Buffer.from(chunk));const bytes=Buffer.concat(chunks),cid=artifactIdentity(bytes).cid;
+  if(process.env.ARTIFACT_TEST_CONFIG_FAIL==='1'&&u.pathname==='/add-json')return new Response('',{status:503});
+  if(!stores.has(u.hostname))stores.set(u.hostname,new Map());stores.get(u.hostname).set(cid,bytes);
+  return new Response(JSON.stringify({cid}));
+ }
+ const bytes=stores.get(u.hostname)?.get(u.pathname.split('/').at(-1));if(!bytes)return new Response('',{status:404});
+ const [start,end]=opts.headers.range.slice(6).split('-').map(Number);
+ return new Response(bytes.subarray(start,end+1),{status:206,headers:{'content-range':'bytes '+start+'-'+end+'/'+bytes.length}});
+};`);
+ const configFile=path.join(confDir,'large-published-config.json');fs.writeFileSync(configFile,JSON.stringify({payload:'x'.repeat(300000)}));
+ const args=['publish',component(),'--slug','hello-world','--config-file',configFile,'--storage-plan',planFile,'--contract-pins',writeAuthorityPins(),'--wallet','--json'];
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`};
+ try{
+  S.txs.length=0;S.apiCalls.length=0;
+  const good=await run(args,{env});assert.equal(good.code,0,good.err);
+  const result=JSON.parse(good.out);assert.equal(result.storage.wasm.verifiedCopies,2);assert.equal(result.storage.config.verifiedCopies,2);
+  const tx=S.txs.find(t=>t.functionName==='publishVersionCfg');assert(tx);assert.equal(tx.args[4],result.cid);
+  assert.equal(tx.args.at(-2),result.storage.config.cid);assert.equal(S.apiCalls.length,0);
+  assert.equal(result.storage.config.bytes,300014);
+  S.txs.length=0;const mixed=await run([...args,'--config','{}'],{env});assert.notEqual(mixed.code,0);assert.match(mixed.err,/choose --config/);assert.equal(S.txs.length,0);
+  for(const failEnv of [{ARTIFACT_TEST_DOWN:'two'},{ARTIFACT_TEST_CONFIG_FAIL:'1'}]){
+   S.txs.length=0;S.apiCalls.length=0;const bad=await run(args,{env:{...env,...failEnv}});
+   assert.notEqual(bad.code,0);assert.match(bad.err,/storage availability requirement/);assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);
+  }
+ }finally{S.catRev=prev;}
+});
+
+test('runtime artifact CLI publishes with scoped signatures and verifies without wallets, RPC or platform APIs',async()=>{
+ const file=path.join(confDir,'runtime-kernel.bin'),planFile=path.join(confDir,'runtime-storage.json'),preload=path.join(confDir,'runtime-fetch.mjs');
+ fs.writeFileSync(file,Buffer.alloc(512*1024+7,0xa7));
+ fs.writeFileSync(planFile,JSON.stringify({version:1,minimumCopies:2,replicas:[1,2,3].map(n=>({upload:`https://runtime${n}.example/add-json`,gateway:`https://runtime${n}.example/ipfs`,audience:'0x'+String(n).repeat(64)}))}));
+ fs.writeFileSync(preload,`import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import {artifactIdentity} from ${JSON.stringify(pathToFileURL(path.join(REPO,'sdk/storage/unixfs.mjs')).href)};
+import {uploadMessage} from ${JSON.stringify(pathToFileURL(path.join(REPO,'sdk/storage/upload-auth.mjs')).href)};
+import {recoverMessageAddress} from ${JSON.stringify(pathToFileURL(path.join(REPO,'node_modules/viem/_esm/index.js')).href)};
+const bytes=fs.readFileSync(${JSON.stringify(file)}),identity=artifactIdentity(bytes);
+globalThis.fetch=async(url,opts={})=>{
+ const u=new URL(url),i=['runtime1.example','runtime2.example','runtime3.example'].indexOf(u.hostname);
+ if(i<0)throw Error('unexpected network request: '+u.hostname);
+ if(i===0||process.env.RUNTIME_TEST_DOWN==='two'&&i===1)return new Response('',{status:503});
+ if(opts.method==='POST'){
+  assert.equal(u.pathname,'/add-file');assert.equal(opts.headers['x-upload-token'],undefined);
+  const chunks=[];for await(const chunk of opts.body)chunks.push(Buffer.from(chunk));assert.deepEqual(Buffer.concat(chunks),bytes);
+  const h=opts.headers;assert.equal(await recoverMessageAddress({message:uploadMessage({audience:'0x'+String(i+1).repeat(64),path:'/add-file',address:h['x-upload-address'],hash:h['x-upload-sha256'],size:bytes.length,expiry:Number(h['x-upload-expiry'])}),signature:h['x-upload-signature']}),${JSON.stringify(OWNER)});
+  return new Response(JSON.stringify({cid:identity.cid}));
+ }
+ assert.equal(u.pathname,'/ipfs/'+identity.cid);
+ assert.equal(opts.headers['x-upload-signature'],undefined);
+ const [start,end]=opts.headers.range.slice(6).split('-').map(Number);
+ return new Response(bytes.subarray(start,end+1),{status:206,headers:{'content-range':'bytes '+start+'-'+end+'/'+bytes.length}});
+};`);
+ const env={NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`,ENCLAVE_ADDRESS_BOOK:BOOK_ADDR};
+ const args=sub=>['artifact',sub,file,'--storage-plan',planFile,'--json'];
+ S.txs.length=0;S.apiCalls.length=0;S.rpcCalls.length=0;
+ const published=await run([...args('publish'),'--wallet'],{env});assert.equal(published.code,0,published.err);
+ const report=JSON.parse(published.out);assert.equal(report.storage.kind,'file');assert.equal(report.storage.verifiedCopies,2);assert.equal(report.admissionChanged,false);assert.equal(report.published,true);
+ const verified=await run(args('verify'),{env:{...env,ENCLAVE_KEY:'invalid-key-that-must-not-be-read',ENCLAVE_SESSION:'invalid-session-that-must-not-be-read'}});assert.equal(verified.code,0,verified.err);
+ assert.equal(JSON.parse(verified.out).published,false);assert.equal(JSON.parse(verified.out).storage.cid,report.storage.cid);
+ for(const sub of ['publish','verify']){
+  const failed=await run([...args(sub),'--wallet'],{env:{...env,RUNTIME_TEST_DOWN:'two'}});assert.notEqual(failed.code,0);assert.match(failed.err,/storage availability requirement/);
+ }
+ const unknown=await run([...args('publish'),'--wallet','--kind','unknown'],{env});assert.notEqual(unknown.code,0);assert.match(unknown.err,/invalid artifact kind/);
+ const session=await run(args('publish'),{env:{...env,ENCLAVE_SESSION:'session-present'}});assert.notEqual(session.code,0);assert.match(session.err,/requires a direct wallet/);
+ assert.equal(S.txs.length,0);assert.equal(S.apiCalls.length,0);assert.equal(S.rpcCalls.length,0);
 });

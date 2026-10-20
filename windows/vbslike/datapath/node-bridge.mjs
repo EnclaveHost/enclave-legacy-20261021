@@ -236,8 +236,10 @@ export function createIsolationSplicer({ client, dataAddr, limits = {}, log = ()
     async serve(stream, target, { close = () => {} } = {}) {
       const iso = target && target.isolation;
       if (!iso) { try { stream.destroy(); } catch {} close(); return { outcome: "refused", kind: "no-route", why: "not an isolated target" }; }
-      const o = await spliceStream({ stream, close, expectName: iso.expectName, instanceId: iso.instance,
-                                     expectAppId: iso.appId, transport, dataAddr, limits });
+      // allowedNames: owner-committed names the host proved for this deployment (host.mjs refreshDomains); the guest still
+      // holds the key and ends TLS, so a name only lets that ClientHello through to the same verified partition
+      const o = await spliceStream({ stream, close, expectName: iso.expectName, allowedNames: Array.isArray(iso.allowedNames) ? iso.allowedNames : [],
+                                     instanceId: iso.instance, expectAppId: iso.appId, transport, dataAddr, limits });
       log(`${target.id.slice(0, 10)} app-zone -> ${iso.instance}: ${o.outcome}${o.kind ? ` (${o.kind}: ${o.why})` : ""}`);
       return o;
     },

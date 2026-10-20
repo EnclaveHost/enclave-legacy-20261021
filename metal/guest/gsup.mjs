@@ -16,6 +16,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import { prepareShieldedShm } from './shielded-shm.mjs';
+import {installMetalHostPolicy} from './host-policy.bundle.mjs';
 
 const log = (...a) => { try { fs.writeSync(1, `[gsup] ${a.join(' ')}\n`); } catch {} };
 const readJson = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
@@ -44,6 +45,7 @@ const fw = (() => {
   return {};
 })();
 const nominalRamGb = Math.round(Number(fw.nodeRamGb) || 0);
+const HOST_POLICY_ENV=installMetalHostPolicy(fw.hostAdmission);
 const NODE_RAM_GB  = nominalRamGb > 0
   ? Math.min(nominalRamGb, Math.ceil(totalGb) + 3)
   : Math.max(1, Math.floor(totalGb - 1.5));            // measured: reserve ~1.5 GB for the base system
@@ -396,6 +398,7 @@ if (!ISO_BACKEND) start('wasm-manager',
 // --- supervisor (base root) --------------------------------------------------
 const supEnv = {
   ...flavorEnv,                              // contract addresses, SIWE, CORS, ACME dirs, etc (non-secret)
+  ...HOST_POLICY_ENV,
   // override the baked flavor capacity with THIS VM's actual size (see above)
   NODE_VCPUS: String(NODE_VCPUS),
   NODE_RAM_GB: String(NODE_RAM_GB),

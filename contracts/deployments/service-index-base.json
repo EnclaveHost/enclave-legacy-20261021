@@ -1,0 +1,42 @@
+{
+  "at": "2026-10-20T00:25:51.449Z",
+  "chainId": 8453,
+  "address": "0x54dEcb43DE6f9Cc953Ba582B190b56C5a60B5941",
+  "sourceCommit": "61c16967",
+  "sourceSha256": "a84444c4eedc805c18759b717ced022dbd29eeb661697607c9a0d660cbb37129",
+  "compiler": "0.8.35+commit.47b9dedd.Emscripten.clang",
+  "compilerSha256": "ecabf2b0bf0c3ab0c6bb9cebd309900bd3b5e80c833d2bc68a330fa5508398f5",
+  "settings": {
+    "viaIR": true,
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "outputSelection": {
+      "*": {
+        "*": [
+          "abi",
+          "evm.bytecode.object",
+          "evm.deployedBytecode.object"
+        ]
+      }
+    }
+  },
+  "codeHash": "0x696944fed82d8b312e4db3ab89069240f8063a6a49b47e8a322804cdfd127898",
+  "deployTransaction": "0x6d38bf54c1dd2671be7985c84aa95a0d6185fc5dfca37b37c168ebfd3afe6e63",
+  "deployBlock": "52833297",
+  "verification": {
+    "codeHash": "0x696944fed82d8b312e4db3ab89069240f8063a6a49b47e8a322804cdfd127898",
+    "blockNumber": "52833299",
+    "blockHash": "0x6d3b860ec245c734c4370adb3afa2f3ca5cc7a611198f7b1417184b6f562c30d",
+    "blockTimestamp": 1792455945
+  },
+  "operatorAuthority": "no owner, admin, pause, upgrade or global deletion",
+  "activation": {
+    "contractDeployed": true,
+    "advertisementsPublished": false,
+    "profileUpdated": false,
+    "clientRollout": false
+  },
+  "fundedETH": "0.00005"
+}

@@ -1,3 +1,4 @@
+import { catalogAdmissionRefusal } from "../core/catalog-policy.js";
 /* ============================================================
    Deploy flow - the on-chain create+fund+watch sequence behind
    the store's quick-deploy modal (apps.js imports it lazily) and
@@ -20,7 +21,7 @@ import { APP_DOMAIN, DEPLOYMENTS_ADDRESS, ACCOUNTS_ENABLED } from "../core/confi
 import { Enclave, EnclaveError } from "../core/api.js";
 import { vaultOp } from "../core/vault.js";
 import { freeEnclavesFor } from "../core/pricing.js";
-import { encCall, DEP_SEL, DEP_CREATED_TOPIC, depGet, depRate6, depSchemaRev, depMaxGpuMilli, waitReceipt, catVersionFee } from "../core/chain.js";
+import { encCall, DEP_SEL, DEP_CREATED_TOPIC, depGet, depRate6, depSchemaRev, depMaxGpuMilli, waitReceipt, catVersionFee, catGetApp, catGetVersion } from "../core/chain.js";
 import { connectWallet, refreshWallet, ensureBaseChain, sendTx } from "../core/wallet.js";
 import { parseCatalogRef, publisherOfRef } from "../core/catalog.js";
 
@@ -69,6 +70,13 @@ export async function deployOnChain(spec){
   // store's quick-deploy modal) - not narrated into a run log they were just
   // navigated to. The caller re-checks earlier for richer UI; this is the
   // shared backstop for the races it can't see.
+  const catalogRef = parseCatalogRef(spec.reference);
+  if (!catalogRef) return showToast("Deploy refused: a catalog version is required.");
+  try {
+    const [app, version] = await Promise.all([catGetApp(catalogRef.appId), catGetVersion(catalogRef.appId,catalogRef.index)]);
+    const refusal = catalogAdmissionRefusal(app,version,{forPrivate:spec.isPublic===false});
+    if (refusal) return showToast("Deploy refused: " + refusal);
+  } catch { return showToast("Deploy refused: could not verify current catalog moderation. Please retry."); }
   const capMsg = await gpuCapRefusal(spec.gpuMilli);
   if (capMsg) return showToast("Deploy refused: " + capMsg);
   // The version's publisher fee is snapshotted INTO the record by create():
@@ -419,8 +427,10 @@ async function watchClaimAndRun(id, dPre, w, prefer){
           if (h && h.accepted === false && h.reason && h.reason !== lastReason){
             lastReason = h.reason;
             w.line("warn", "[!] fleet declines to claim: " + h.reason);
-            if (/yanked|not.approved|rejected|delisted|unlisted|below|minimum/i.test(h.reason)){
-              w.line("dimln", "    this won't resolve by waiting - fix the app version in the catalog. The deployment stays funded and is claimed automatically once deployable.");
+            if (/yanked|not.approved|rejected|delisted|unlisted/i.test(h.reason)){
+              w.line("dimln", "    this host declines the release; another host may accept it under its own policy. The deployment remains queued.");
+            } else if (/below|minimum/i.test(h.reason)){
+              w.line("dimln", "    check the deployment's resource allocation against the app's requirements. The deployment remains queued.");
               break;
             }
           }

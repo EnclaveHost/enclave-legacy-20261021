@@ -100,3 +100,16 @@ from the hub's attested row (`/info/<name>` on `relay/local-hub.mjs`), seals the
 tweetnacl's crypto_box to it, POSTs the blob to `/t/<name>/v1/session`, and opens the reply; the
 relay, the tunnel and the node's own host never see the text. Proven through the local hub on
 2026-09-21 with the same completions as the plaintext path.
+
+### Artifact sources for the VM manager
+
+The VM manager invokes `fetch-cid.py` in a separate process for each artifact.
+An operator can place a JSON array of gateway origins in `artifact-gateways.json`
+beside that script, or select an explicit file with `IPFS_GATEWAYS_FILE`.
+The file is read on every fetch and overrides the manager's legacy gateway
+argument, allowing gateway migration without restarting running guests. Invalid
+or missing explicitly selected files fail closed. No legacy origin is appended.
+Without a file, `IPFS_GATEWAYS` takes precedence over the positional gateway and
+`IPFS_GATEWAY`. Every returned CAR block and the requested CID remain verified.
+Keep this operator configuration under the same protected directory permissions
+as the fetcher. Gateway selection does not authorize different artifact bytes.

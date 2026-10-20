@@ -19,7 +19,11 @@
 // >>> The ONLY thing left to implement for your CVM is spawn/stop/measure below.
 
 import express from "express";
+import {createArtifactGatewayProbe} from "./sdk/storage/gateways.mjs";
+import {validateStoragePlan} from "./sdk/bootstrap/storage.mjs";
+import {bootstrapIntent,fetchPackage,verifyPackage,parseUniqueJSON} from "./sdk/bootstrap/package.mjs";
 import { planCheckpoints } from "./windows/node/verification-checkpoints.mjs";
+import {hostAdmissionFromEnv,hostAdmissionConfigured} from './windows/node/host-admission.bundle.mjs';
 import cors from "cors";
 import http from "node:http";
 import https from "node:https";
@@ -31,7 +35,7 @@ import { gunzipSync } from "node:zlib";
 import { execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 const pexec = promisify(execFile);
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, statfsSync, readdirSync, unlinkSync, statSync } from "node:fs";
+import { openSync, readSync, closeSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, statfsSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { WebSocketServer, createWebSocketStream } from "ws";
@@ -45,7 +49,7 @@ import { createEgress } from "./egress.js";
 // baked env, overridden from the on-chain EnclaveAddressBook when
 // ADDRESS_BOOK_ADDRESS is set, and re-polled so contract redeploys reach a
 // RUNNING enclave without a new release.
-import { initAddressBook, REGISTRY_ADDRESS, DEPLOYMENTS_ADDRESS, APP_CATALOG_ADDRESS,
+import { CONTRACT_PINS, initAddressBook, REGISTRY_ADDRESS, DEPLOYMENTS_ADDRESS, APP_CATALOG_ADDRESS,
          FORWARDER_ADDRESS, PROOF_OF_TIME_ADDRESS } from "./addressbook.js";
 // Wallet sessions (SessionVault) as owner credentials, verified on chain: shared with the Windows node.
 import { createSessionApiAuth, isSessionHeader, hasScope, apiBases, envList, DEFAULT_API_HOSTS, DEFAULT_FACTORIES }
@@ -335,6 +339,12 @@ const ISOLATION_BACKEND = (process.env.ISOLATION_BACKEND || "").trim().toLowerCa
 // contract - envelope, claim gate, derivation, manager channel and splice. Inert until a box sets it, and a client
 // cannot verify it until the judge has that evidence format's own branch (isolation/m2/judge.mjs).
 const ISOLATION_BACKENDS = ["snp-guest-per-app", "hyperv-partition-per-app"];
+// ISOLATION_DIRECT_ONLY=1: this host serves ONLY owner-committed startup deployments (guestBootstrap) on the SNP tier,
+// from explicitly pinned contracts and operator-selected package/artifact replicas, with every Enclave relay service
+// (secrets, release list, domains, certificates, DNS push) configured off. Startup refuses anything else
+// (directOnlyProblems, docs/network/direct-host-control.md); a legacy or uncommitted deployment is refused, never
+// launched by a fallback.
+const ISOLATION_DIRECT_ONLY = /^(1|true|on)$/i.test(process.env.ISOLATION_DIRECT_ONLY || "");
 const VMMGR_URL = (process.env.VMMGR_URL || "http://127.0.0.1:8091").replace(/\/+$/, "");
 function mgrReq(method, path, body, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
@@ -543,6 +553,18 @@ async function registryRev() {
 let _registered = false;
 let _registeredOn = null;         // WHICH registry _registered refers to (see below)
 let _enclaveId = null;            // our EnclaveRegistry id (keccak256 of the advertised endpoint); claim gating needs it
+const HOST_WALLET_POLICY = hostAdmissionConfigured();
+let _hostWalletAdmission = null;
+async function hostWalletRefusal(deploymentId,appRef,forPrivate=false) {
+  if(!HOST_WALLET_POLICY)return null;
+  try {
+    if(!_enclaveId)throw new Error('registered host identity unavailable');
+    if(!_hostWalletAdmission || _hostWalletAdmission.hostId!==_enclaveId)
+      _hostWalletAdmission=hostAdmissionFromEnv({hostId:_enclaveId,rpc:RPC_POOL,addressBook:process.env.ADDRESS_BOOK_ADDRESS});
+    return await _hostWalletAdmission.refusal({deploymentId,appRef,forPrivate});
+  }catch(e){return 'host wallet policy unavailable: '+String(e.message).slice(0,240);}
+}
+const hostCatalogAddress=()=>process.env.ENCLAVE_HOST_CATALOG_PIN || APP_CATALOG_ADDRESS;
 let _advertisedEndpoint = null;   // the endpoint we registered under; adopted deployments build their URL from it
 /// Has the address book moved the registry out from under our registration?
 /// Every guard that would otherwise short-circuit on `_registered` has to ask
@@ -2066,11 +2088,12 @@ function parseDepOptions(raw, gpuMilli) {
   // deployment that is already serving here - with a message that says what the deployment asked for.
   if ("isolation" in o && !ISOLATION_BACKEND)
     throw new Error(`this deployment requires per-app hardware isolation (isolation.require=${JSON.stringify(o.isolation && o.isolation.require)}), which this runner does not provide`);
-  const known = ["waf", "config", "configCid", "gpu", "network", "placement", ...(ISOLATION_BACKEND ? ["isolation"] : [])];
+  const known = ["waf", "config", "configCid", "gpu", "network", "placement", ...(ISOLATION_BACKEND ? ["isolation"] : []), ...(ISOLATION_BACKEND === "snp-guest-per-app" ? ["guestBootstrap"] : [])];
   const unknown = Object.keys(o).filter((k) => !known.includes(k));
   if (unknown.length) throw new Error(`unknown option namespace ${JSON.stringify(unknown[0])} (this runner knows: ${known.join(", ")})`);
   const opts = ISOLATION_BACKEND ? { isolation: ISOLATION_BACKEND } : {};
   const pin = pinnedHost(raw); if (pin) opts.pinnedHost = pin;
+  if ("guestBootstrap" in o) opts.guestBootstrap = bootstrapIntent(s);
   if ("isolation" in o) {
     const iso = o.isolation;
     if (!iso || Array.isArray(iso) || typeof iso !== "object")
@@ -2209,6 +2232,7 @@ function parseDepOptions(raw, gpuMilli) {
 // ignores it — the exact pairing a rev-7 VERSION already produces, which is why
 // nothing downstream of here needs to know which of the two set it.
 function overrideConfigFields(o, g) {
+  if (o.guestBootstrap) return { config: g?._bootstrap?.manifest.configText || "", appConfigCid: "", configOverride: true };
   if (!("config" in o) && !("configCid" in o))
     return { config: (g && g.config) || "", appConfigCid: (g && g.configCid) || "", configOverride: false };
   return { config: "config" in o ? JSON.stringify(o.config) : "",
@@ -2249,7 +2273,7 @@ function envelopeEditVerdict(rec, chainCid) {
   // the claim gate refuses a deployment that sets them), so adding them to a running deployment is surfaced as an
   // error rather than swapped in as rules that would silently never run.
   if (ISOLATION_BACKEND && newO.waf && Object.keys(newO.waf).length) return "error";
-  const cfg = (o) => ("config" in o || "configCid" in o)
+  const cfg = (o) => o.guestBootstrap ? JSON.stringify(o.guestBootstrap) : ("config" in o || "configCid" in o)
     ? JSON.stringify([o.configCid || "", "config" in o ? o.config : null]) : null;
   return cfg(newO) === cfg(oldO) ? "waf" : "restart";
 }
@@ -2351,6 +2375,7 @@ function isolationSpawnDerivation({ catalogRef, wasmRef, versionMemMb, runtimeId
 // (rec.firewall), so this does too; anything missing or underivable is false: a replacement, the conservative side.
 function isolationHeldSameRecord(held, g, firewall, runtimeId, inference = null) {
   if (!held || typeof held.recordSha256 !== "string" || !/^[0-9a-f]{64}$/.test(held.recordSha256) || !g || !runtimeId) return false;
+  if (g._bootstrap && (held.directBootstrap !== true || held.bootstrapSha256 !== g._bootstrap.sha256 || held.appId !== g._bootstrap.manifest.appId || held.runtimeId !== g._bootstrap.manifest.runtimeId)) return false;
   try {
     // what the claim path would put on the record (rec.image = g.ref, rec.appWasm = g.wasmRef, rec._versionMemMb =
     // g.min.memMb, rec.firewall = the parsed firewall), through the spawn's own derivation
@@ -2376,7 +2401,7 @@ async function managerPrefetchBody(g) {
 //     is a leak, a dropped config is a wrong app. guestd refuses the same things at launch; refusing here keeps
 //     the lease from being taken for work that could only fail.
 function isolationClaimVerdict({ backend, require, manager, gpuMilli, config, appConfigCid, hasSecrets,
-                                 firewall, volumes, isPublic, waf, policy, held, heldSameRecord, listed, cpuMilli }) {
+                                 firewall, volumes, isPublic, waf, policy, held, heldSameRecord, listed, cpuMilli, guestBootstrap }) {
   if (!backend) return null;
   if (!ISOLATION_BACKENDS.includes(backend))
     return `ISOLATION_BACKEND=${JSON.stringify(backend)} is not a backend this build knows; taking no tenant work`;
@@ -2387,15 +2412,18 @@ function isolationClaimVerdict({ backend, require, manager, gpuMilli, config, ap
          + `${manager ? "backend=" + JSON.stringify(manager.backend ?? null) : "nothing: unreachable"}); `
          + "refusing rather than running this deployment without the isolation it requires";
   const sup = manager.supports || {};
+  const direct = !!guestBootstrap && sup.directBootstrap === true;
+  if (guestBootstrap && !direct) return "the manager does not support owner-committed guest bootstrap";
+  if (sup.directBootstrap === true && !direct) return "this manager requires an owner-committed startup package";
   if (Number(gpuMilli) > 0 && sup.gpu !== true)
     return "the deployment bought a GPU share, and a per-app SNP guest has no GPU path";
   // The attested release (docs/security/attested-release.md) delivers a deployment's config and secrets INTO its
   // guest, sealed to a key only that guest holds; nothing of them crosses this host or guestd's. Claimable only when
   // BOTH ends say so: guestd runs with -release (supports.release) and this box's operator opted in
   // (ISOLATION_RELEASE=1, once the relay's release is on and each already-leased deployment passed its go/no-go).
-  if (isolationReleaseOn(manager) && listed === "unknown")
+  if (!direct && isolationReleaseOn(manager) && listed === "unknown")
     return "the relay's release list could not be read for this deployment just now; not claiming it until it can be";
-  const released = isolationReleaseGuest(manager, listed);
+  const released = direct || isolationReleaseGuest(manager, listed);
   if ((config || appConfigCid) && sup.config !== true && !released)
     return "the deployment carries app config, which is not yet delivered into a per-app guest";
   if (hasSecrets !== false && sup.secrets !== true && !released)
@@ -2462,6 +2490,38 @@ function isolationReleaseOn(manager) {
 // claim gate both decide through this predicate.
 function isolationReleaseGuest(manager, listed) {
   return isolationReleaseOn(manager) && listed === "listed";
+}
+// Any host may fetch the raw CID implied by the owner's committed hash.
+const bootstrapBytes = new Map();
+const bootstrapGateways = () => {
+  const file=process.env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE;
+  if(file){
+    if(process.env.GUEST_BOOTSTRAP_GATEWAYS)throw Error("choose a storage plan or explicit bootstrap gateways, not both");
+    const fd=openSync(file,"r");let data;
+    try {const bytes=Buffer.alloc(16385);let size=0;
+      while(size<bytes.length){const n=readSync(fd,bytes,size,bytes.length-size,null);if(!n)break;size+=n;}
+      if(size>16384)throw Error("bootstrap storage plan too large");data=bytes.subarray(0,size).toString("utf8");
+    } finally {closeSync(fd);}
+    return validateStoragePlan(parseUniqueJSON(data)).replicas.map(r=>r.gateway);
+  }
+  return String(process.env.GUEST_BOOTSTRAP_GATEWAYS || "https://ipfs.io/ipfs,https://dweb.link/ipfs").split(",").map(x=>x.trim()).filter(Boolean);
+};
+async function directPackageFor(d, manager) {
+  const intent = bootstrapIntent(d.configCid);
+  if (!intent) return null;
+  if (ISOLATION_BACKEND !== "snp-guest-per-app" || manager?.supports?.directBootstrap !== true)
+    throw new Error("owner-committed startup needs a direct-bootstrap SNP manager");
+  const runtimeId = manager?.catalog?.runtimeId;
+  if (!/^[0-9a-f]{64}$/.test(runtimeId || "")) throw new Error("direct manager has no runtime identity");
+  const scope = {chainId:CHAIN_ID, ledger:DEPLOYMENTS_ADDRESS, deployment:String(d.id).toLowerCase(), owner:d.owner,
+    appRef:d.appRef, runtimeId};
+  if (bootstrapBytes.has(intent.sha256)) return verifyPackage(bootstrapBytes.get(intent.sha256),intent,scope);
+  // Literal-IP HTTP replicas are accepted (never HTTP names, credentials, queries or redirects): the bytes are bound by
+  // the owner's on-chain hash and the scope above, so the transport supplies availability, not authority.
+  const p = await fetchPackage(intent,scope,{gateways:bootstrapGateways(),allowHttpIPs:true});
+  if (bootstrapBytes.size >= 64) bootstrapBytes.delete(bootstrapBytes.keys().next().value);
+  bootstrapBytes.set(intent.sha256,p.bytes);
+  return p;
 }
 // The relay's list for one deployment, in THREE states (enclave-99's review of e425947a):
 //   "listed"    exactly {id: <this id>, listed: true}
@@ -2550,16 +2610,17 @@ const custodyOperatorMessage = (id, endpoint, bindingHex, expiry) =>
 // v2: guestd reports { v: 2, vault, binding }; the message names the v2 vault, and only THIS box's measured one is signed for
 const custodyOperatorMessageV2 = (vault, id, endpoint, bindingHex, expiry) =>
   `enclave-custody-release-v2:${CUSTODY_CHAIN_ID}:${vault}:${id}:${endpoint}:${bindingHex}:${expiry}`;
-async function authorizeCustody(id, bindingHex, endpoint = _advertisedEndpoint, { v = 1, vault = null } = {}) {
+async function authorizeCustody(id, bindingHex, endpoint = _advertisedEndpoint, { v = 1, vault = null, committedVault = null } = {}) {
   if (!REGISTRY_PK) throw new Error("no operator key: a custody release is authorized by the endpoint's registry operator");
   if (!endpoint) throw new Error("this box has no registered endpoint yet");
   if (!/^[0-9a-f]{64}$/.test(String(bindingHex))) throw new Error("the guest's custody binding is not 32 bytes of hex");
   const expiry = Math.floor(Date.now() / 1000) + CUSTODY_SIG_TTL_SEC;
   let message;
   if (v === 2) {
-    if (!/^0x[0-9a-f]{40}$/.test(CUSTODY_VAULT_V2)) throw new Error("CUSTODY_VAULT_V2 is not set: this box cannot authorize v2 custody releases");
-    if (String(vault || "").toLowerCase() !== CUSTODY_VAULT_V2) throw new Error("the guest asked for a v2 vault this box does not serve");
-    message = custodyOperatorMessageV2(CUSTODY_VAULT_V2, String(id).toLowerCase(), endpoint, bindingHex, expiry);
+    const acceptedVault = committedVault || CUSTODY_VAULT_V2;
+    if (!/^0x[0-9a-f]{40}$/.test(acceptedVault)) throw new Error("CUSTODY_VAULT_V2 is not set: this box cannot authorize v2 custody releases");
+    if (String(vault || "").toLowerCase() !== acceptedVault) throw new Error("the guest asked for a v2 vault this box does not serve");
+    message = custodyOperatorMessageV2(acceptedVault, String(id).toLowerCase(), endpoint, bindingHex, expiry);
   } else {
     if (!/^0x[0-9a-f]{40}$/.test(CUSTODY_VAULT)) throw new Error("CUSTODY_VAULT is not set: this box cannot authorize custody releases");
     message = custodyOperatorMessage(String(id).toLowerCase(), endpoint, bindingHex, expiry);
@@ -2573,9 +2634,9 @@ async function authorizeCustody(id, bindingHex, endpoint = _advertisedEndpoint, 
 // is no longer starting (running, failed, gone) or at the deadline. A relay refusal is retried while the guest waits:
 // guestd's hold (5 min) is what ends a guest whose ticket never comes, through its lifecycle.
 const _ticketPumps = new Map();   // vmId -> the pump's promise
-function pumpReleaseTicket(deploymentId, vmId) {
+function pumpReleaseTicket(deploymentId, vmId, directManifest = null) {
   if (_ticketPumps.has(vmId)) return _ticketPumps.get(vmId);
-  const p = releaseTicketPump(deploymentId, vmId)
+  const p = releaseTicketPump(deploymentId, vmId, {directManifest})
     .catch((e) => { console.warn(`[isolation] ${deploymentId.slice(0, 10)}: release ticket pump for ${vmId} ended: ${e.message}`); return "error"; })
     .finally(() => _ticketPumps.delete(vmId));
   _ticketPumps.set(vmId, p);
@@ -2583,7 +2644,7 @@ function pumpReleaseTicket(deploymentId, vmId) {
 }
 async function releaseTicketPump(deploymentId, vmId, { req = vmReq, fetchTicket = fetchReleaseTicket, authorize = authorizeCustody,
                                                         pollMs = 2000, retryMs = 10_000, deadlineMs = 15 * 60_000,
-                                                        sleep = sleepMs, log = console } = {}) {
+                                                        sleep = sleepMs, log = console, directManifest = null } = {}) {
   const until = Date.now() + deadlineMs, path = `/vms/${encodeURIComponent(vmId)}`;
   let handed = false, nextTry = 0, nextAuth = 0;
   const authorized = new Set();   // bindings already signed for this guest (a retried release asks with a new one)
@@ -2592,6 +2653,7 @@ async function releaseTicketPump(deploymentId, vmId, { req = vmReq, fetchTicket 
     const v = r && r.status === 200 ? r.body : null;
     if (r && r.status === 404) return "gone";
     if (v && v.status !== "starting") return v.status;          // running, failed: nothing more to hand
+    if (directManifest && v?.awaitingTicket === true) throw new Error("direct guest requested a relay ticket");
     if (v && v.awaitingTicket === true && !handed && Date.now() >= nextTry) {
       try {
         const ticket = await fetchTicket(deploymentId);
@@ -2618,7 +2680,10 @@ async function releaseTicketPump(deploymentId, vmId, { req = vmReq, fetchTicket 
     const wantOpts = aw && typeof aw === "object" ? { v: 2, vault: String(aw.vault || "") } : { v: 1 };
     if (want && /^[0-9a-f]{64}$/.test(want) && !authorized.has(want) && Date.now() >= nextAuth) {
       try {
-        const a = await authorize(deploymentId, want, undefined, wantOpts);
+        if (directManifest && (directManifest.secretsMode !== "custody-v2" || wantOpts.v !== 2 || wantOpts.vault.toLowerCase() !== directManifest.custody.vault.toLowerCase()))
+          throw new Error("custody request differs from owner startup commitment");
+        const a = await authorize(deploymentId, want, undefined, {...wantOpts,
+          ...(directManifest ? {committedVault:directManifest.custody.vault.toLowerCase()} : {})});
         const p = await req("POST", `${path}/custody-auth`, a, 10_000);
         if (p.status === 202) {
           authorized.add(want);
@@ -3426,9 +3491,27 @@ const chainClient = createPublicClient({ chain: base, transport: rpcTransport() 
 // apiBases(): each API front door (SESSION_API_HOSTS, default api.enclave.host) as is and with /t/<tunnel name>, and this
 // box's own public URLs (PUBLIC_URL, the attested certificate SAN). Never the Host header.
 // SESSION_API_TUNNEL_NAMES adds tunnel names beyond the one PUBLIC_URL's /t/<name> path already names.
-// Vault factories: the address book's sessionVaultFactory plus SESSIONS_FACTORIES (default v2 + v1).
+// Pinned hosts use only their exact factory and ledger. Legacy hosts add the book's factory to SESSIONS_FACTORIES.
 const SESSION_API_HOSTS = envList(process.env.SESSION_API_HOSTS);
+// MANAGEMENT_GATEWAY=1 with MANAGEMENT_GATEWAY_TOKEN: owners may also sign for this host's independent management gateway
+// (network/management-gateway.mjs, docs/network/independent-management.md). Its base is DERIVED from this host's registry
+// id (keccak256 of PUBLIC_URL, as registerOnChain registers it), never configured, and it is accepted ONLY on a request
+// that arrives on loopback carrying the gateway's shared token: no other ingress (the relay tunnel, PUBLIC_URL) can use a
+// management-base signature to bypass the gateway's agreed-RPC authorization. The relay and PUBLIC_URL bases are
+// unchanged. Kept inline so the image needs no network/ module.
+const MANAGEMENT_GATEWAY = /^(1|true|on)$/i.test(process.env.MANAGEMENT_GATEWAY || "");
+const MANAGEMENT_GATEWAY_TOKEN = String(process.env.MANAGEMENT_GATEWAY_TOKEN || "").trim().toLowerCase();
+if (MANAGEMENT_GATEWAY && !/^[0-9a-f]{64,128}$/.test(MANAGEMENT_GATEWAY_TOKEN))
+  console.error("[management] MANAGEMENT_GATEWAY=1 needs MANAGEMENT_GATEWAY_TOKEN (32-64 bytes of hex, shared with the gateway); the management base stays disabled");
+const managementBaseOf = (publicUrl) => `enclave-management.invalid/${keccak256(stringToBytes(publicUrl))}`;
+function managementBasesFor(req) {
+  if (!MANAGEMENT_GATEWAY || !PUBLIC_URL || !/^[0-9a-f]{64,128}$/.test(MANAGEMENT_GATEWAY_TOKEN)) return [];
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(String(req.socket && req.socket.remoteAddress || ""))) return [];
+  const t = Buffer.from(String(req.headers["x-enclave-management-gateway"] || "")), want = Buffer.from(MANAGEMENT_GATEWAY_TOKEN);
+  return t.length === want.length && timingSafeEqual(t, want) ? [managementBaseOf(PUBLIC_URL)] : [];
+}
 const sessionApi = createSessionApiAuth({
+  authorityPins: CONTRACT_PINS,
   pc: chainClient,
   book: () => (process.env.ADDRESS_BOOK_ADDRESS || "").trim() || null,
   ledger: () => DEPLOYMENTS_ADDRESS || null,
@@ -4066,7 +4149,7 @@ if (process.env.LAUNCH_SPEC_SELFTEST) {
   })));
   process.exit(0);
 }
-async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVramGb, gpuCardsHeld, image, appPort, ports, config, configCid, secrets, secretsStaged, hosts, catalogRef, versionMemMb }) {
+async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVramGb, gpuCardsHeld, image, appPort, ports, config, configCid, secrets, secretsStaged, hosts, catalogRef, versionMemMb, bootstrap, bootstrapManifest }) {
   // Two backends. "vm": hand the app reference to the app manager on VMMGR_URL
   // (the wasm-manager runs it as a `wasmtime serve` process; cpuShare is its
   // admission unit and sets the guest memory cap — cpuShare × node RAM;
@@ -4089,7 +4172,10 @@ async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVra
     const h = await vmHealth();
     // on this tier launchSpec never pulls secret VALUES (enclave-99's L6): a release guest gets them from the relay
     // itself, and any other guest may not have any; `secretsStaged` is only whether some are staged
-    const released = await isolationSpawnRelease(h, deploymentId,
+    const direct = !!bootstrap;
+    if (ISOLATION_DIRECT_ONLY && !direct) throw new Error("this direct-only host launches only owner-committed startup deployments");
+    if (direct && h?.supports?.directBootstrap !== true) throw new Error("manager lost direct bootstrap support");
+    const released = direct ? false : await isolationSpawnRelease(h, deploymentId,
       { config, configCid, staged: secrets ? true : (secretsStaged === undefined ? false : secretsStaged) });
     isolationPortsOf(ports); // validate the complete measured port set
     // The policy is the version's; a record that lost the version's memMb must not guess one (a different policy
@@ -4113,7 +4199,7 @@ async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVra
       gpuShare: gpuShare || 0, appPort: appPort || 8080, ports: [], config: "", configCid: "", egress: "", derive,
       ...(hosts && hosts.length ? { hosts: hosts.join(",") } : {}),
       // sent only when true: a guestd that predates the release refuses unknown fields, and it is never asked for one
-      ...(released ? { release: true } : {}) };
+      ...(released ? { release: true } : {}), ...(direct ? {bootstrap} : {}) };
     let r = await vmReq("POST", "/vms", body, SPAWN_TIMEOUT_MS);
     // Guests live on the HOST and outlive this node CVM: after a node restart, guestd still runs the guest this
     // deployment launched before. Adopt it only if it is starting or running AND was launched from exactly this
@@ -4124,9 +4210,11 @@ async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVra
       const cur = await vmReq("GET", `/vms/${encodeURIComponent(r.body.id)}`, null, 10_000);
       const v = cur && cur.status === 200 && cur.body;
       if (v && v.name === deploymentId && (v.status === "running" || v.status === "starting")
+          && (v.directBootstrap === true) === direct
+          && (!direct || v.appId === bootstrapManifest.appId && v.runtimeId === bootstrapManifest.runtimeId && v.bootstrapSha256 === createHash("sha256").update(Buffer.from(bootstrap,"base64")).digest("hex"))
           && v.recordSha256 === derivationDigest({ ...derive, runtimeId: v.runtimeId || derive.runtimeId })) {
         console.log(`[isolation] ${deploymentId.slice(0, 10)}: adopted guest ${v.id} (${v.status}), launched from this record before the node restarted`);
-        if (v.status === "starting" && v.release === true) pumpReleaseTicket(deploymentId, v.id);
+        if (v.status === "starting" && (v.release === true || direct)) pumpReleaseTicket(deploymentId, v.id, direct ? bootstrapManifest : null);
         return { internalPort: 0, vmId: v.id, hostPort: 0, appId: v.appId };
       }
       console.warn(`[isolation] ${deploymentId.slice(0, 10)}: guest ${r.body.id} under this name is not this record's; ending it and launching again`);
@@ -4139,7 +4227,7 @@ async function spawnContainer({ deploymentId, gpuShare, cpuShare, cardId, gpuVra
               + `(${ISOLATION_POLICY_RULE} ${JSON.stringify(derive.policy)}, record ${String(r.body.recordSha256 || "").slice(0, 16)}…)${r.reconciled ? " [reconciled]" : ""}`);
     // A release guest's front reads a ticket before it serves, config or not (the host must not be able to start one
     // without its owner's release), so its ticket is pumped; a legacy guest takes none.
-    if (released) pumpReleaseTicket(deploymentId, r.body.id);
+    if (released || direct) pumpReleaseTicket(deploymentId, r.body.id, direct ? bootstrapManifest : null);
     // hostPort 0: the guest's forwarder is on the HOST, which this process cannot reach as 127.0.0.1; liveness is
     // guestd's "running", which it reports only after verifying the guest (instanceAlive, tenantServing)
     return { internalPort: 0, vmId: r.body.id, hostPort: 0, appId: r.body.appId };
@@ -5191,7 +5279,7 @@ function ownerAuth(scope, { refuseSessions = null } = {}) {
     if (isSessionHeader(h)) {
       if (refuseSessions) return fail(res, 403, "session_not_supported", refuseSessions);
       try {
-        req.walletSession = await sessionApi.verify({ header: h, method: req.method, path: req.originalUrl,
+        req.walletSession = await sessionApi.verify({ header: h, method: req.method, path: req.originalUrl, bases: managementBasesFor(req),
           body: req.rawBody, scope, fresh: req.method !== "GET" });
       } catch (e) { return sessionFail(res, e); }
       return next();
@@ -5891,7 +5979,7 @@ app.get("/availability", async (_req, res) => {
 // that emptiness as the box's truth. The response now carries the serving
 // backend's ledger AND the device-measured count beside the worker view, so
 // no caller can mistake one container's empty ledger for an empty card.
-app.get("/v1/gpu", async (_req, res) => {
+async function gpuStatus(_req, res) {
   shieldedCapacity();
   if (_shieldedAdopted) return res.json({
     ok: true, role: "shielded", ...(_shieldedPool ? { pool: shieldedPoolCapacity() } : {}), cards: gpuCards.filter(c => c.shielded).map(c => ({
@@ -5921,6 +6009,13 @@ app.get("/v1/gpu", async (_req, res) => {
   } catch (e) {
     res.status(503).json({ ok: false, error: `worker manager unreachable: ${e.message}` });
   }
+}
+app.get("/v1/gpu", gpuStatus);
+// The independent management gateway exposes this read only for a deployment's authorized session and current runner.
+// Keep the same device/manager data as the legacy host endpoint; it remains host-reported information.
+app.get("/v1/deployments/:id/gpu", ownerAuth("api.status"), async (req, res) => {
+  if (!(await mayAct(req, res, deployments.get(req.params.id)))) return;
+  return gpuStatus(req, res);
 });
 
 // ============================================================================
@@ -6236,17 +6331,18 @@ const CATALOG_ABI = [
 // round; callers that need the answer fail closed and retry next pass.
 let _catRev = { addr: null, rev: null };
 async function catSchemaRev() {
-  if (!APP_CATALOG_ADDRESS) return null;
-  if (_catRev.addr === APP_CATALOG_ADDRESS && _catRev.rev != null) return _catRev.rev;
+  const catalogAddress=hostCatalogAddress();
+  if (!catalogAddress) return null;
+  if (_catRev.addr === catalogAddress && _catRev.rev != null) return _catRev.rev;
   try {
-    const rev = Number(await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    const rev = Number(await chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "catalogSchema" }));
-    _catRev = { addr: APP_CATALOG_ADDRESS, rev };
-    console.log(`[approval] catalog ${APP_CATALOG_ADDRESS} schema rev ${rev}`);
+    _catRev = { addr: catalogAddress, rev };
+    console.log(`[approval] catalog ${catalogAddress} schema rev ${rev}`);
   } catch (e) {
     if (sniffCachePolicy(e.shortMessage || e.message || "") === "cache-rev1") {
-      _catRev = { addr: APP_CATALOG_ADDRESS, rev: 2 };   // pre-catalogSchema catalog
-      console.log(`[approval] catalog ${APP_CATALOG_ADDRESS} schema rev 2 (pre-catalogSchema contract)`);
+      _catRev = { addr: catalogAddress, rev: 2 };   // pre-catalogSchema catalog
+      console.log(`[approval] catalog ${catalogAddress} schema rev 2 (pre-catalogSchema contract)`);
     } else {
       return null;
     }
@@ -6266,6 +6362,7 @@ const ZERO32 = "0x" + "0".repeat(64);
 // ipfs-<cid>.wasm) from dodging the approval check.
 const NO_MIN = { vramMb: 0, gpuGflops: 0, memMb: 0, cpuGflops: 0 };
 async function gateAppReference(reference, opts = {}) {
+  const catalogAddress=hostCatalogAddress();
   const deny = (status, code, msg) => ({ error: { status, code, msg } });
   const ref = String(reference || "").trim();
   const m = CATALOG_REF_RE.exec(ref);
@@ -6274,13 +6371,13 @@ async function gateAppReference(reference, opts = {}) {
     // versions with different approved configs, so it cannot name what to run.
     return deny(422, "invalid_spec", "image.reference must be catalog://<appId>/<versionIndex> — the on-chain record of a catalog version. CID references are retired (a CID names bytes, not a version); redeploy from the console or CLI.");
   }
-  if (!APP_CATALOG_ADDRESS)
-    return deny(503, "approval_unavailable", "Catalog apps are disabled on this enclave: APP_CATALOG_ADDRESS is not configured, so approval cannot be verified.");
+  if (!catalogAddress)
+    return deny(503, "approval_unavailable", "Catalog apps are disabled on this enclave: catalogAddress is not configured, so approval cannot be verified.");
   const [appId, index] = [m[1], Number(m[2])];
   const [ar, vr] = await Promise.allSettled([
-    chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "getApp", args: [appId] }),
-    chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+    chainClient.readContract({ address: getAddress(catalogAddress),
       abi: CATALOG_ABI, functionName: "getVersion", args: [appId, BigInt(index)] }),
   ]);
   if (ar.status === "rejected") {
@@ -6295,7 +6392,8 @@ async function gateAppReference(reference, opts = {}) {
     return deny(503, "catalog_unreachable", "Could not verify this app's approval against the on-chain catalog; try again shortly.");
   }
   const v = vr.value;
-  const verdict = approvalVerdict({ active: a.active, yanked: v.yanked, approval: v.approval,
+  const verdict = HOST_WALLET_POLICY ? await hostWalletRefusal(opts.deploymentId,ref,opts.forPrivate===true)
+    : approvalVerdict({ active: a.active, yanked: v.yanked, approval: v.approval,
                                     slug: a.slug, version: v.version }, opts.forPrivate);
   if (verdict) return deny(403, "not_approved", verdict);
   // The version's publisher fee is part of what approval covered (like config
@@ -6309,7 +6407,7 @@ async function gateAppReference(reference, opts = {}) {
     return deny(503, "catalog_unreachable", "Could not determine the catalog's schema revision; try again shortly.");
   if (catRev >= 5) {
     try {
-      feePerSec6 = await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+      feePerSec6 = await chainClient.readContract({ address: getAddress(catalogAddress),
         abi: CATALOG_ABI, functionName: "versionFee", args: [appId, BigInt(index)] });
     } catch (e) {
       console.warn(`[approval] versionFee(${appId}, ${index}) failed: ${e.shortMessage || e.message}`);
@@ -6324,7 +6422,7 @@ async function gateAppReference(reference, opts = {}) {
   let configCid = "";
   if (catRev >= 7) {
     try {
-      configCid = await chainClient.readContract({ address: getAddress(APP_CATALOG_ADDRESS),
+      configCid = await chainClient.readContract({ address: getAddress(catalogAddress),
         abi: CATALOG_ABI, functionName: "versionConfigCid", args: [appId, BigInt(index)] }) || "";
     } catch (e) {
       console.warn(`[approval] versionConfigCid(${appId}, ${index}) failed: ${e.shortMessage || e.message}`);
@@ -6814,6 +6912,34 @@ const _domainGen = new Map();
 let _domainsKnown = !DOMAINS_API;
 const _certReports = new Map();      // hostname -> { owner, ok, ca, error } queued for the next fetch
 
+// What a direct-only host lacks or still has pointed at an Enclave service (PURE; [] = startable). Every value is read
+// as the code above resolved it, so an unset variable that DEFAULTS to an Enclave origin (SECRETS_API, DOMAINS_API,
+// IPFS_GATEWAY) counts as pointed at it: the operator must say "" or name their own.
+function directOnlyProblems(env, resolved) {
+  const out = [];
+  if (resolved.isolationBackend !== "snp-guest-per-app") out.push("ISOLATION_BACKEND must be snp-guest-per-app");
+  if (resolved.provisionBackend !== "vm") out.push("PROVISION_BACKEND must be vm");
+  if (!resolved.contractPins) out.push("ENCLAVE_CONTRACT_PINS_FILE must pin the contracts (no address book)");
+  if ((env.ADDRESS_BOOK_ADDRESS || "").trim()) out.push("ADDRESS_BOOK_ADDRESS must be empty");
+  if (!(env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE || "").trim() && !(env.GUEST_BOOTSTRAP_GATEWAYS || "").trim())
+    out.push("GUEST_BOOTSTRAP_STORAGE_PLAN_FILE or GUEST_BOOTSTRAP_GATEWAYS must name the package replicas");
+  if (!(env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE || "").trim() && !(env.IPFS_GATEWAY || "").trim())
+    out.push("IPFS_GATEWAY must name the component replicas the prefetch probe asks (its default is Enclave's)");
+  for (const [name, value] of [["SECRETS_API", resolved.secretsApi], ["DOMAINS_API", resolved.domainsApi],
+    ["CERTS_API", resolved.certsApi], ["DNS_API", resolved.dnsApi], ["APP_CERT_DOMAIN", resolved.appCertDomain]])
+    if (value) out.push(`${name} must be empty (set ${name}=""): this mode uses no relay, certificate or DNS service`);
+  if (/^(1|true|on)$/i.test(env.ISOLATION_RELEASE || "")) out.push("ISOLATION_RELEASE must be off: direct startup takes no relay ticket");
+  return out;
+}
+const DIRECT_ONLY_PROBLEMS = ISOLATION_DIRECT_ONLY ? directOnlyProblems(process.env, {
+  isolationBackend: ISOLATION_BACKEND, provisionBackend: PROVISION_BACKEND, contractPins: CONTRACT_PINS,
+  secretsApi: SECRETS_API, domainsApi: DOMAINS_API, certsApi: CERTS_API, dnsApi: DNS_API, appCertDomain: APP_CERT_DOMAIN }) : [];
+if (DIRECT_ONLY_PROBLEMS.length) {
+  console.error(`[direct] ISOLATION_DIRECT_ONLY refused: ${DIRECT_ONLY_PROBLEMS.join("; ")}`);
+  process.exit(2);
+}
+if (ISOLATION_DIRECT_ONLY) console.log("[direct] direct-only host control: owner-committed startup deployments only; relay, domain, certificate and DNS services off");
+
 // The reports waiting for ONE deployment. Both this map and acmeRetry below are keyed by hostname
 // across the whole box, but what they are ABOUT is a (deployment, hostname) pair: a custom domain
 // can be detached from one deployment and attached to another at any moment, and when it moves it
@@ -6924,6 +7050,17 @@ function hostsFor(rec) {
 // never block the launch (fetchDepSecrets falls back to its snapshot and says
 // so) — a relay outage must not take provisioning down with it.
 async function launchSpec(rec) {
+  if (ISOLATION_BACKEND && bootstrapIntent(rec._envelope || "")) {
+    const d = await readLedgerContract("get", [rec.id]);
+    const h = await vmHealth();
+    if (d.appRef !== rec.image?.reference || String(d.configCid) !== rec._envelope)
+      throw new Error("owner changed startup intent before launch; await the ledger audit");
+    const pkg = await directPackageFor({...d,id:rec.id},h);
+    rec.config = pkg.manifest.configText; rec.appConfigCid = "";
+    return {...launchSpecFrom(rec,null,[]), bootstrap:pkg.bytes.toString("base64"), bootstrapManifest:pkg.manifest, secretsStaged:false};
+  }
+  // never the relay-held legacy launch below: an envelope edited away from its commitment fails here, not elsewhere
+  if (ISOLATION_DIRECT_ONLY) throw new Error("this direct-only host launches only owner-committed startup deployments");
   const relayHeld = PROVISION_BACKEND === "vm" && rec._onchain;
   // The per-app isolation tier never takes secret VALUES into this node (enclave-99's L6): a release guest fetches
   // them from the relay itself, sealed to it, and no other guest there may have any. It asks only WHETHER some are
@@ -7468,7 +7605,7 @@ app.get("/v1/deployments/:id/attestation", async (req, res) => {
   let isOwner = false;
   if (isSessionHeader(req.headers.authorization)) {
     let s;
-    try { s = await sessionApi.verify({ header: req.headers.authorization, method: req.method, path: req.originalUrl,
+    try { s = await sessionApi.verify({ header: req.headers.authorization, method: req.method, path: req.originalUrl, bases: managementBasesFor(req),
       body: req.rawBody, scope: null }); }
     catch (e) { return sessionFail(res, e); }
     isOwner = hasScope(s.actions, "api.status")
@@ -9023,6 +9160,24 @@ if (process.env.RELEASE_SELFTEST) {
     console.log(JSON.stringify(out));
     process.exit(0);
   }
+  if (c.bootstrapLaunchSpec) {
+    const x=c.bootstrapLaunchSpec, calls=[], posted=[], deleted=[]; let offeredHeld=false,derive;
+    globalThis.fetch=async (url)=>{calls.push(String(url));if(!String(url).startsWith("https://independent.example/ipfs/"))throw Error("Enclave services refused");return new Response(Buffer.from(x.bytes,"base64"));};
+    readLedgerContract=async()=>x.row;
+    vmReq=async(method,path,body)=>{
+      if(method==="GET"&&path==="/health")return {status:200,body:x.health};
+      if(method==="POST"&&path==="/vms"){posted.push(body);derive=body.derive;
+        if(x.heldHash&&!offeredHeld){offeredHeld=true;return {status:409,body:{id:"gd0a0b0c0d"}};}
+        return {status:201,body:{id:"gd0a0b0c0d",appId:x.appId}};}
+      if(method==="GET"&&path==="/vms/gd0a0b0c0d")return {status:200,body:{id:"gd0a0b0c0d",name:x.rec.id,status:"running",appId:x.appId,runtimeId:derive.runtimeId,recordSha256:derivationDigest(derive),directBootstrap:true,bootstrapSha256:x.heldHash}};
+      if(method==="DELETE"){deleted.push(path);return {status:200,body:{}};}
+      return {status:404,body:{}};
+    };
+    pumpReleaseTicket=()=>Promise.resolve("recorded");
+    let error=null;const rec=x.rec;
+    try{await spawnContainer(await launchSpec(rec));}catch(e){error=e.message;}
+    console.log(JSON.stringify({calls,posted,deleted,error,config:rec.config}));process.exit(0);
+  }
   if (c.spawnSite) {               // {"spawnSite":{health, spec}}: the REAL spawnContainer against a scripted guestd
     const posted = [], pumped = [];
     vmReq = async (method, path, body) => {
@@ -9064,7 +9219,7 @@ if (process.env.RELEASE_SELFTEST) {
   };
   const log = { log: (m) => logs.push(m), warn: (m) => logs.push(m) };
   // a REF'd sleep: sleepMs unrefs its timer (right for the long-running process), and here nothing else holds the loop
-  const result = await releaseTicketPump(c.id, c.vmId, { req, pollMs: 5, retryMs: c.retryMs ?? 5, deadlineMs: c.deadlineMs ?? 5000,
+  const result = await releaseTicketPump(c.id, c.vmId, { req, directManifest:c.directManifest || null, pollMs: 5, retryMs: c.retryMs ?? 5, deadlineMs: c.deadlineMs ?? 5000,
     log, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), fetchTicket: (id) => fetchReleaseTicket(id, c.endpoint),
     authorize: (id, b, _e, o) => authorizeCustody(id, b, c.endpoint, o) });
   console.log(JSON.stringify({ result, posts, logs }));
@@ -9248,24 +9403,12 @@ function prefetchProbeDue(entry, nowMs) {
   return entry.stage === "prefetch" && !!entry.cid && (entry.probeClears || 0) < 3
       && nowMs - (entry.probedAt || 0) >= 60_000;
 }
-// One cheap ranged read against the SAME gateway the manager prefetches from
-// (same env, same default — wasm_manager.py's IPFS_GATEWAY). 200/206 = the
-// bytes are addressable again; the full prefetch+verify still runs on the
-// claim path, so a lying gateway only buys itself another verified failure.
-// A network-level failure (down, unreachable) marks the gateway bad for a
-// minute — one probe may stall its 10s, but a queue of held ids must not each
-// pay that stall on every sweep pass.
-const IPFS_GATEWAY = (process.env.IPFS_GATEWAY || "https://ipfs.enclave.host").replace(/\/+$/, "");
-let _gatewayDownUntil = 0;
-async function gatewayServes(cid) {
-  if (Date.now() < _gatewayDownUntil) return false;
-  try {
-    const r = await fetch(`${IPFS_GATEWAY}/ipfs/${cid}`, { headers: { range: "bytes=0-0" },
-                          signal: AbortSignal.timeout(10_000) });
-    try { await r.body?.cancel(); } catch {}
-    return r.status === 200 || r.status === 206;
-  } catch { _gatewayDownUntil = Date.now() + 60_000; return false; }
-}
+// Probe every explicitly selected artifact replica. A failed endpoint only
+// backs off itself; a successful probe still requires full CID verification.
+const gatewayServes=createArtifactGatewayProbe({gateways:()=>
+  process.env.GUEST_BOOTSTRAP_STORAGE_PLAN_FILE
+    ? bootstrapGateways().map(url=>new URL(url).origin)
+    : process.env.IPFS_GATEWAY || "https://ipfs.enclave.host"});
 
 // Release with retries, in the background. A failed release strands the lease
 // until it expires (~leaseSec of dead air for the user) — observed live when
@@ -9319,6 +9462,8 @@ async function renewLeases() {
       const fresh = await readLedgerContract("get", [rec.id]);
       const pinRefusal = placementRefusal(fresh.configCid, _enclaveId);
       if (pinRefusal) { await retireForPlacement(rec, pinRefusal); continue; }
+      const walletRefusal = await hostWalletRefusal(rec.id,fresh.appRef,fresh.isPublic===false);
+      if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
       const sent = lapsed ? sendClaimTx("claim", [rec.id, _enclaveId]) : sendClaimTx("renew", [rec.id]);
       await sent;
       const rcpt = await sent.receipt;
@@ -9415,9 +9560,14 @@ async function switchTenantVersion(rec, d) {
     if (!optional) return evict("GPU work on a CPU-only enclave");
   }
   let g;
-  try { g = await gateAppReference(to, { forPrivate: !d.isPublic }); }
+  try { g = await gateAppReference(to, { forPrivate: !d.isPublic, deploymentId:d.id }); }
   catch (e) { g = { error: { status: 503, msg: e.shortMessage || e.message } }; }
   if (g.error) return refuse(g.error.msg, g.error.status === 503);
+  if (bootstrapIntent(d.configCid)) {
+    try { const pkg=await directPackageFor(d,await vmHealth()); g={...g,_bootstrap:pkg,config:pkg.manifest.configText,configCid:""}; }
+    catch(e){return refuse("startup package: "+e.message,true);}
+  }
+
   // the version must fit the shares the row NOW carries (bought at create, or
   // re-bought by the owner's latest resize), sized against where this tenant
   // is ACTUALLY running: a CPU-fallback tenant holds no card, so the new
@@ -9547,9 +9697,13 @@ async function applyEnvelopeEdit(rec, d, verdict) {
   if (!("config" in o) && !("configCid" in o)) {
     // override removed: back to the version's own config — which on a rev-7
     // version means restoring its CID, not just its (manifest-only) inline field
-    try { g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic }); }
+    try { g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic, deploymentId:d.id }); }
     catch (e) { g = { error: { msg: e.shortMessage || e.message } }; }
     if (g.error) return refuse("couldn't resolve the version's config to fall back to: " + g.error.msg);
+  }
+  if (o.guestBootstrap) {
+    try { const pkg=await directPackageFor(d,await vmHealth()); g={...(g||{}),_bootstrap:pkg}; }
+    catch(e){return refuse("startup package: "+e.message);}
   }
   const f = overrideConfigFields(o, g);
   console.log(`[claim] ${rec.id} owner changed the deployment config on-chain; restarting in place`);
@@ -9616,6 +9770,7 @@ async function ledgerMoveSweep() {
 const YANK_SWEEP_SEC = parseInt(process.env.YANK_SWEEP_SEC || "300", 10);
 let _yankBusy = false;
 async function yankSweep() {
+  // Publisher yanks remain enforced alongside wallet policy on every host.
   if (_yankBusy || !APP_CATALOG_ADDRESS) return;
   _yankBusy = true;
   try {
@@ -9668,6 +9823,8 @@ async function auditClaims(ledgerById) {
     // AND the sweep (per-record re-reads were what blew the RPC rate budget)
     const d = ledgerById.get(rec.id.toLowerCase());
     if (!d) continue;                         // not in the page (RPC anomaly): keep serving, the lease is prepaid
+    const walletRefusal = await hostWalletRefusal(rec.id,d.appRef,d.isPublic===false);
+    if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
     const pinRefusal = placementRefusal(d.configCid, _enclaveId);
     if (pinRefusal) {
       await retireForPlacement(rec, pinRefusal);
@@ -10250,6 +10407,8 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
   let claimOpts;
   try { claimOpts = parseDepOptions(d.configCid, d.gpuMilli); }
   catch (e) { return "deployment options refused: " + e.message; }
+  if (ISOLATION_DIRECT_ONLY && !claimOpts.guestBootstrap)
+    return "this direct-only host serves only owner-committed startup deployments (guestBootstrap); this one has none";
   const pinRefusal = placementRefusal(d.configCid, _enclaveId);
   if (pinRefusal) return pinRefusal;
   // Routing: the deployment bought two shares. GPU work (gpuMilli > 0)
@@ -10315,8 +10474,15 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
   // The VERSION now comes before the routing decision, because what the app
   // needs is what decides whether this box can serve the card ask at all. It
   // also removes the second gateAppReference the CPU-only branch used to make.
-  const g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic });
+  let g = await gateAppReference(d.appRef, { forPrivate: !d.isPublic, deploymentId:d.id });
   if (g.error) return "app not deployable: " + g.error.msg;   // unapproved/unknown record (or catalog unreachable: fail closed)
+  if (claimOpts.guestBootstrap) {
+    try {
+      const pkg = await directPackageFor(d,await vmHealth());
+      g = {...g,_bootstrap:pkg,config:pkg.manifest.configText,configCid:""};
+    } catch(e) { return "startup package unavailable: " + e.message; }
+  }
+
   // One /health serves the sizing, the GPU readiness check and volumeGate
   // below. Fetched only when one of them will actually want it, so a plain CPU
   // claim on a volume-less app costs no extra round trip. null = unreachable,
@@ -10464,7 +10630,7 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
     const sh = await vmHealth().catch(() => null);
     if (!sh) return "app uses shared-everything threads and the app manager cannot be asked (unreachable)";
     if (sh.set !== true) return "app uses shared-everything threads and this box's runtime does not serve them";
-    if (sh.setRequiresRelease === true && !isolationReleaseGuest(sh, await releaseListedFor(d.id)))
+    if (sh.setRequiresRelease === true && !g._bootstrap && !isolationReleaseGuest(sh, await releaseListedFor(d.id)))
       return "app uses shared-everything threads and must use this host's updated attested guest release";
   }
   // wasm64 (memory64): gated exactly the same, on the manager's own flagless
@@ -10474,7 +10640,7 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
     const mh = await vmHealth().catch(() => null);
     if (!mh) return "app is a wasm64 (memory64) module and the app manager cannot be asked (unreachable)";
     if (mh.mem64 !== true) return "app is a wasm64 (memory64) module and this box's runtime does not serve it";
-    if (mh.mem64RequiresRelease === true && !isolationReleaseGuest(mh, await releaseListedFor(d.id)))
+    if (mh.mem64RequiresRelease === true && !g._bootstrap && !isolationReleaseGuest(mh, await releaseListedFor(d.id)))
       return "app uses 64-bit memory and must use this host's updated attested guest release";
   }
   // The firewall is the VERSION's declared ports — part of what approval
@@ -10515,13 +10681,13 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
       (()=>{ try { return isolatedInference(d.gpuMilli,neededVolumes(d,g)); } catch { return null; } })());
     // the relay's list is read only for a deployment that passes the cheap checks first (it requires this tier, and
     // the manager IS this tier's) on an opted-in box: one status call per real candidate, not per sweep entry (L1)
-    const isoAsk = claimOpts.isolation === ISOLATION_BACKEND && isoMgr && isoMgr.backend === ISOLATION_BACKEND && isolationReleaseOn(isoMgr);
+    const isoAsk = !claimOpts.guestBootstrap && claimOpts.isolation === ISOLATION_BACKEND && isoMgr && isoMgr.backend === ISOLATION_BACKEND && isolationReleaseOn(isoMgr);
     const isoWhy = isolationClaimVerdict({ backend: ISOLATION_BACKEND, require: claimOpts.isolation,
-      manager: isoMgr, listed: isoAsk ? await releaseListedFor(d.id) : "unlisted",
+      manager: isoMgr, guestBootstrap: claimOpts.guestBootstrap, listed: isoAsk ? await releaseListedFor(d.id) : "unlisted",
       cpuMilli: d.cpuMilli, gpuMilli: d.gpuMilli, ...cf, config: isolationAppConfig(cf.config),
       policy: isolationPolicyFor(g.min),
       held: isoHeld, heldSameRecord,
-      hasSecrets: await depHasSecrets(d.id), firewall, volumes: neededVolumes(d, g), isPublic: d.isPublic === true,
+      hasSecrets: claimOpts.guestBootstrap ? g._bootstrap.manifest.secretsMode !== "public" : await depHasSecrets(d.id), firewall, volumes: neededVolumes(d, g), isPublic: d.isPublic === true,
       waf: claimOpts.waf || null });
     if (isoWhy) return isoWhy;
   }
@@ -10530,7 +10696,7 @@ async function considerClaim(d, { hinted = false, forced = false, background = f
   // minted SECRET). The fetch fails SOFT — the app would launch WITHOUT its
   // env, silently broken — so a secret-bearing deployment is not our work
   // item: probe the relay and fail closed, exactly like volumes/fees/approval.
-  if (!SECRETS_CAPABLE) {
+  if (!SECRETS_CAPABLE && !claimOpts.guestBootstrap) {
     const has = await depHasSecrets(d.id);
     if (has !== false) return has === true
       ? "deployment has staged secrets and this enclave lacks the fleet secrets key"
@@ -10603,6 +10769,8 @@ async function tryClaim(d, g, firewall, slice, { hinted = false, resume = false 
   }
   // Prefetch can take minutes; re-check the owner policy before spending a lease.
   const latest = await readLedgerContract("get", [d.id]);
+  if (g._bootstrap && (latest.owner.toLowerCase() !== d.owner.toLowerCase() || latest.appRef !== d.appRef || latest.configCid !== d.configCid))
+    return "startup commitment changed during prefetch";
   const latestPinRefusal = placementRefusal(latest.configCid, _enclaveId);
   if (latestPinRefusal) return latestPinRefusal;
   if (resume) {
@@ -10748,6 +10916,100 @@ async function adopt(d, g, firewall, slice, { resume = false } = {}) {
     releaseLease(rec.id, "provision failed").catch(() => {});   // never served here: no proof, we earn nothing
   }
   saveStateSoon();
+}
+
+// DIRECT_CLAIM_SELFTEST='{"rows":[…],"catalog":{…},"health":{…},"bytes":"<b64>","replicas":{"<gateway>":how},…}'
+// (test/direct-only-supervisor.test.mjs): the REAL claim sweep (or a hint) -> considerClaim -> tryClaim -> adopt ->
+// provisionTenant -> launchSpec -> spawnContainer -> ticket pump for each row. Chain READS are answered from `catalog`
+// and the rows, the operator's transactions are recorded rather than sent, guestd is scripted, and globalThis.fetch is
+// a recorder in which ONLY the configured replicas answer (how: "serve" | "refuse" | "throw" | "corrupt" | "redirect" |
+// {"bytes":"<b64>"}); every other origin throws. The seam only replaces bindings, as the seams above do. Prints
+// {calls, reads, txs, prefetched, posted, deleted, records, declines} and exits.
+if (process.env.DIRECT_CLAIM_SELFTEST) {
+  const c = JSON.parse(process.env.DIRECT_CLAIM_SELFTEST);
+  const calls = [], reads = [], txs = [], prefetched = [], posted = [], deleted = [];
+  const bytes = Buffer.from(c.bytes, "base64"), lower = (a) => String(a).toLowerCase();
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url); calls.push(u);
+    const base = Object.keys(c.replicas || {}).find((b) => u.startsWith(b + "/"));
+    const how = base ? c.replicas[base] : "throw";
+    if (how === "throw") throw new TypeError("fetch failed: not reachable from this test");
+    if (how === "redirect") {
+      if (init.redirect === "error") throw new TypeError("fetch failed: redirect refused");
+      return new Response("", { status: 302, headers: { location: "http://203.0.113.9/elsewhere" } });
+    }
+    if (how === "refuse") return new Response("not held", { status: 503 });
+    if (how === "corrupt") return new Response(Buffer.concat([bytes, Buffer.from(" ")]));
+    return new Response(how && how.bytes ? Buffer.from(how.bytes, "base64") : bytes);
+  };
+  const rowOf = (id) => c.rows.find((r) => lower(r.id) === lower(id));
+  readLedgerContract = async (functionName, args) => {
+    reads.push({ address: lower(DEPLOYMENTS_ADDRESS), functionName });
+    if (functionName === "get" && rowOf(args[0])) return (c.latest && c.latest[lower(args[0])]) || rowOf(args[0]);
+    throw new Error("unscripted ledger read " + functionName);
+  };
+  chainClient.readContract = async ({ address, functionName, args }) => {
+    reads.push({ address: lower(address), functionName });
+    const k = c.catalog;
+    switch (functionName) {
+      case "catalogSchema": return 7n;
+      case "getApp": return lower(args[0]) === lower(k.app) ? { appId: k.app, publisher: k.publisher, slug: k.slug, name: k.slug,
+        description: "", versionCount: 1n, createdAt: 0n, updatedAt: 0n, active: true } : { appId: ZERO32, versionCount: 0n };
+      case "getVersion": return { cid: k.cid, version: k.version, vramMb: 0, gpuGflops: 0, memMb: k.memMb, cpuGflops: 0,
+        createdAt: 0n, verified: true, yanked: false, ports: k.ports || "", approval: 1, config: k.config || "" };
+      case "versionFee": return 0n;
+      case "versionConfigCid": return "";
+      case "deploymentsSchema": return 13n;
+      case "capOf": return 0n;
+      case "claimBond6": return 0n;
+      case "claimableBy": return true;
+    }
+    throw new Error("unscripted chain read " + functionName);
+  };
+  sendOperatorTx = (address, _abi, functionName, args) => {
+    txs.push({ address: lower(address), functionName, args: args.map(String) });
+    const p = Promise.resolve("0x" + "ab".repeat(32));
+    p.receipt = Promise.resolve({ status: "success", logs: [] });
+    return p;
+  };
+  leaseFromReceipt = () => c.leaseUntil;
+  const views = new Map();
+  if (c.held) views.set(c.held.id, c.held);
+  vmReq = async (method, path, body) => {
+    if (method === "GET" && path === "/health") return { status: 200, body: c.health };
+    if (method === "POST" && path === "/prefetch") { prefetched.push(body); return { status: 200, body: { appId: c.appId, bytes: 1, seconds: 0 } }; }
+    if (method === "GET" && path === "/vms") return { status: 200, body: { vms: [...views.values()] } };
+    if (method === "POST" && path === "/vms") {
+      posted.push(body);
+      const held = [...views.values()].find((v) => v.name === body.name);
+      if (held) return { status: 409, body: { id: held.id } };
+      const id = "gd" + String(posted.length).padStart(8, "0");
+      views.set(id, { id, name: body.name, status: "running", appId: c.appId, runtimeId: body.derive.runtimeId,
+        recordSha256: derivationDigest(body.derive), directBootstrap: !!body.bootstrap,
+        bootstrapSha256: body.bootstrap ? createHash("sha256").update(Buffer.from(body.bootstrap, "base64")).digest("hex") : undefined });
+      return { status: 201, body: { id, appId: c.appId, recordSha256: derivationDigest(body.derive) } };
+    }
+    const m = /^\/vms\/([A-Za-z0-9-]+)$/.exec(path);
+    if (m && method === "GET") return views.has(m[1]) ? { status: 200, body: views.get(m[1]) } : { status: 404, body: {} };
+    if (m && method === "DELETE") { deleted.push(m[1]); views.delete(m[1]); return { status: 200, body: {} }; }
+    return { status: 404, body: {} };
+  };
+  _vmTech = "amd-sev-snp"; _enclaveId = c.enclaveId; _advertisedEndpoint = c.endpoint; _firstClaimSweepAt = Date.now();
+  const hold = setInterval(() => {}, 250);
+  const settled = (id) => { const r = deployments.get(id); return !r ? _sweepDeclines.has(id) : ["running", "failed"].includes(r.status); };
+  // a hint awaits its own claim; a sweep starts new claims in the background, so wait for each row to settle
+  if (c.hint) for (const d of c.rows) { const why = await considerClaim(d, { hinted: true }); if (why) _sweepDeclines.set(d.id, why); }
+  else {
+    await claimSweep(c.rows);
+    for (const t0 = Date.now(); Date.now() - t0 < 15_000 && !c.rows.every((d) => settled(d.id));) await new Promise((r) => setTimeout(r, 50));
+  }
+  await new Promise((r) => setTimeout(r, 100));   // the pump's first poll
+  clearInterval(hold);
+  const records = Object.fromEntries(c.rows.map((d) => { const r = deployments.get(d.id);
+    return [d.id, r ? { status: r.status, error: r.error || null, vmId: r._vmId || null, config: r.config } : null]; }));
+  console.log(JSON.stringify({ calls, reads, txs, prefetched, posted, deleted, records,
+    declines: Object.fromEntries(c.rows.map((d) => [d.id, _sweepDeclines.get(d.id) || null])) }));
+  process.exit(0);
 }
 
 // Graceful shutdown: release every held lease (refunds the unused tail and

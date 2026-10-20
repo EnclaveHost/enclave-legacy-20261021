@@ -11,14 +11,21 @@
 # domain's vsock CID and the launch time.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-. "$here/../m1/domain.env"
+if [ "${1:-}" = start ]; then
+  if [ -n "${DOMAIN_RELEASE_DIR:-}${DOMAIN_RELEASE_ID:-}" ]; then
+    . "$here/../m4/pinned-domain-env.sh"
+  else
+    . "$here/../m1/domain.env"
+  fi
+fi
 # A caller may point this LAUNCH at a different firmware without editing domain.env, which is how
 # verify-firmware.sh tests whether a build actually verifies the SEV kernel hash table. domain.env stays the
 # default so an ordinary run is unchanged.
 #
 # It changes the launch ONLY. build-domain.sh predicts a measurement with domain.env's OVMF, so a suite run with
 # this variable set would predict against one firmware and launch another, and check 1 would fail for the wrong
-# reason. To move a SUITE to another firmware, change domain.env.
+# reason. To move a SUITE to another firmware, change domain.env. A pinned release (DOMAIN_RELEASE_DIR/ID,
+# m4/pinned-domain-env.sh) supplies kernel, firmware and command line itself and refuses this override.
 OVMF=${OVMF_OVERRIDE:-$OVMF}
 
 # FW_DEBUGCON=1 captures the firmware's own DEBUG() output to <tag>.debugcon. It is NOT on the serial console:
@@ -47,7 +54,8 @@ start)
     snp)   MACH="-machine q35,accel=kvm,confidential-guest-support=sev0,memory-backend=ram1
                   -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=$KERNEL_HASHES${HD_OPT:-}
                   -object memory-backend-memfd,id=ram1,size=${mem}M,share=true" ;;
-    plain) MACH="-machine q35,accel=kvm"
+    plain) [ -z "${DOMAIN_RELEASE_DIR:-}" ] || { echo "pinned SNP release cannot launch as plain KVM" >&2; exit 2; }
+           MACH="-machine q35,accel=kvm"
            # The verifying firmware refuses to boot a guest with no kernel hash table, and a plain guest has no
            # SEV and therefore no table: an AmdSevX64 build meets that by refusing to load the kernel and falling
            # through to its boot manager (measured: "Failed to mount root securely"). T0 is the explicitly
@@ -71,6 +79,8 @@ start)
   set --
   pin_shield=0
   if [ -f "$img.shield" ]; then
+    # a pinned CPU release has no Shield template, so an image claiming Shield devices was not built from it
+    [ -z "${DOMAIN_RELEASE_DIR:-}" ] || { echo "pinned CPU release cannot launch a Shield image" >&2; exit 2; }
     model=$(cat "$img.shield")
     case "$model" in qwen2.5-0.5b-q8-gguf|qwen3.8-27b-mtp-q4-vl-gguf) ;; *) echo "invalid Shield model" >&2; exit 2;; esac
     [ -n "${SHIELDED_SHM_DIR:-}" ] || { echo "missing Shield rings" >&2; exit 2; }

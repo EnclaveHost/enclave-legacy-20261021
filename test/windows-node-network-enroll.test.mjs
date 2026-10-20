@@ -71,6 +71,16 @@ test("a partition outside the admitted policy is never enrolled", async () => {
   assert.ok(w.logs.some((l) => /outside the admitted Shield policy/.test(l)));
 });
 
+test("enrollment preserves the operator's independent directory origins across app updates", async () => {
+  const w=world();await w.enroll.pass();const cfg=w.read();
+  cfg.enclaveNetwork.directories=['http://8.8.4.4:8188','https://directory.example'];
+  fs.writeFileSync(path.join(w.agentDir,'privacy-config.json'),JSON.stringify(cfg));
+  await w.enroll.pass();
+  assert.deepEqual(w.read().enclaveNetwork.directories,cfg.enclaveNetwork.directories);
+  w.vm.appId='cd'.repeat(32);await w.enroll.pass();
+  assert.deepEqual(w.read().enclaveNetwork.directories,cfg.enclaveNetwork.directories);
+});
+
 test("a box still configured for TUNA is cleaned and switched once, and its agent restarted once", async () => {
   const w = world();
   const tuna = { version: 2, directory: path.join(w.agentDir, "state"), operatorKeyFile: "op.key", runner: RUNNER, endpoint: "https://api.enclave.host/t/box",
@@ -173,10 +183,14 @@ test("the agent's chain RPCs follow the node's list: a changed list is written o
   const w = world();
   await w.enroll.pass();
   assert.deepEqual(w.read().chain.rpc, ["https://rpc"], "a fresh config takes the node's list");
+  const cfg = w.read();
+  cfg.chain.authorityPins = {deployments:'0x'+'11'.repeat(20),registry:'0x'+'22'.repeat(20),connectivity:'0x'+'00'.repeat(20),sessionVaultFactory:'0x'+'00'.repeat(20)};
+  fs.writeFileSync(path.join(w.agentDir, 'privacy-config.json'), JSON.stringify(cfg));
   const before = w.restarts();
   w.config.chainRpc = ["https://base-rpc.publicnode.com", "https://base.gateway.tenderly.co", "https://base-public.nodies.app"];
   await w.enroll.pass();
   assert.deepEqual(w.read().chain.rpc, w.config.chainRpc);
+  assert.deepEqual(w.read().chain.authorityPins, cfg.chain.authorityPins, "RPC refresh preserves the operator's pinned authorities");
   assert.equal(w.restarts(), before + 1, "one restart for the new list");
   assert.ok(w.logs.some((m) => /chain RPCs now base-rpc\.publicnode\.com, base\.gateway\.tenderly\.co, base-public\.nodies\.app/.test(m)));
   await w.enroll.pass();

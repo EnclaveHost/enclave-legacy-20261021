@@ -1,0 +1,174 @@
+{
+  "enclave_openhcl_tpm.ko": {
+    "bytes": 305680,
+    "sha256": "b1bedd82412789580a1fd85aa650ccbe9c79d51913ab05c8eda306ecc730d31d"
+  },
+  "init": {
+    "bytes": 862016,
+    "sha256": "c723cbfa58c61762ad929f7cfaa30f4bf6885032dd5996100daa243a4c231cbd"
+  },
+  "monitor": {
+    "bytes": 3874940,
+    "sha256": "b1973a95828ffac2558dc3b0d698deab0d5fc69287c410e4f3c11342254731a3"
+  },
+  "plat/domexec": {
+    "bytes": 102976,
+    "sha256": "e767a63636a91e6c4bc83249fa677ed987464831a9421a2f05d739d2cb2bbb03"
+  },
+  "plat/domprobe": {
+    "bytes": 863152,
+    "sha256": "650caedea6d2fe3d5bfbd77884789322a7d6cd89fab78db52cd1d241134d55ba"
+  },
+  "plat/front": {
+    "bytes": 8196220,
+    "sha256": "b4f56fedf5389dbb452cf9677fcc57f6916d7b1ae5b70d2e02b77facdd6c9701"
+  },
+  "plat/models/qwen2.5-0.5b-q8-gguf/model.gguf": {
+    "bytes": 675710816,
+    "sha256": "f81d63cf49568f78154f6ddc8b114f603579360c7c878831a7f95a51dc284d24"
+  },
+  "plat/models/qwen2.5-0.5b-q8-gguf/tokenizer.json": {
+    "bytes": 7031645,
+    "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+  },
+  "plat/models/qwen3.8-27b-mtp-q4-vl-gguf/tokenizer.json": {
+    "bytes": 12809320,
+    "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+  },
+  "plat/rt/ld-linux-x86-64.so.2": {
+    "bytes": 263152,
+    "sha256": "d011113b7054c641c8ca064f58bcc23804fd2654a3dff2444dad06ddeda61bfb"
+  },
+  "plat/rt/libc.so.6": {
+    "bytes": 2215072,
+    "sha256": "e221b10fee9ee4776d8f0f1701253bc06817f7a4dbe6c5292487277d0bf8ffff"
+  },
+  "plat/rt/libgcc_s.so.1": {
+    "bytes": 182512,
+    "sha256": "e618cb9c90c2eb3a1dad1cfea5b6c1eebcf2e799ad805976f4ae47bdd61c716a"
+  },
+  "plat/rt/libm.so.6": {
+    "bytes": 1268336,
+    "sha256": "965106704753eefe8c31ae7da6daba3ead3d18c52b19b5fcc41178bcc4aa999d"
+  },
+  "plat/rt/runtime.json": {
+    "bytes": 158,
+    "sha256": "8044b26a6ef691e30ef21983829f7c0dfef34b3f15c009072c477e6ea5dd95b6"
+  },
+  "plat/rt/wasmtime": {
+    "bytes": 45616736,
+    "sha256": "b77aecdb33fbf0262ffefdd4383adedc8235ca214b97335bcd31c1912ebdf451"
+  },
+  "plat/rt-shield/backends/libggml-cpu.so": {
+    "bytes": 1183624,
+    "sha256": "4c6a0a6b346c8c6baccdeb50e425bafeea0ac791c440fbe5b7fc5a3a9cae8559"
+  },
+  "plat/rt-shield/backends/libggml-shielded.so": {
+    "bytes": 618312,
+    "sha256": "5fb16f44edb5cf0c85db4a6b3595383ef183ad8bb79938632be69609379d930c"
+  },
+  "plat/rt-shield/calib/model.calib": {
+    "bytes": 4346,
+    "sha256": "25698f09603838fbb840dfbf1b0eeb87883326130e85156bfc142805fff26ce7"
+  },
+  "plat/rt-shield/calib/qwen2.5-0.5b-q8-gguf.calib": {
+    "bytes": 4346,
+    "sha256": "25698f09603838fbb840dfbf1b0eeb87883326130e85156bfc142805fff26ce7"
+  },
+  "plat/rt-shield/calib/qwen3.8-27b-mtp-q4-vl-gguf.calib": {
+    "bytes": 13597,
+    "sha256": "1220f83cb518e0354a6d554e517ceeeb83ee8bab44733fae1e4801ae1982ddbd"
+  },
+  "plat/rt-shield/ld-linux-x86-64.so.2": {
+    "bytes": 263152,
+    "sha256": "d011113b7054c641c8ca064f58bcc23804fd2654a3dff2444dad06ddeda61bfb"
+  },
+  "plat/rt-shield/libc.so.6": {
+    "bytes": 2215072,
+    "sha256": "e221b10fee9ee4776d8f0f1701253bc06817f7a4dbe6c5292487277d0bf8ffff"
+  },
+  "plat/rt-shield/libenclave_llama.so": {
+    "bytes": 51288,
+    "sha256": "c2657077e7cae7cc3cc19a852f7e58fab8deafbe4e471b5c2dbf8a02a0291aee"
+  },
+  "plat/rt-shield/libgcc_s.so.1": {
+    "bytes": 182512,
+    "sha256": "e618cb9c90c2eb3a1dad1cfea5b6c1eebcf2e799ad805976f4ae47bdd61c716a"
+  },
+  "plat/rt-shield/libggml-base.so.0": {
+    "bytes": 952768,
+    "sha256": "c427fac4e59ded2d0889b20c5aadafb98a8458ec0f324754f0522c777ce58304"
+  },
+  "plat/rt-shield/libggml.so.0": {
+    "bytes": 54960,
+    "sha256": "2fc3c55e37179c52bb2f164eda3b9532942264471063a12452aa3d11af19e96b"
+  },
+  "plat/rt-shield/libgomp.so.1": {
+    "bytes": 363560,
+    "sha256": "d6c6309ee83dbe9b50bf38342489799a4822ee22451677730ff5542aa74bdefc"
+  },
+  "plat/rt-shield/libllama.so.0": {
+    "bytes": 4223080,
+    "sha256": "1d84a421cdc6864bffa59cab547f264cef3dbc6bb288ad7f12e15d583e319a04"
+  },
+  "plat/rt-shield/libm.so.6": {
+    "bytes": 1268336,
+    "sha256": "965106704753eefe8c31ae7da6daba3ead3d18c52b19b5fcc41178bcc4aa999d"
+  },
+  "plat/rt-shield/libmtmd.so.0": {
+    "bytes": 1463168,
+    "sha256": "d886ca4c8845ada0032516a868de7a2807e514acdc37e2b5d5fb2a4756ad785f"
+  },
+  "plat/rt-shield/libshielded-omp-affinity.so": {
+    "bytes": 16248,
+    "sha256": "4a0b071efd385ad4c53cd5d3a6da90d734d41cba765030b8a89029c06fbdadd7"
+  },
+  "plat/rt-shield/libstdc++.so.6": {
+    "bytes": 2939928,
+    "sha256": "f5fc7380f2ae46fa4053a64be04e7b98109f1066a4bbfff3c37042488aa0be0e"
+  },
+  "plat/rt-shield/runtime.json": {
+    "bytes": 158,
+    "sha256": "c60712e8d90b2b8c3e23e98f62c25f5278bcbffacb26113729a1bd6600b720d0"
+  },
+  "plat/rt-shield/shield-model": {
+    "bytes": 48,
+    "sha256": "0800f12f32be3514ec06cf090e8b9e7e3bb23f22dbf5092636c008d0ed0975e6"
+  },
+  "plat/rt-shield/shield-native-cpu-pool.enabled": {
+    "bytes": 2,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  "plat/rt-shield/wasmtime": {
+    "bytes": 58226416,
+    "sha256": "51f9de6acec8bb6a4fc2311f0a09280357c835bf77ad7e235b4284b269828b07"
+  },
+  "plat/shield-nucbox.enabled": {
+    "bytes": 27,
+    "sha256": "c13893f66fea907d242eebe636ec245621788c991447fc313f1ccbfd7e314d8a"
+  },
+  "plat/shieldbroker": {
+    "bytes": 2072700,
+    "sha256": "d3e14443e9715f6ee2f251499b18ace0ab0cc06194c1fd79c5873c5ccf369788"
+  },
+  "sev-guest.ko.zst": {
+    "bytes": 9294,
+    "sha256": "528c57721813d4cf7dd74f65d9deea82cee7af0bc4d6b15f15064370ef84caa0"
+  },
+  "tsm_report.ko.zst": {
+    "bytes": 6983,
+    "sha256": "41f36ca242ed64095f140303ae6c05066d043ef37d1c9f6841216469bb009151"
+  },
+  "vmw_vsock_virtio_transport.ko.zst": {
+    "bytes": 10496,
+    "sha256": "6fe99263330f3abe3371eebb5ad8f9be35a47e57faab0f96c0729c29cb95bcc9"
+  },
+  "vmw_vsock_virtio_transport_common.ko.zst": {
+    "bytes": 22109,
+    "sha256": "4b9aee6ec87e6b5322df1f2fbff60ccd8862df113e5010e006e563971a083991"
+  },
+  "vsock.ko.zst": {
+    "bytes": 27051,
+    "sha256": "d41ae5d80296ef9220531413899abd4e95d1d877e7957d80e035c621aa8f1aaa"
+  }
+}

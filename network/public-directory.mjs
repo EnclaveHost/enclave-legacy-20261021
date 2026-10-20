@@ -1,0 +1,213 @@
+// Independently runnable storage for PUBLIC, signed network records. No fleet,
+// account, upload, TLS, custody or BYO secret keys belong in this service.
+import {recoverMessageAddress} from 'viem';
+import {DurableState} from './durable-state.mjs';
+import {verifyProviderRecord,validateQualification,qualificationMessage,eligibleProviders} from './provider-directory.mjs';
+import {verifyNetworkPolicy,defaultNetworkPolicy} from './network-policy.mjs';
+import {recordHash,verifyRoute} from './route-record.mjs';
+import {verifyManagementRecord,managementRecordHash,operatorFloor,withOperatorFloor} from './management-record.mjs';
+
+const ID=/^0x[0-9a-f]{64}$/;
+const READ_CONTEXT=Symbol('verified directory context');
+const routeContext=(state,id)=>({publication:state.publications[id]??null,policy:state.policies[id]??null,providers:state.providers});
+const equal=(a,b)=>recordHash(a)===recordHash(b);
+const empty=()=>({version:1,providers:{},policies:{},publications:{},management:{}});
+export class PublicDirectory {
+  // importManagement: replicate host-management records from peer snapshots (directory replicas set it; an app client's
+  // private directory does not need every host's endpoint and leaves it off).
+  constructor({directory,checkers,hostOperator,leaseOf,verifyOwner,now=Date.now,maxRecords=4096,importManagement=false}) {
+    if(!Array.isArray(checkers)||!checkers.length)throw Error('explicit checker trust required');
+    Object.assign(this,{hostOperator,leaseOf,verifyOwner,now,maxRecords,importManagement});
+    this.checkers=checkers.map(x=>x.toLowerCase());
+    this.state=new DurableState(directory);this.floors=new DurableState(directory+'/route-floors');
+    this.tail=Promise.resolve();this.routeRead=null;this.providerChecks=new WeakMap();
+  }
+  async read(){const s=await this.state.get('public-records');if(s&&s.version!==1)throw Error('unsupported directory state');if(s&&!s.management)s.management={};return s||empty();}
+  // Serialize verification with acceptance so concurrent older submissions cannot
+  // overwrite newer records. Damaged state fails closed rather than resetting floors.
+  accept(kind,envelope){
+    const run=this.tail.then(()=>this._accept(kind,structuredClone(envelope)));
+    this.tail=run.catch(()=>{});return run;
+  }
+  async _accept(kind,envelope){
+    if(Buffer.byteLength(JSON.stringify(envelope))>65536)throw Error('record too large');
+    const s=await this.read(),now=this.now();
+    if(kind==='provider'){
+      if(Object.keys(envelope).some(k=>!['record','signature'].includes(k)))throw Error('unexpected provider data');
+      const r=await verifyProviderRecord(envelope,{now,hostOperator:this.hostOperator}),old=s.providers[r.providerId];
+      if(old){
+        if(old.record.record.issuedAt>r.issuedAt)throw Error('stale provider record');
+        if(old.record.record.issuedAt===r.issuedAt){if(!equal(old.record,envelope))throw Error('provider equivocation');return false;}
+      } else if(Object.keys(s.providers).length>=this.maxRecords)throw Error('provider capacity reached');
+      // Keep only verdicts bound to these exact provider keys/address/operator.
+      const qualifications=(old?.qualifications||[]).filter(e=>{
+        const q=e.qualification;return q.expiresAt>now&&['providerId','operator','address','wgExitKey','wgGuardKey'].every(k=>q[k]===r[k]);
+      });
+      s.providers[r.providerId]={record:envelope,qualifications};
+    }else if(kind==='qualification'){
+      const q=validateQualification(envelope?.qualification),entry=s.providers[q.providerId];
+      const signer=(await recoverMessageAddress({message:qualificationMessage(q),signature:envelope.signature})).toLowerCase();
+      if(!this.checkers.includes(signer)||signer===q.operator)throw Error('untrusted checker');
+      if(q.expiresAt<=now||q.issuedAt>now+60000)throw Error('expired qualification');
+      if(!entry||!['providerId','operator','address','wgExitKey','wgGuardKey'].every(k=>q[k]===entry.record.record[k]))throw Error('qualification does not match provider');
+      // onchain attestations are distinct signatures; retain them but consumers
+      // must verify their contract authorization before settlement.
+      if(Object.keys(envelope).some(k=>!['qualification','signature','onchain'].includes(k)))throw Error('unexpected qualification data');
+      const list=entry.qualifications||[],next=[];let duplicate=false;
+      for(const e of list){
+        const who=(await recoverMessageAddress({message:qualificationMessage(e.qualification),signature:e.signature})).toLowerCase();
+        if(who!==signer){next.push(e);continue;}
+        if(e.qualification.issuedAt>q.issuedAt)throw Error('stale qualification');
+        if(e.qualification.issuedAt===q.issuedAt){
+          if(!equal(e.qualification,q)||e.signature!==envelope.signature)throw Error('checker equivocation');
+          if((e.onchain?.expires||0)>=(envelope.onchain?.expires||0))duplicate=true;
+        }
+      }
+      if(duplicate)return false;
+      next.push(envelope);entry.qualifications=next;
+    }else if(kind==='policy'){
+      if(Object.keys(envelope).some(k=>!['policy','signature'].includes(k)))throw Error('unexpected policy data');
+      const id=envelope?.policy?.deploymentId;if(!ID.test(id||''))throw Error('deployment id required');
+      const lease=await this.leaseOf(id);if(!lease?.owner)throw Error('deployment owner unavailable');
+      const policy=await verifyNetworkPolicy(envelope,{owner:lease.owner,deploymentId:id,verify:this.verifyOwner});
+      const old=s.policies[id];
+      if(old&&old.owner.toLowerCase()===lease.owner.toLowerCase()){
+        if(old.envelope.policy.nonce>policy.nonce)throw Error('stale policy');
+        if(old.envelope.policy.nonce===policy.nonce){if(!equal(old.envelope.policy,policy))throw Error('policy equivocation');return false;}
+      }else if(!old&&Object.keys(s.policies).length>=this.maxRecords)throw Error('policy capacity reached');
+      s.policies[id]={owner:lease.owner,envelope};
+    }else if(kind==='route'){
+      if(envelope?.version!==2||Object.keys(envelope).some(k=>!['version','endpoint','policy','bundle','status'].includes(k)))throw Error('signed v2 route required');
+      const id=envelope.bundle?.record?.deploymentId;if(!ID.test(id||''))throw Error('deployment id required');
+      if(!s.publications[id]&&Object.keys(s.publications).length>=this.maxRecords)throw Error('route capacity reached');
+      await this.checkRoute(envelope,s);
+      // Diagnostic host status is deliberately not replicated; the route itself
+      // has all the signed fields required for independent verification.
+      const {status,...publicPart}=envelope;s.publications[id]=publicPart;
+    }else if(kind==='management'){
+      // A host's management endpoint (management-record.mjs). The directory admits it only from the registry's active
+      // operator for that runner; clients independently require the deployment's current lease runnerOperator.
+      const r=await verifyManagementRecord(envelope,{now});
+      const operator=await this.hostOperator(r.runner);
+      if(!operator||operator.toLowerCase()!==r.operator)throw Error('management record is not signed by the runner\'s registry operator');
+      const old=s.management[r.runner];
+      s.managementFloors ||= {};
+      let floors=s.managementFloors[r.runner]||null;
+      // Seed the previous format's current record before accepting a new operator.
+      // A former operator's sequence must never veto the current registry owner.
+      if(old&&!operatorFloor(floors,old.record.operator))floors=withOperatorFloor(floors,old.record.operator,{sequence:old.record.sequence,hash:managementRecordHash(old.record)});
+      const floor=operatorFloor(floors,r.operator),hash=managementRecordHash(r);
+      if(floor){
+        if(floor.sequence>r.sequence)throw Error('stale management record');
+        if(floor.sequence===r.sequence&&floor.hash!==hash)throw Error('management record equivocation');
+      }
+      if(old?.record.operator===r.operator&&equal(old,envelope))return false;
+      if(!old&&Object.keys(s.management).length>=this.maxRecords)throw Error('management capacity reached');
+      s.managementFloors[r.runner]=withOperatorFloor(floors,r.operator,{sequence:r.sequence,hash});
+      s.management[r.runner]=envelope;
+    }else throw Error('unsupported public record');
+    await this.state.set('public-records',s);return true;
+  }
+  async providers(){return Object.values((await this.read()).providers).filter(e=>e.record.record.expiresAt>this.now());}
+  async policy(id){
+    if(!ID.test(id))throw Error('deployment id required');
+    const e=(await this.read()).policies[id];if(!e)return {envelope:null};
+    const lease=await this.leaseOf(id);
+    await verifyNetworkPolicy(e.envelope,{owner:lease?.owner,deploymentId:id,verify:this.verifyOwner});
+    return {envelope:e.envelope};
+  }
+  async checkRoute(publication,s){
+    const id=publication.bundle.record.deploymentId,lease=await this.leaseOf(id);
+    const stored=s.policies[id];
+    let policy=defaultNetworkPolicy(id);
+    if(stored){policy=await verifyNetworkPolicy(stored.envelope,{owner:lease?.owner,deploymentId:id,verify:this.verifyOwner});}
+    if(!equal(policy,publication.policy))throw Error('route policy not available or not current');
+    // Share provider checks only within an immutable read snapshot. Fresh state
+    // objects never reuse a previous pass's authorization.
+    if(!this.providerChecks.has(s))this.providerChecks.set(s,eligibleProviders(Object.values(s.providers),{checkers:this.checkers,hostOperator:this.hostOperator,now:this.now()}));
+    const providers=(await this.providerChecks.get(s)).filter(p=>p.expiresAt>this.now()&&p.qualifiedUntil>this.now());
+    return verifyRoute(publication.bundle,{deploymentId:id,policy,lease,memory:this.floors,networkProviders:providers,providerProbeSigners:this.checkers,now:this.now()});
+  }
+  async currentRoute(id,s){
+    // Acceptance advances the replay floor before persisting public records. A
+    // read holding the previous snapshot must wait for that write, then verify
+    // the replacement. Also recheck successful reads if policy/provider state
+    // changed while RPC verification was in flight. Never serve the old result
+    // after a withdrawal, policy change or repeatedly changing snapshot.
+    const context=state=>routeContext(state,id);
+    for(let attempt=0;attempt<3;attempt++){
+      let route,error;
+      try{route=await this.checkRoute(s.publications[id],s);}catch(e){error=e;}
+      await this.tail;
+      const latest=await this.read();
+      if(equal(context(s),context(latest))){if(error)throw error;return Object.assign(route,{[READ_CONTEXT]:recordHash(context(latest))});}
+      s=latest;
+    }
+    throw Error('route state changed during verification');
+  }
+  routes(){
+    // Share only work that is still in flight, never a completed authorization.
+    // The pass below rechecks persisted state after every verification finishes.
+    if(!this.routeRead)this.routeRead=this.readRoutes().finally(()=>{this.routeRead=null;});
+    return this.routeRead;
+  }
+  async readRoutes(){
+    let s=await this.read();const results=new Map();
+    for(let attempt=0;attempt<3;attempt++){
+      const ids=Object.keys(s.publications).filter(id=>!results.has(id)||results.get(id)?.[READ_CONTEXT]!==recordHash(routeContext(s,id)));let next=0;
+      // Bound verification concurrency while allowing a batched chain snapshot.
+      await Promise.all(Array.from({length:Math.min(4,ids.length)},async()=>{
+        while(next<ids.length){const id=ids[next++];
+          try{results.set(id,await this.currentRoute(id,s));}catch{results.set(id,null);}
+        }
+      }));
+      await this.tail;
+      s=await this.read();
+      const changed=Object.keys(s.publications).filter(id=>results.get(id)&&results.get(id)[READ_CONTEXT]!==recordHash(routeContext(s,id)));
+      if(changed.length&&attempt<2)continue;
+      // Continuous updates can withhold that app, never resurrect its old route
+      // or starve all other apps. No asynchronous work follows this final check.
+      for(const id of changed)results.set(id,null);
+      const labels={},deployments={},pending=[],collisions=new Set();
+      for(const id of Object.keys(s.publications)){
+        const r=results.get(id);
+        if(!r||r.expiresAt<=this.now()){pending.push({id,reason:'no_current_verified_route'});continue;}
+        if(!r.routes.length)continue;
+        const addresses=r.routes.map(x=>x.address),label=id.slice(2,10);
+        deployments[id]={transport:r.routes[0].transport,expiresAt:r.expiresAt,httpsRoutes:r.routes,discovery:{ipns:r.ipns},version:2};
+        if(labels[label]||collisions.has(label)){delete labels[label];collisions.add(label);}else labels[label]={transport:r.routes[0].transport,expiresAt:r.expiresAt,addresses};
+      }
+      return {transport:'enclave-network',updatedAt:new Date(this.now()).toISOString(),relays:[],labels,deployments,pending};
+    }
+    throw Error('route state changed during verification');
+  }
+  async snapshot(){
+    const s=await this.read();
+    return {version:1,providers:Object.values(s.providers).filter(e=>e.record.record.expiresAt>this.now()),
+      policies:Object.values(s.policies).map(e=>e.envelope),
+      publications:Object.values(s.publications).filter(e=>e.bundle.record.expiresAt>this.now()),
+      // unexpired withdrawals travel too, so a replica's stale endpoint cannot outlive the host's withdrawal
+      management:Object.values(s.management).filter(e=>e.record.expiresAt>this.now())};
+  }
+  async import(snapshot){
+    if(snapshot?.version!==1||!['providers','policies','publications'].every(k=>Array.isArray(snapshot[k])&&snapshot[k].length<=this.maxRecords))throw Error('invalid public snapshot');
+    const results={accepted:0,rejected:0};
+    // Gossip repeatedly includes the entire snapshot. Already stored exact
+    // records need no admission work; reads still revalidate current leases,
+    // policies and qualification expiry. Never skip a changed envelope.
+    const current=await this.read();
+    const put=async(k,e)=>{try{if(await this.accept(k,e))results.accepted++;}catch{results.rejected++;}};
+    for(const p of snapshot.providers){
+      const old=current.providers[p?.record?.record?.providerId];
+      if(!old||!equal(old.record,p.record))await put('provider',p.record);
+      for(const q of (p.qualifications||[]).slice(0,16))if(!(old?.qualifications||[]).some(e=>equal(e,q)))await put('qualification',q);
+    }
+    for(const p of snapshot.policies){const old=current.policies[p?.policy?.deploymentId];if(!old||!equal(old.envelope,p))await put('policy',p);}
+    for(const p of snapshot.publications){const old=current.publications[p?.bundle?.record?.deploymentId];if(!old||!equal(old,p))await put('route',p);}
+    // Optional: snapshots from replicas without management records simply omit the list.
+    if(this.importManagement&&Array.isArray(snapshot.management))for(const p of snapshot.management.slice(0,this.maxRecords)){
+      const old=current.management[p?.record?.runner];if(!old||!equal(old,p))await put('management',p);
+    }
+    return results;
+  }
+}

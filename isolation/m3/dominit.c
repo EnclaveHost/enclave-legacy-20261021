@@ -163,7 +163,23 @@ int main(void) {
             close(fd);
         }
     }
-    char *argv[] = {"/monitor", snpflag, hostflag[0] ? hostflag : NULL, NULL};
+    /* Presence is part of the measured image, not an untrusted host switch.
+     * With this driver included, startup requires a normally version-checked
+     * module load and every app report requires the guest TPM report. */
+    char *vtpmflag = NULL;
+    struct stat vtpm_stat;
+    if (stat("/enclave_openhcl_tpm.ko", &vtpm_stat) == 0) {
+        if (snp || !hostflag[0]) return 1;
+        int fd = open("/enclave_openhcl_tpm.ko", O_RDONLY | O_CLOEXEC);
+        if (fd < 0 || syscall(SYS_finit_module, fd, "", 0) != 0) {
+            printf("MON ERROR required guest TPM driver failed: %s\n", strerror(errno));
+            if (fd >= 0) close(fd);
+            return 1;
+        }
+        close(fd);
+        vtpmflag = "-vbs-tpm=/dev/tpm0";
+    }
+    char *argv[] = {"/monitor", snpflag, hostflag[0] ? hostflag : NULL, vtpmflag, NULL};
     char *envp[] = {"HOME=/tmp", "PATH=/plat", NULL};
     execve(argv[0], argv, envp);
     printf("MON ERROR exec /monitor: %s\n", strerror(errno));

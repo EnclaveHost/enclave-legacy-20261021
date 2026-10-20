@@ -1,0 +1,427 @@
+{
+  "kind": "enclave.deployed-source-verification",
+  "version": 1,
+  "chainId": 8453,
+  "repository": "https://github.com/EnclaveHost/enclave.git",
+  "compiler": {
+    "version": "0.8.35+commit.47b9dedd.Emscripten.clang",
+    "package": "solc@0.8.35",
+    "soljsonSha256": "fa4345d648d9a09c6601ffc978e78e9f5267b54e6d91e8f8c473f44c0c16323b"
+  },
+  "review": {
+    "blockNumber": "52831588",
+    "blockHash": "0x0b2960197b399a529d6e720c99bacc33fd85eb8b31c2fc800c85fe92d5221354",
+    "rpcHosts": [
+      "base-rpc.publicnode.com",
+      "mainnet.base.org",
+      "base.drpc.org"
+    ]
+  },
+  "builds": {
+    "registry-schema4": {
+      "commit": "b17db9a33b3500783a67774f4e47ec648e833699",
+      "sources": {
+        "EnclaveRegistry.sol": {
+          "path": "contracts/EnclaveRegistry.sol",
+          "gitBlob": "d7fb9740a29cc3d6dc7c197ddf62937112b22a6c",
+          "sha256": "e81f5d5185eb83c50f7407e1bda9a71733948fca5eb3b2f228d5e8e598791360"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        }
+      }
+    },
+    "ledger-rev16d": {
+      "commit": "4b7419bb0955ffd02a6ce8d75809dac0a18f302f",
+      "sources": {
+        "EnclaveDeployments.sol": {
+          "path": "contracts/EnclaveDeployments.sol",
+          "gitBlob": "3f3d2c3ac155be4c108531b247b3f95a5c9ccdd4",
+          "sha256": "2771a5248ed7a68f5521b08dbde466603b02c29ccd961d55fd9eceabe1d11cd1"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 1
+        },
+        "viaIR": true
+      }
+    },
+    "catalog": {
+      "commit": "f2e9a71d0fb25b67a774be76b29081f6cb6f8ec3",
+      "sources": {
+        "EnclaveAppCatalog.sol": {
+          "path": "contracts/EnclaveAppCatalog.sol",
+          "gitBlob": "018e4bffc6ac99f87b7b6087a6c4628a53e7a1e9",
+          "sha256": "b31744361efbb43fcf60152a5eaaa185d1af07bdc27f077af0a2b48e7de3b191"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        },
+        "viaIR": true
+      }
+    },
+    "proof-of-time": {
+      "commit": "44d5b928b9afe7d207bed0f1d8d4ae6976dd6401",
+      "sources": {
+        "EnclaveProofOfTime.sol": {
+          "path": "contracts/EnclaveProofOfTime.sol",
+          "gitBlob": "a2affef0f4c6083f04f5c1167602f17c7c02ef71",
+          "sha256": "6ec89dc59bd58f7ff4f6b60d0477c3b5166066255c1b808f184213e5b866f019"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        },
+        "viaIR": true
+      }
+    },
+    "pay": {
+      "commit": "cf6022cce34034455f7d28a98b2059ac35525857",
+      "sources": {
+        "EnclavePay.sol": {
+          "path": "contracts/EnclavePay.sol",
+          "gitBlob": "68cb3ec3e55458b6424d93253f992f5ef116019f",
+          "sha256": "a0411962c8286a7655dbe6691e028dbf00ebeea42c1183dad323944e67a130f6"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        }
+      }
+    },
+    "verification-fees": {
+      "commit": "28dd23c2e289413232553f54be939b618fd576d3",
+      "sources": {
+        "EnclaveVerificationFees.sol": {
+          "path": "contracts/EnclaveVerificationFees.sol",
+          "gitBlob": "cd38195c3289926a6e4a812a264a7dc69b950093",
+          "sha256": "a0db02fd901cd27b7646fa4312a387c5eb1079b654308a1c87a95cbebcc07d22"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        },
+        "viaIR": true
+      }
+    },
+    "connectivity": {
+      "commit": "4b7419bb0955ffd02a6ce8d75809dac0a18f302f",
+      "sources": {
+        "contracts/EnclaveConnectivity.sol": {
+          "path": "contracts/EnclaveConnectivity.sol",
+          "gitBlob": "c0fb0bed725c7eba45eb4a6abc44ba9ee96f3b3e",
+          "sha256": "da607b8a38546b8f535f28fb622344ebedf9e9ac908a8777e0fea53dc9d2615f"
+        },
+        "contracts/EnclaveDeployments.sol": {
+          "path": "contracts/EnclaveDeployments.sol",
+          "gitBlob": "3f3d2c3ac155be4c108531b247b3f95a5c9ccdd4",
+          "sha256": "2771a5248ed7a68f5521b08dbde466603b02c29ccd961d55fd9eceabe1d11cd1"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        },
+        "viaIR": true
+      }
+    },
+    "payment-router": {
+      "commit": "09ccf9cdb7624c9ef96584c00db95dd21fb9de92",
+      "sources": {
+        "PaymentRouter.sol": {
+          "path": "contracts/PaymentRouter.sol",
+          "gitBlob": "b1211335f8fe77ac99f1a02391b31ae1f75a2626",
+          "sha256": "8f28d3e4a313ea66a2dda511fca1194933c845a81756806f9f011ebe3e912ed0"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        }
+      }
+    },
+    "key-attestations": {
+      "commit": "ee28c686f8361f9e883776112a742217398c7340",
+      "sources": {
+        "EnclaveKeyAttestations.sol": {
+          "path": "contracts/EnclaveKeyAttestations.sol",
+          "gitBlob": "c294ea829317184aa6224ec7a9631bb08c186bce",
+          "sha256": "4afb43a58e4b44de1fc0aae81bfa6acb019011fefc22d0cd3930247970621d8a"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 200
+        }
+      }
+    },
+    "legacy-sessions-v2": {
+      "commit": "4aea7d8986681bb7ccfef27067e7222a8eafbcdf",
+      "sources": {
+        "SessionVault.sol": {
+          "path": "contracts/SessionVault.sol",
+          "gitBlob": "46ac1ed0ebc824ac4e1aa9819c15baa713c63480",
+          "sha256": "a447add6f44ca65ecdf19625450623dce5c41270a28f0ab2b3240382d3ceeb1c"
+        }
+      },
+      "settings": {
+        "optimizer": {
+          "enabled": true,
+          "runs": 1
+        },
+        "viaIR": true
+      }
+    }
+  },
+  "contracts": {
+    "registry": {
+      "address": "0x868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac",
+      "kind": "contract",
+      "build": "registry-schema4",
+      "unit": "EnclaveRegistry.sol",
+      "contract": "EnclaveRegistry",
+      "runtimeBytes": 5892,
+      "codeHash": "0x39911d6f53959c610b9108bb906fc36ea8f57016c4b2571b5cd52c9c32a6f518",
+      "metadataIpfs": "12206901e8b2ebad7b2a3a61231367d9bb1f025dcdd9fd0553dba9289ea4047c26f9",
+      "immutables": {},
+      "links": {},
+      "profileName": "registry",
+      "basis": "Full match (runtime and CBOR metadata) with b17db9a3 (2026-08-09, \"registry schema 4\"). No immutables. Source HEAD (blob b7064f3e since 9895865c, 2026-08-11) is schema 5 and adds CAP_* capability bits, registerRelay, setCaps and CapsSet; their selectors are absent from this runtime, so the deployed registry has no relay or capability registration."
+    },
+    "deployments": {
+      "address": "0xb1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+      "kind": "contract",
+      "build": "ledger-rev16d",
+      "unit": "EnclaveDeployments.sol",
+      "contract": "EnclaveDeployments",
+      "runtimeBytes": 24368,
+      "codeHash": "0x71d50076336283e774ba2ef8d5cbf7602e9cdc5dd918a7e7390c743367766682",
+      "metadataIpfs": "12206a87065e7217aaac9c0780a8b68fb16674bc34fd3fae901a8f6febc3f64ffb2a",
+      "immutables": {
+        "EnclaveDeployments.usdc": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "EnclaveDeployments.registry": "0x000000000000000000000000868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "links": {
+        "EnclaveDeployments.sol:EnclaveLedgerBandwidth": "0x3dfee18b44b7ecd389eca78da10b6ad032802215"
+      },
+      "profileName": "deployments",
+      "basis": "Full match with 4b7419bb0 (2026-10-12, \"ledger rev 16d\"), runs 1, viaIR. Address immutables equal the authority profile getter bindings (usdc, registry). Its one linked library is ledgerBandwidthLibrary, verified from the same build."
+    },
+    "ledgerBandwidthLibrary": {
+      "address": "0x3dfee18b44b7ecd389eca78da10b6ad032802215",
+      "kind": "library",
+      "build": "ledger-rev16d",
+      "unit": "EnclaveDeployments.sol",
+      "contract": "EnclaveLedgerBandwidth",
+      "runtimeBytes": 3710,
+      "codeHash": "0x28a6f46100f911eee9e151b7813cc7362f425bf607877766b20386a7d7373cc7",
+      "metadataIpfs": "1220cf78d915740c33340ce27b078a4159780259c0481bb63da119544569f2101f03",
+      "immutables": {
+        "library_deploy_address": "0x0000000000000000000000003dfee18b44b7ecd389eca78da10b6ad032802215"
+      },
+      "links": {},
+      "profileName": null,
+      "basis": "EnclaveLedgerBandwidth from the ledger rev 16d build; library_deploy_address (the viaIR call guard) holds its own address. Not listed in the authority profile; pinned transitively because the ledger runtime the profile pins embeds this address."
+    },
+    "appCatalog": {
+      "address": "0x18419ca2b502d423a8de6269aeee171a378626e3",
+      "kind": "contract",
+      "build": "catalog",
+      "unit": "EnclaveAppCatalog.sol",
+      "contract": "EnclaveAppCatalog",
+      "runtimeBytes": 22733,
+      "codeHash": "0x3f3c4cc028abd3e117465362e196243cafaaffa7508dc6297d78a6b709dcc79f",
+      "metadataIpfs": "122051c05e06f8243cc43629e7b9f69375aa4bf6d216d338fce625c8252642e4f5ad",
+      "immutables": {},
+      "links": {},
+      "profileName": "appCatalog",
+      "basis": "Full match with f2e9a71d0 (2026-08-18), runs 200, viaIR. No immutables; owner, approvals and imports are storage."
+    },
+    "proofOfTime": {
+      "address": "0x6f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+      "kind": "contract",
+      "build": "proof-of-time",
+      "unit": "EnclaveProofOfTime.sol",
+      "contract": "EnclaveProofOfTime",
+      "runtimeBytes": 6503,
+      "codeHash": "0x6b2eff59ba3f32f2d56515ec1b625dfabea05d2dbe8c7edd63a72e4bb20b0f72",
+      "metadataIpfs": "1220b6f68d12e4ca137f50043272aec0cefea36b07fefa471e10429062b7057da48c",
+      "immutables": {
+        "EnclaveProofOfTime.deployments": "0x000000000000000000000000b1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "EnclaveProofOfTime.registry": "0x000000000000000000000000868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "links": {},
+      "profileName": "proofOfTime",
+      "basis": "Full match with 44d5b928 (2026-07-28 source, unchanged until deployment), runs 200, viaIR. Address immutables equal the authority profile getter bindings (deployments, registry)."
+    },
+    "enclavePay": {
+      "address": "0x580270e88e5df35dad59e7fe3d907ebea96673a6",
+      "kind": "contract",
+      "build": "pay",
+      "unit": "EnclavePay.sol",
+      "contract": "EnclavePay",
+      "runtimeBytes": 2376,
+      "codeHash": "0xf902e3481a78768e93e7f1c0eacdc730ba110581f39c540fa6f50291d714f025",
+      "metadataIpfs": "12207afbc9420cdc4a9971fb6a007c8f1a2f1546d041f18e525a0b0581c99596d360",
+      "immutables": {
+        "EnclavePay.usdc": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      "links": {},
+      "profileName": "enclavePay",
+      "basis": "Full match with cf6022cc (2026-07-14), runs 200. Address immutables equal the authority profile getter bindings (usdc). owner and payout are storage."
+    },
+    "verificationFees": {
+      "address": "0x87c7266543ff5839b2c20226bd9b3cd511a23641",
+      "kind": "contract",
+      "build": "verification-fees",
+      "unit": "EnclaveVerificationFees.sol",
+      "contract": "EnclaveVerificationFees",
+      "runtimeBytes": 17257,
+      "codeHash": "0xf649e393d201db4cd3a0377384381a95bf32e33d53bab290a6824067d7f66ab9",
+      "metadataIpfs": "12204a52e774046f183f5112c0e8f075fd5bcf9fcfacbcfda7fca4f98ea61e61ba25",
+      "immutables": {
+        "EnclaveVerificationFees.token": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "EnclaveVerificationFees.proof": "0x0000000000000000000000006f462d77727f10f05a3e660650e7dcc9cc60e6b2",
+        "EnclaveVerificationFees.ledger": "0x000000000000000000000000b1783b61e1fdee6a6163dc3cdac27bf32e7d117b"
+      },
+      "links": {},
+      "profileName": "verificationFees",
+      "basis": "Full match with 28dd23c2 (2026-09-30), runs 200, viaIR. Address immutables equal the authority profile getter bindings (ledger, proof, token)."
+    },
+    "connectivity": {
+      "address": "0x5f8b636e0768e84bd47b736652030b65db615111",
+      "kind": "contract",
+      "build": "connectivity",
+      "unit": "contracts/EnclaveConnectivity.sol",
+      "contract": "EnclaveConnectivity",
+      "runtimeBytes": 17778,
+      "codeHash": "0xf353785902b40e59bf67f655ed58fb9fbc72150e1812c40ae9703aadee8fe550",
+      "metadataIpfs": "1220dfe232484856e0836bcbd3262294684a073bc5ab96eda458aba25c87279d7112",
+      "immutables": {
+        "EnclaveConnectivity.ledger": "0x000000000000000000000000b1783b61e1fdee6a6163dc3cdac27bf32e7d117b",
+        "EnclaveConnectivity.registry": "0x000000000000000000000000868eb7fc5b5a84b2ff082eafc9bf40b7aac5ccac"
+      },
+      "links": {},
+      "profileName": "connectivity",
+      "basis": "Full match only with unit names contracts/EnclaveConnectivity.sol and contracts/EnclaveDeployments.sol at runs 200, viaIR (not the build-contract-artifacts.mjs naming; no committed artifact held this metadata). Sources as of 4b7419bb0: connectivity blob c0fb0bed (unchanged 3ac18fcc..b28a9b2e^) with the live ledger rev 16d blob 3f3d2c3a. The live interface is the pre-v2 \"tuna\" one; b28a9b2e later renamed it. Address immutables equal the authority profile getter bindings (ledger, registry)."
+    },
+    "paymentRouter": {
+      "address": "0xf17157b42ebbd65e33dd592878a8f1769c69d56a",
+      "kind": "contract",
+      "build": "payment-router",
+      "unit": "PaymentRouter.sol",
+      "contract": "PaymentRouter",
+      "runtimeBytes": 1229,
+      "codeHash": "0x3497b4ce1a0a8b7018627a3a3862096a013e42283901909a5054f1989fdb3b75",
+      "metadataIpfs": "12209cf67dad3c56b8b39f7b8f4df192b5b5250260deefd5615123319685292e09c4",
+      "immutables": {
+        "PaymentRouter.usdc": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "PaymentRouter.treasury": "0x000000000000000000000000271a59b4b1ee756e0e46d84aa4c9c26a8d48f44d"
+      },
+      "links": {},
+      "profileName": "paymentRouter",
+      "basis": "Full match with 09ccf9cd (2026-07-20), runs 200. Address immutables equal the authority profile getter bindings (usdc, treasury)."
+    },
+    "keyAttestations": {
+      "address": "0xb49241efe5af6078be6aa84850ae45eed34df61b",
+      "kind": "contract",
+      "build": "key-attestations",
+      "unit": "EnclaveKeyAttestations.sol",
+      "contract": "EnclaveKeyAttestations",
+      "runtimeBytes": 2000,
+      "codeHash": "0x1a2032764e44a056267bb3585e2179b6bf2e7f7b9248e9810c61cee3cb8233c1",
+      "metadataIpfs": "12207d7288ea476a0f6b1e71d443b78c3c9e9a8432952850d6159e529a94b3b894ab",
+      "immutables": {},
+      "links": {},
+      "profileName": "keyAttestations",
+      "basis": "Full match with ee28c686 (2026-10-06), runs 200. No immutables; owner, pendingOwner and attestors are storage."
+    },
+    "legacySessionVaultFactory": {
+      "address": "0x1f5c887c0cdf491b16ab6c449abafdf9b2ec9c9c",
+      "kind": "contract",
+      "build": "legacy-sessions-v2",
+      "unit": "SessionVault.sol",
+      "contract": "SessionVaultFactory",
+      "runtimeBytes": 2208,
+      "codeHash": "0xc9b6214babb0126b26e818de8555c98b7e2a284b08a7cfd42f51b121e93d4f6c",
+      "metadataIpfs": "122029ea91547e01d48106258036858bf6fda8708d1479eb17115b0a1d8c55d9a625",
+      "immutables": {
+        "SessionVaultFactory.implementation": "0x00000000000000000000000066c76a47209f44612343dbeab98b8ef77ad01f65"
+      },
+      "links": {},
+      "profileName": "legacySessionVaultFactory",
+      "basis": "Full match with 4aea7d89 (2026-10-07), runs 1, viaIR. implementation equals the profile binding and the legacy implementation below."
+    },
+    "legacySessionVaultImplementation": {
+      "address": "0x66c76a47209f44612343dbeab98b8ef77ad01f65",
+      "kind": "contract",
+      "build": "legacy-sessions-v2",
+      "unit": "SessionVault.sol",
+      "contract": "SessionVault",
+      "runtimeBytes": 23664,
+      "codeHash": "0x3dd35d4c4bdf112e2ded90da36a16510bfe938a0c9b8b9ed4414698323efb76e",
+      "metadataIpfs": "1220122628b6c665727481ca1735bf2494e1bb9aac65aa29decd5671d0498fc47c14",
+      "immutables": {
+        "SessionVault.router": "0x000000000000000000000000f17157b42ebbd65e33dd592878a8f1769c69d56a",
+        "SessionVault.usdc": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "SessionVault.book": "0x000000000000000000000000ab214342d5a490150a4a977063a2f88e21f80907",
+        "SessionVault.maxVault6": "0x000000000000000000000000000000000000000000000000000000000ee6b280",
+        "SessionVault.factory": "0x0000000000000000000000001f5c887c0cdf491b16ab6c449abafdf9b2ec9c9c",
+        "SessionVault.keyAttestations": "0x000000000000000000000000b49241efe5af6078be6aa84850ae45eed34df61b"
+      },
+      "links": {
+        "SessionVault.sol:SessionVaultLib": "0x5510ae9fed97577d75c69545384af7d8bad05027"
+      },
+      "profileName": "legacySessionVaultImplementation",
+      "basis": "Full match with 4aea7d89, runs 1, viaIR. usdc, book, router, keyAttestations and maxVault6 equal the ledger-15d-base.json sessionVaultV2 factory args; book is the mutable EnclaveAddressBook. Linked SessionVaultLib equals that record."
+    },
+    "legacySessionVaultLib": {
+      "address": "0x5510ae9fed97577d75c69545384af7d8bad05027",
+      "kind": "library",
+      "build": "legacy-sessions-v2",
+      "unit": "SessionVault.sol",
+      "contract": "SessionVaultLib",
+      "runtimeBytes": 10681,
+      "codeHash": "0xe1535a3f96d34230e84afa199f2f2eab3a1c2f412be64d531d34d4a566680bc7",
+      "metadataIpfs": "12202ca7b08e7ea0ffd4ea4d7a92f5c3210eb43ef0533ffe4abc9d36958cdc58670b",
+      "immutables": {
+        "library_deploy_address": "0x0000000000000000000000005510ae9fed97577d75c69545384af7d8bad05027"
+      },
+      "links": {},
+      "profileName": null,
+      "basis": "SessionVaultLib from the same build; library_deploy_address holds its own address, which equals ledger-15d-base.json sessionVaultV2.SessionVaultLib."
+    }
+  },
+  "external": {
+    "usdc": {
+      "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "kind": "upgradeable-proxy",
+      "codeHash": "0xa6705a10bb756b5dea144591118be77d7af0c3eee3bf2dfe2583dcb0364fefab",
+      "runtimeBytes": 1852,
+      "metadataSolc": "0.6.12",
+      "slots": {
+        "implementation": "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+        "admin": "0x10d6a54a4754c8869d6886b5f5d7fbfa5b4522237ea5c60d11bc4e7a1ff9390b"
+      },
+      "profileName": "usdc",
+      "basis": "External Circle upgradeable proxy (CBOR solc 0.6.12). Only the proxy runtime hash is pinned and its source is not verified here. Implementation and admin live in the ZeppelinOS slots named below; they are observed on every run but deliberately not pinned, because the admin can replace the implementation without changing the proxy hash. Verifying this proxy says nothing about future USDC behavior."
+    }
+  }
+}

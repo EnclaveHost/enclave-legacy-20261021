@@ -57,6 +57,9 @@ export class HyperVPartitionBackend {
   get supports() { return SUPPORTS; }
   /** The launcher's boundary word, which server.mjs carries on /health and every record (null with no launcher). */
   get boundary() { return (this.launcher && this.launcher.boundary) ?? null; }
+  /** the launcher's ownership marker (wmi-launcher.mjs markerFor): what this manager's recovery recognises as its own */
+  get marker() { return (this.launcher && this.launcher.marker) || undefined; }
+  get prefix() { return (this.launcher && this.launcher.prefix) || undefined; }
   /**
    * Start a domain for an already-derived mapping. Resolves to { pid, endpoint } when a partition
    * really runs; throws otherwise. It never returns a partial success.
