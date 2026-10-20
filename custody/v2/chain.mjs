@@ -1,6 +1,6 @@
 // Custody reads use a fresh majority-agreed block hash and immutable vault authorities.
 import { createPublicClient, http, keccak256, toBytes, hexToBytes, stringToHex, encodeFunctionData, decodeFunctionResult } from "viem";
-import { createQuorumReader } from "./quorum.mjs";
+import { createQuorumReader, checkRpcUrls } from "./quorum.mjs";
 
 export const MACHINE = [
   { name: "identity", type: "address" }, { name: "encKey", type: "bytes32" }, { name: "endpoint", type: "string" },
@@ -116,8 +116,7 @@ async function readReleaseAt(client, vault, { id, endpoint }, block) {
 }
 export function createChainReaderV2({ rpcs, vault, hostOwnership = null, chainId=null, minAgree, confirmations=0,
   clients: given=null, timeoutMs=10000, maxAgeSec=120, maxFutureSec=10, now=()=>Date.now(), checkpoint=null }) {
-  if (!given && new Set((rpcs||[]).map(url=>new URL(url).hostname)).size !== (rpcs||[]).length)
-    throw Error('chain: distinct RPC hostnames required');
+  if (!given) checkRpcUrls(rpcs);                       // one host is one vote: case, trailing dot, port and path aliases count once
   const clients = given || (rpcs || []).map(url=>createPublicClient({transport:http(url,{timeout:timeoutMs,retryCount:0})}));
   const agreed=createQuorumReader({clients,minAgree,chainId,confirmations,timeoutMs,maxAgeSec,maxFutureSec,now,checkpoint});
   async function hostAuthorities(rd) {

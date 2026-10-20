@@ -423,3 +423,5 @@ None of this is hardware evidence.
    depends on measured members: approvers refuse such sets, and dealers encrypt
    only for sets they approved. Dealers that are compromised already hold their
    shares; this protection covers honest dealers against other signers.
+
+The RPC reader was subsequently hardened to count public hostname aliases only once, require HTTPS for public peers, reject malformed configurations, and recheck freshness after a durable checkpoint save. Its 16 focused quorum/ownership/release tests pass. These source changes affect the custodian bundle and launch measurement. The repeatable builds of `78acfcc6` remain evidence for that revision only; build and review fresh images from the new committed revision before using its fixes in a committee. No hardware committee or production secrets were migrated by this validation.

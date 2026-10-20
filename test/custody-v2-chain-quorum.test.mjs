@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createQuorumReader} from '../custody/v2/quorum.mjs';
+import {createQuorumReader,rpcIdentity} from '../custody/v2/quorum.mjs';
 import {createChainReaderV2,VAULT_V2_ABI} from '../custody/v2/chain.mjs';
 import {decodeFunctionData,encodeFunctionResult} from 'viem';
 const hash=n=>'0x'+BigInt(n).toString(16).padStart(64,'0');
@@ -104,7 +104,7 @@ test('checkpoint survives reader restart and rejects rollback, same-height fork 
   for(const p of peers){p.opts.head=101n;p.opts.hashOffset=0n;}
   assert.equal((await reader(peers,{checkpoint})(read)).blockNumber,101n);
   await assert.rejects(reader(peers,{checkpoint:{load:()=>null,save:async()=>{throw Error('disk unavailable');}}})(read),/disk unavailable/);
-  await assert.rejects(reader(peers,{checkpoint:{load:()=>({blockNumber:'oops'})}})(read),/checkpoint/);
+  await assert.rejects(reader(peers,{checkpoint:{load:()=>({blockNumber:'oops'}),save:async()=>{}}})(read),/checkpoint/);
 });
 
 test('concurrent reads cannot return an older snapshot after a later one was persisted',async()=>{
@@ -123,4 +123,69 @@ test('configured peers and thresholds cannot silently count one peer twice or ac
   for(const args of [{confirmations:-1},{maxAgeSec:null},{maxFutureSec:-1},{timeoutMs:0}])
     assert.throws(()=>reader([peer()],args),/invalid/);
   assert.throws(()=>createChainReaderV2({rpcs:['https://rpc.example/a','https://rpc.example/b'],minAgree:2}),/distinct/);
+});
+
+test('one public RPC host is one vote however it is spelled; loopback test chains count by port',()=>{
+  const at=url=>Object.assign(peer(),{transport:{url}});
+  for(const [a,b] of [
+    ['https://rpc.example.org','https://rpc.example.org.'],                  // trailing dot (the reported alias)
+    ['https://rpc.example.org','https://RPC.Example.ORG'],                   // case
+    ['https://rpc.example.org','https://rpc.example.org:8443'],              // port
+    ['https://rpc.example.org/key-a','https://rpc.example.org./key-b?x=1'],  // path, key, query and dot together
+    ['http://127.0.0.1:8545','http://localhost:8545/'],                      // loopback aliases on one port
+    ['http://[::1]:8545','http://127.0.0.1:8545'],
+  ]){
+    assert.throws(()=>reader([at(a),at(b)]),/distinct RPC hostnames/,`${a} | ${b}`);
+    assert.throws(()=>reader([at(a),at(b),at('https://third.example.net')]),/distinct RPC hostnames/,`3 peers: ${a} | ${b}`);
+    assert.throws(()=>createChainReaderV2({rpcs:[a,b],minAgree:2}),/distinct RPC hostnames/,`rpcs: ${a} | ${b}`);
+  }
+  // with the alias, three configured clients are two hosts: a "majority of 3" would be satisfied by one host twice
+  assert.throws(()=>reader([at('https://a.example.org'),at('https://a.example.org.'),at('https://b.example.org')]),/distinct/);
+  assert.equal(rpcIdentity('https://RPC.example.org.:8443/k?x=1'),'host:rpc.example.org');
+  assert.equal(rpcIdentity('http://localhost:8546'),'loopback:8546');
+  for (const url of ['http://rpc.example.org', 'https://rpc.example.org/#secret', 'https://user:secret@rpc.example.org'])
+    assert.throws(() => rpcIdentity(url), e => /HTTPS/.test(e.message) && !e.message.includes('secret'));
+  // genuinely distinct hosts, and distinct loopback test ports, are separate votes
+  assert.doesNotThrow(()=>reader([at('https://a.example.org'),at('https://b.example.org'),at('https://a.example.net')]));
+  assert.doesNotThrow(()=>reader([at('http://127.0.0.1:8545'),at('http://127.0.0.1:8546')]));
+  assert.doesNotThrow(()=>createChainReaderV2({rpcs:['https://a.example.org/x','https://b.example.org/x'],minAgree:2}));
+});
+
+test('invalid reader configuration is refused before any request; custom transports without a URL still work',async()=>{
+  const at=url=>Object.assign(peer(),{transport:{url}});
+  for(const [clients,re] of [
+    [[],/1-16 RPC clients/], [Array.from({length:17},()=>peer()),/1-16 RPC clients/],
+    [[peer(),null],/client 2 is malformed/], [[peer(),{getBlock(){}}],/client 2 is malformed/], [[peer(),'https://a.example.org'],/client 2 is malformed/],
+    [[peer(),at('not a url')],/invalid RPC URL/], [[peer(),at(42)],/invalid RPC URL/], [[peer(),at('ftp://a.example.org')],/HTTPS/],
+    [[peer(),at('https://user:secret@a.example.org')],/without credentials/],
+  ]) assert.throws(()=>reader(clients),re,JSON.stringify(re.source));
+  assert.throws(()=>createQuorumReader({clients:null,minAgree:1}),/1-16 RPC clients/);
+  assert.throws(()=>createQuorumReader({clients:{length:2,0:peer(),1:peer()},minAgree:2}),/1-16 RPC clients/,'an array, not an array-like');
+  const noChainId=peer();delete noChainId.getChainId;
+  assert.throws(()=>reader([noChainId,peer()]),/needs getBlockNumber, getBlock, getChainId/,'a pinned chain id needs getChainId');
+  assert.doesNotThrow(()=>reader([noChainId,peer(),peer()],{chainId:null}),'without a pinned chain id getChainId is not needed');
+  for(const extra of [{minAgree:1},{minAgree:3},{minAgree:1.5},{minAgree:'2'}])
+    assert.throws(()=>reader([peer(),peer()],extra),/majority/,JSON.stringify(extra));
+  for(const extra of [{confirmations:1001},{confirmations:1.5},{timeoutMs:300001},{timeoutMs:Infinity},{maxAgeSec:7*86400+1},{maxAgeSec:NaN},
+                      {maxFutureSec:3601},{maxFutureSec:'5'},{chainId:0},{chainId:2**53}])
+    assert.throws(()=>reader([peer()],extra),/invalid/,JSON.stringify(extra));
+  assert.throws(()=>reader([peer()],{now:1000000}),/invalid clock/);
+  for(const checkpoint of [{load:()=>null},{save:async()=>{}},'file.json',{load:1,save:2}])
+    assert.throws(()=>reader([peer()],{checkpoint}),/invalid checkpoint/);
+  for(const rpcs of [[],['https://a.example.org','not a url'],Array.from({length:17},(_,i)=>`https://h${i}.example.org`),'https://a.example.org'])
+    assert.throws(()=>createChainReaderV2({rpcs,minAgree:1}),/RPC/,JSON.stringify(rpcs));
+  // the existing custom-transport fixtures (no exposed URL) are known by object identity and still read
+  const plain=[peer(),peer(),peer()];
+  assert.equal((await reader(plain)(read)).blockNumber,100n);
+});
+
+test('a snapshot that goes stale while its checkpoint is being persisted is refused; the mark still advances',async()=>{
+  let clock=1000000,saved=null;
+  const checkpoint={load:()=>saved,save:async mark=>{clock+=200000;saved=mark;}};   // a 200 s durable write
+  const peers=Array.from({length:3},()=>peer());
+  const r=createQuorumReader({clients:peers,minAgree:2,chainId:8453,now:()=>clock,timeoutMs:50,checkpoint});
+  await assert.rejects(r(read),{code:'chain_stale'});
+  assert.equal(saved.blockNumber,'100','the genuine agreed block is still the persisted floor');
+  for(const p of peers){p.opts.head=99n;p.opts.timestamp=BigInt(clock/1000);}
+  await assert.rejects(r(read),{code:'chain_rollback'},'the floor is never lowered after the refused answer');
 });
