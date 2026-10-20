@@ -12,11 +12,12 @@ test('only the exact host wallet commitment authorizes a policy',async()=>{
  assert.throws(()=>hostAdmissionRefusal(policy,{hostId:other,deploymentId:app,appRef}),/another host/);
  assert.match(hostAdmissionRefusal(policy,{hostId:host,deploymentId:app,appRef}),/declines/);
 });
-test('independent hosts can accept the same deployment regardless of Enclave catalog refusal',async()=>{
- const independent={...policy,hostId:other,requireCatalogApproval:false,denyDeployments:[]};
- const refused={active:true,yanked:false,approval:2};
- assert.match(hostAdmissionRefusal(policy,{hostId:host,deploymentId:other,appRef,version:refused}),/catalog approval/);
- assert.equal(hostAdmissionRefusal(independent,{hostId:other,deploymentId:app,appRef,version:refused}),null);
+test('no host wallet policy can override platform rejection, delisting or a yank',()=>{
+ for(const requireCatalogApproval of [true,false]){
+  const p={...policy,requireCatalogApproval,denyDeployments:[]};
+  for(const change of [{active:false},{yanked:true},{approval:2}])
+   for(const forPrivate of [false,true])assert.ok(hostAdmissionRefusal(p,{hostId:host,deploymentId:other,appRef,forPrivate,version:{active:true,yanked:false,approval:1,...change}}));
+ }
 });
 test('ownership transfer clears former wallet policy and unavailable documents fail closed locally',async()=>{
  const opts={hostId:host,ownershipContract:contract,readAuthority:async()=>({owner,revision:3,policyHash:'0x'+'00'.repeat(32)}),loadPolicy:async()=>{throw Error('must not load former policy');}};
@@ -30,5 +31,5 @@ test('case and numeric aliases cannot bypass a wallet denial',()=>{
  assert.match(hostAdmissionRefusal(p,{hostId:host,deploymentId:other,appRef:'catalog://'+app.toUpperCase().replace('0X','0x')+'/0001'}),/declines/);
  assert.match(hostAdmissionRefusal(policy,{hostId:host,deploymentId:app.toUpperCase().replace('0X','0x'),appRef}),/declines/);
  assert.throws(()=>hostAdmissionRefusal(p,{hostId:host,deploymentId:other}),/reference required/);
- assert.match(hostAdmissionRefusal({...policy,denyDeployments:[]},{hostId:host,deploymentId:other,appRef,version:{approval:1}}),/catalog approval/);
+ assert.match(hostAdmissionRefusal({...policy,denyDeployments:[]},{hostId:host,deploymentId:other,appRef,version:{approval:1}}),/catalog status/);
 });

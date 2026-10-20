@@ -36,7 +36,9 @@ test('new wallet commitment fetches a new document without reboot; refusal is sc
  const reader={agreed:async fn=>({timestamp:now,...await fn({readContract:async q=>{
   if(q.functionName==='registry')return registry;
   if(q.functionName==='authority')return [owner,owner,BigInt(revision),q.args[0]===host?hash:'0x'+'00'.repeat(32)];
-  throw Error('catalog authority must not be consulted');
+  if(q.functionName==='getApp')return {appId:app,versionCount:2,active:true};
+  if(q.functionName==='getVersion')return {yanked:false,approval:1};
+  throw Error('unexpected read');
  }},100n)})};
  try{
   const cfg={ownershipContract:ownership,registry,catalog,reader,now:()=>now,policyDirectory:directory,policyOrigins:[mirror.origin]};

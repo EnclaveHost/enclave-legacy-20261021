@@ -603,7 +603,7 @@ export function claimPolicy(d, { ownerAllow, enclaveId, appsEnabled = true, scop
   // deployment; this box refuses private deployments outright (it verifies no session token), so
   // the one place it can honestly relax is its OWN owner testing their own app on their own
   // machine, where the only person exposed is the person who published it.
-  if (version && !hostWalletPolicy) {
+  if (version) {
     if (version.yanked) return "the catalog version was yanked by its publisher";
     if (Number(version.approval) === 2) return "the catalog version was rejected by the catalog owner";
     if (Number(version.approval) !== 1 && !owners && !(privateOk && !d.isPublic))

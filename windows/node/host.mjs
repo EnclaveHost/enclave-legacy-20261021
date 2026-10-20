@@ -1368,7 +1368,7 @@ export class Host {
     });
     let v = version;
     if (!v) try { v = await chain.resolveAppRef(d.appRef); } catch (e) { return this.#record(id, { status: "failed", reason: `catalog: ${e.message}` }); }
-    if (!this.hostAdmission && v.yanked) return await this.#giveUp(id, "the catalog version is yanked");
+    if (v.yanked) return await this.#giveUp(id, "the catalog version is yanked");
     // The CORELESS floor, which is the only kind this box does: the version's own memMb, raised by
     // the publisher's cpuFallback when they declared one. Sizing a fallback off the card-case
     // figure is how a big model lands on a small slice and dies at weight-load with nothing having
@@ -2774,7 +2774,7 @@ export class Host {
    */
   async walletPolicyRefusal(d) {
     if(!this.hostAdmission)return null;
-    try{return await this.hostAdmission.refusal({deploymentId:d.id,appRef:d.appRef});}
+    try{return await this.hostAdmission.refusal({deploymentId:d.id,appRef:d.appRef,forPrivate:d.isPublic===false});}
     catch(e){return 'host wallet policy unavailable: '+String(e.message).slice(0,240);}
   }
   claimRefusal(d, { version = null, capacity, appsEnabled, invited = false, ownerAllow = this.ownerSet() }) {

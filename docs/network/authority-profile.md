@@ -189,8 +189,10 @@ pinned.
 - set the fee cap (`setMaxFee`).
 
 Versions the owner publishes start Approved. `importsSealed` is true. Legacy
-hosts admit deployments by catalog approval. On a host running wallet policy,
-the host owner's policy decides whether approval is required.
+hosts admit deployments by catalog approval. Wallet-policy hosts must enforce
+the same platform moderation; an owner may add restrictions. Pending versions
+may run only as private development deployments; rejection, yank and delisting
+remain mandatory refusals regardless of visibility.
 
 **Proof of time.** The owner can set the proof window, bounded to
 [60 s, ledger `leaseSec`).
@@ -342,8 +344,9 @@ set to another address. Against live RPCs, the verifier reported both
    ledger, catalog, registry, proof-of-time, pay, verificationFees,
    connectivity, router or key-attestation bytes match reviewed source. The
    registry's schema 4 shows the deployed registry predates source HEAD.
-3. **Governance seal.** The owner powers listed above remain until the seal is
-   activated.
+3. **Administrative continuity.** The owner powers listed above must remain
+   available after migration. Ownership-sink activation is superseded; verify
+   admin migration, catalog moderation and malicious-host enforcement.
 4. **Consumers.** These are owned elsewhere: a CLI `profile verify` or import
    command, native-client profile import, and browser independent mode taking a
    verified export. None of them consume this profile yet.

@@ -1,9 +1,11 @@
 # Decentralization acceptance gates
 
-Censorship resistance is the objective. An Enclave wallet may refuse service on
-hosts it owns. It must not stop another consenting host, custodian quorum, storage
-operator, or client from serving a deployment. Moving Nan's processes to minipc
-completed server retirement, not this objective.
+Censorship resistance means resistance to external parties and infrastructure
+failures. Enclave's admin wallet retains platform governance: contract migration,
+catalog moderation and malicious-host enforcement. Host owners may decline work
+on their own machines but cannot override platform moderation. Computation remains
+private. Moving Nan's processes to minipc completed server retirement, not removal
+of mandatory centralized infrastructure.
 
 Independent operators do not have to exist before this architecture is finished.
 Use separate owner, operator, publisher, custodian and gas-payer identities on test
@@ -12,17 +14,17 @@ live network of independently operated machines.
 
 ## Authority and failure tests
 
-| Path | Required behavior under Enclave refusal | Current gap |
+| Path | Required behavior under external censorship or service loss | Current gap |
 | --- | --- | --- |
-| Host admission | Accepted host owner chooses its policy; payout and operator are not ownership | Windows runtime enabled on its enrolled authority; Linux measured delivery and mirror tests implemented, metal0 enrollment and runtime activation remain |
+| Host admission | Accepted host owner applies additional restrictions; platform moderation remains mandatory; payout and operator are not ownership | Windows runtime enabled on its enrolled authority; Linux measured delivery and mirror tests implemented, metal0 enrollment and runtime activation remain |
 | Contracts | Clients retain explicit bindings when the address book is deleted or redirected | Host consumers and CLI support pins; other consumers still need wiring |
 | Sessions | An owner grants a bounded session and any gas payer submits it without API/relay access | Fixed-binding factory deployed and bytecode verified on Base; clients/grants not migrated |
-| Deployments | Explicit release and spending cap reach the ledger without API moderation/quotes | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
-| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without Enclave's release signer | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
-| Custody | Independent host can use a sufficient independent quorum despite Enclave refusing shares | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
+| Deployments | Explicit release and spending cap reach the ledger without a mandatory centralized API or quote service; on-chain moderation applies | CLI wallet `deploy --chain-only` implemented; funded is distinct from ready |
+| Guest boot | Measured guest obtains owner-authorized configuration and custody shares without one mandatory online release-signing server | Public startup passed on real SNP hardware with guest control egress denied; production remains on legacy startup, and independent custody/retention are outstanding |
+| Custody | Authorized hosts can use a sufficient custodian quorum when endpoints fail | Independent committee genesis, DKG, measured accepted-owner admission and API coordination implemented; production vault/runtime migration and hardware quorum evidence remain |
 | Artifact storage | Fresh adapter recovers and serves verified CIDs with any one indexer/backend unavailable | Verified multi-adapter publication and cold reads exist; sealed Sia snapshots now recover real artifacts with indexd blocked. Live writes, funding and renewal still depend on the existing service |
 | Names and TLS | Fresh client resolves and authenticates a host without enclave.host DNS or the control CA service | Native full-ID access and owner-committed profile reproduction pass with DNS/control blocked; browser naming and production cutover remain |
-| Governance | Enclave cannot retire the serving ledger, redirect authorities, or impose an arbitrary global admission restriction | Irreversible ownership seal and fixed-block review tooling implemented; production ownership and dependency review remain outstanding |
+| Governance | Enclave admin retains contract migration, catalog moderation and platform admission powers | Admin-removal plans superseded; retain ownership and verify administrative operations and enforcement through migration |
 
 ## Implemented client and session path
 
@@ -81,7 +83,7 @@ address book. These are local-chain results, not a production migration claim.
 
 The production front verifies an Enclave-signed sealed release before contacting
 custodians. A sufficient independent custody quorum therefore cannot currently
-boot a new guest through that front while Enclave refuses the release. Do not
+boot a new authorized guest through that front while the former central release service is unavailable. Do not
 remove this check or permit host-supplied config to reach the app unverified.
 
 The replacement must bind the deployment, actual loaded AppID, measured runtime,
@@ -636,74 +638,23 @@ endpoint compatibility; it does not establish live independent custody.
 
 ## Governance disposition
 
-The live ledger's owner can retire it, raise claim bonds, slash operator bonds,
-restrict new allocations, change runner economics and change proof enforcement.
-Explicit address pins do not remove these powers. Its proof verifier also has
-an owner-controlled proof window. These are global powers, unlike a host owner's
-right to decline work on that owner's machines.
+The platform admin retains ledger administration, future contract migration,
+catalog moderation and malicious-host enforcement. Host-wallet policy adds
+restrictions for that host; it cannot exempt rejected, delisted or yanked apps.
+Pending releases remain available for private development only. Admission and
+renewal must read current policy from agreeing chain sources without requiring Nan.
 
-`GovernanceSeal` is an irreversible ownership sink with no forwarding, upgrade,
-recovery, withdrawal or administrative entry point. It commits to the chain,
-target address, target bytecode and an ordered list of getter responses. The
-target's current owner must first nominate it using the target's existing
-two-step handoff; anyone can then finalize, but only while the reviewed target
-code and configuration still match. Nomination alone remains cancellable by the
-current owner. After acceptance there is no administrative recovery path.
+The earlier `GovernanceSeal` ownership-sink proposal and its activation instructions
+are superseded. Its source and fork tests are historical experiments, not release
+requirements or authorization to remove admin powers. Never nominate a seal or
+burn ownership as part of the current migration. Sealing completed ledger imports
+is a distinct integrity operation and does not remove future administration.
 
-Prepare review evidence without a wallet or Enclave API:
-
-```sh
-node scripts/capture-governance-review.mjs \
-  --ledger 0xB1783B61E1FDee6a6163DC3CdaC27bF32E7d117B \
-  --catalog 0x18419ca2b502d423a8de6269aeee171a378626e3 \
-  --out /path/to/new-governance-review.json
-node scripts/build-governance-seal.mjs /path/to/new-seal-artifacts
-```
-
-The capture requires two agreeing RPCs at the same recent block and refuses
-unknown contract revisions, malformed getters and absent dependency bytecode.
-Profiles cover the ledger's 17 configuration getters, the proof verifier's four,
-and the catalog's three; ownership is recorded separately so nomination does not
-invalidate the commitment. It reports unsealed imports, retired/disabled ledger
-settings, missing one-time router bindings and pre-existing nominations. An empty
-blocker list is **not approval to seal**: bytecode identity, linked libraries,
-proxies, dependent governance and the chosen permanent economic parameters still
-require review. Neither command prepares or sends transactions.
-
-Each seal checks its own target only. In particular, a ledger seal does not seal
-its proof verifier, token, oracle or routers. Catalog approval/rejection rows are
-not enumerable configuration commitments; independent consumers must stop using
-those rows as global admission authority, regardless of catalog ownership.
-USDC issuer and underlying chain/oracle authority are external trust assumptions,
-not powers removed by this mechanism.
-
-`GovernanceSeal.hosting.t.sol` uses the real registry, ledger and proof verifier
-to register a new independent runner after sealing, create/fund work, submit a
-signed service checkpoint via an unrelated gas payer, renew, collect earnings,
-and preserve tenant stop/refund/transfer rights. Former governance shutdown,
-slashing, admission restrictions and proof-window changes fail. Its token and
-attested signing key are fixtures; it does not prove live TEE or custody behavior.
-`GovernanceSeal.liveFork.t.sol` repeats that scenario on the actual Base ledger
-and bound contracts, using a local fork and test-only role impersonation:
-
-```sh
-forge test --match-contract GovernanceSealLiveForkTest \
-  --fork-url https://mainnet.base.org --fork-block-number REVIEW_BLOCK -vv
-```
-
-The fork test is skipped on the default non-Base test chain. Fork writes never
-reach production. No production ownership has been changed; activation must
-follow dependency review and must not freeze a configuration still needed by the
-guest/custody transition.
-
-On 2026-10-19, the read-only capture at Base block 52,819,670 found the live
-ledger, proof verifier and catalog still owned by the Enclave wallet, with no
-pending handoff. Imports were sealed, the ledger was active, and its current
-proof/fee/bandwidth dependencies were bound. Seven local seal/hosting tests and
-five review-tool tests passed. The production-code fork scenario passed at that
-same block, including refusal of the former governor's attempt to slash a funded
-runner bond and the runner's subsequent full bond withdrawal. These results
-support the proposed governance change, not completion or activation of it.
+Read-only production checks on 2026-10-20 confirmed the admin wallet still owns
+ledger, catalog, proof verifier, pay and key-attestation contracts. Administrative
+calls were simulated successfully, with unauthorized callers rejected. This does
+not prove every administrative workflow or malicious-host enforcement path;
+those remain explicit integration and migration acceptance requirements.
 
 ## Storage and production acceptance
 

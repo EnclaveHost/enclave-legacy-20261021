@@ -2,6 +2,7 @@
 // Consumers pin that contract and registry; payoutWallet is not an authority.
 import {keccak256,toHex,parseAbi} from 'viem';
 import {canonical} from './route-record.mjs';
+import {catalogAdmissionRefusal} from '../site/js/core/catalog-policy.js';
 const id=/^0x[0-9a-f]{64}$/,address=/^0x[0-9a-f]{40}$/;
 const zero='0x'+'00'.repeat(32);
 const authorityABI=parseAbi(['function authority(bytes32) view returns (address owner,address pendingOwner,uint64 revision,bytes32 policyHash)']);
@@ -29,7 +30,7 @@ export async function readHostAdmissionPolicy({hostId,ownershipContract,readAuth
  if(p.hostId!==hostId||p.ownershipContract!==ownershipContract||hostAdmissionPolicyHash(p)!==a.policyHash)throw Error('host policy does not match the current wallet commitment');
  return {owner:a.owner,revision:a.revision,policy:p};
 }
-export function hostAdmissionRefusal(p,{hostId,deploymentId,appRef,version}){
+export function hostAdmissionRefusal(p,{hostId,deploymentId,appRef,version,forPrivate=false}){
  p=validateHostAdmissionPolicy(p);
  if(p.hostId!==hostId)throw Error('host policy cannot apply to another host');
  if(typeof deploymentId!=='string'||!/^0x[0-9a-f]{64}$/i.test(deploymentId))throw Error('deployment id required');
@@ -37,6 +38,9 @@ export function hostAdmissionRefusal(p,{hostId,deploymentId,appRef,version}){
  if(!ref)throw Error('catalog app reference required');
  const canonicalRef=`catalog://${ref[1].toLowerCase()}/${Number(ref[2])}`;
  if(p.denyDeployments.includes(deploymentId.toLowerCase())||p.denyAppRefs.includes(canonicalRef))return 'this host owner declines this deployment';
- if(p.requireCatalogApproval&&(!version||version.active!==true||version.yanked!==false||Number(version.approval)!==1))return 'this host owner requires current catalog approval';
+ const platformRefusal=catalogAdmissionRefusal(version,version,{forPrivate});
+ if(platformRefusal)return platformRefusal;
+ // The legacy commitment field can tighten private development admission, never bypass platform policy.
+ if(p.requireCatalogApproval&&Number(version.approval)!==1)return 'this host owner requires current catalog approval';
  return null;
 }

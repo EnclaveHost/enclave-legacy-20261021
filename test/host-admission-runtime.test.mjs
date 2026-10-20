@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {createHostAdmission,fileHostPolicyLoader,hostAdmissionFromEnv} from '../network/host-admission-runtime.mjs';
+const {createHostAdmission,fileHostPolicyLoader,hostAdmissionFromEnv}=await import(process.env.ADMISSION_BUNDLE_TEST ? '../windows/node/host-admission.bundle.mjs' : '../network/host-admission-runtime.mjs');
 import {hostAdmissionPolicyHash} from '../network/host-admission-policy.mjs';
 const host='0x'+'ab'.repeat(32),deployment='0x'+'cd'.repeat(32),app='0x'+'ef'.repeat(32);
 const ownership='0x'+'11'.repeat(20),registry='0x'+'22'.repeat(20),catalog='0x'+'33'.repeat(20),owner='0x'+'44'.repeat(20);
@@ -11,7 +11,7 @@ const request={deploymentId:deployment,appRef:`catalog://${app}/1`};
 const document={version:1,chainId:8453,ownershipContract:ownership,hostId:host,requireCatalogApproval:false,denyDeployments:[],denyAppRefs:[]};
 function setup(){
  const state={now:1000000,owner,hash:hostAdmissionPolicyHash(document),revision:1,doc:document,registry,reads:[],failure:false,
-   catalog:{active:false,approval:2,yanked:true}};
+   catalog:{active:true,approval:1,yanked:false}};
  const client={readContract:async q=>{
    state.reads.push(q);assert.equal(q.blockNumber,100n);
    if(q.functionName==='registry')return state.registry;
@@ -25,14 +25,22 @@ function setup(){
  const config={hostId:host,ownershipContract:ownership,registry,catalog,reader,loadPolicy:async()=>state.doc,now:()=>state.now};
  return {state,config,admission:createHostAdmission(config)};
 }
-test('independent owner can serve a rejected/yanked/delisted version without any catalog authority read',async()=>{
+test('platform moderation applies even when the wallet does not require approval',async()=>{
  const {state,admission}=setup();assert.equal(await admission.refusal(request),null);
- assert.deepEqual(state.reads.map(q=>q.functionName).sort(),['authority','registry']);
+ assert.deepEqual(state.reads.map(q=>q.functionName).sort(),['authority','getApp','getVersion','registry']);
+ for(const change of [{active:false},{approval:2},{yanked:true}]){
+  state.catalog={active:true,approval:1,yanked:false,...change};
+  for(const forPrivate of [false,true])assert.ok(await admission.refusal({...request,forPrivate}));
+ }
 });
-test('catalog governance becomes local policy only through the current wallet commitment',async()=>{
- const {state,admission}=setup();state.doc={...document,requireCatalogApproval:true};state.hash=hostAdmissionPolicyHash(state.doc);
- assert.match(await admission.refusal(request),/requires current catalog approval/);
- state.catalog={active:true,approval:1,yanked:false};assert.equal(await admission.refusal(request),null);
+test('pending private development survives; wallet may apply a stricter restriction',async()=>{
+ const {state,admission}=setup();state.catalog.approval=0;
+ assert.match(await admission.refusal(request),/PRIVATE/);
+ assert.equal(await admission.refusal({...request,forPrivate:true}),null);
+ assert.match(await admission.refusal({...request,forPrivate:'true'}),/PRIVATE/);
+ state.doc={...document,requireCatalogApproval:true};state.hash=hostAdmissionPolicyHash(state.doc);state.now+=15001;
+ assert.match(await admission.refusal({...request,forPrivate:true}),/requires current catalog approval/);
+ state.catalog.approval=1;assert.equal(await admission.refusal(request),null);
 });
 test('wallet denial revokes admission after bounded cache; transfer clears old policy',async()=>{
  const {state,admission}=setup();assert.equal(await admission.refusal(request),null);

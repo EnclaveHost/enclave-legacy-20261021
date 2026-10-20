@@ -26,10 +26,14 @@ test('a wallet denial refuses a forced claim before starting or spending',async(
  const before=rpc.chainTx.sent.length;const r=await h.consider(id,{force:true});
  assert.equal(r.accepted,false);assert.match(r.reason,/host owner declines/);assert.equal(rpc.chainTx.sent.length,before);
 });
-test('independent wallet policy removes the global approval/yank claim veto',async()=>{
- const h=await box(async()=>null);rpc.row.current=row(h);rpc.catalog.current=version;
- let launched=false;h.ensureApp=async()=>{launched=true;return {status:'running'};};
- const r=await h.consider(id);assert.equal(r.accepted,true,r.reason);assert.equal(launched,true);
+test('a permissive wallet cannot override catalog rejection or publisher yank',async()=>{
+ for(const status of [{approval:2,yanked:false},{approval:1,yanked:true}]){
+  const h=await box(async()=>null);rpc.row.current=row(h);rpc.catalog.current={...version,...status};
+  let launched=false;h.ensureApp=async()=>{launched=true;return {status:'running'};};
+  const before=rpc.chainTx.sent.length;
+  const r=await h.consider(id);assert.equal(r.accepted,false);assert.equal(launched,false);
+  assert.match(r.reason,/rejected|yanked/);assert.equal(rpc.chainTx.sent.length,before);
+ }
 });
 test('policy refresh in the live tick stops and releases local work before renewal; no permanent block',async()=>{
  const h=await box(async()=> 'this host owner declines this deployment');rpc.row.current=row(h);rpc.catalog.current=version;rpc.chainTx.mine=true;

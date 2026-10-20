@@ -19,7 +19,7 @@ function fixture(){
      if(q.functionName==='getApp')return {appId:app,versionCount:2,active:false,publisher:catalog,slug:'test'};
      if(q.functionName==='getVersion')return {cid:'verified-cid',version:'1',active:false,yanked:true,approval:2,config:'{}'};
      if(q.functionName==='versionFee')return 0n;if(q.functionName==='versionConfigCid')return '';throw Error('unexpected read');}},
-   _reach:{tripped:false},RENEW_MARGIN_SEC:900,claimSigner:()=>({account:{address:catalog}}),tenantProvisions:new Set(),
+   _reach:{tripped:false},RENEW_MARGIN_SEC:900,claimSigner:()=>({account:{address:catalog}}),tenantProvisions:new Set(),_releaseIntents:new Map(),
    placementRefusal:()=>null,readLedgerContract:async()=>({appRef:ref}),
    stopContainer:async()=>{state.events.push('stop');},proveAndRelease:async()=>{state.events.push('release');},saveStateSoon:()=>{},
    sendClaimTx:()=>{throw Error('denied work must not renew');},_yankBusy:false,
@@ -32,10 +32,14 @@ function fixture(){
  vm.runInContext(between('async function yankSweep()', '\nasync function auditClaims('),ctx);
  return {state,ctx};
 }
-test('Linux admission permits rejected, delisted and yanked catalog metadata when the host wallet allows it',async()=>{
- const {state,ctx}=fixture();const result=await ctx.gateAppReference(ref,{deploymentId:dep});
- assert.equal(result.error,undefined);assert.equal(result.wasmRef,'ipfs://verified-cid');assert.equal(state.requests[0].deploymentId,dep);
- assert.equal(state.reads.length,4);
+test('Linux forwards authoritative visibility to wallet and platform admission',async()=>{
+ const {state,ctx}=fixture();
+ for(const forPrivate of [undefined,false,true,'true']){
+  const result=await ctx.gateAppReference(ref,{deploymentId:dep,forPrivate});
+  assert.equal(result.error,undefined);assert.equal(state.requests.at(-1).forPrivate,forPrivate===true);
+ }
+ state.reason='This version was rejected by the catalog owner.';
+ assert.match((await ctx.gateAppReference(ref,{deploymentId:dep,forPrivate:true})).error.msg,/rejected/);
 });
 test('Linux admission rejects host denial, missing identity and unreadable authority without global fallback',async()=>{
  const {state,ctx}=fixture();state.reason='this host owner declines this deployment';
@@ -53,6 +57,7 @@ test('Linux audit and renewal stop before releasing a denied deployment, and do 
   assert.deepEqual(state.events,['stop','release']);assert.equal(rec.status,'terminated');assert.match(rec.error,/declines/);
  }
 });
-test('wallet-mode yank sweep cannot impose a second global veto',async()=>{
- const {state,ctx}=fixture();await ctx.yankSweep();assert.equal(state.reads.length,0);assert.deepEqual(state.events,[]);
+test('wallet mode retains the publisher-yank sweep',async()=>{
+ const {state,ctx}=fixture();ctx.APP_CATALOG_ADDRESS=catalog;ctx.deployments=new Map();
+ await ctx.yankSweep();assert.equal(ctx._yankBusy,false);
 });

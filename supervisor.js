@@ -555,13 +555,13 @@ let _registeredOn = null;         // WHICH registry _registered refers to (see b
 let _enclaveId = null;            // our EnclaveRegistry id (keccak256 of the advertised endpoint); claim gating needs it
 const HOST_WALLET_POLICY = hostAdmissionConfigured();
 let _hostWalletAdmission = null;
-async function hostWalletRefusal(deploymentId,appRef) {
+async function hostWalletRefusal(deploymentId,appRef,forPrivate=false) {
   if(!HOST_WALLET_POLICY)return null;
   try {
     if(!_enclaveId)throw new Error('registered host identity unavailable');
     if(!_hostWalletAdmission || _hostWalletAdmission.hostId!==_enclaveId)
       _hostWalletAdmission=hostAdmissionFromEnv({hostId:_enclaveId,rpc:RPC_POOL,addressBook:process.env.ADDRESS_BOOK_ADDRESS});
-    return await _hostWalletAdmission.refusal({deploymentId,appRef});
+    return await _hostWalletAdmission.refusal({deploymentId,appRef,forPrivate});
   }catch(e){return 'host wallet policy unavailable: '+String(e.message).slice(0,240);}
 }
 const hostCatalogAddress=()=>process.env.ENCLAVE_HOST_CATALOG_PIN || APP_CATALOG_ADDRESS;
@@ -6392,7 +6392,7 @@ async function gateAppReference(reference, opts = {}) {
     return deny(503, "catalog_unreachable", "Could not verify this app's approval against the on-chain catalog; try again shortly.");
   }
   const v = vr.value;
-  const verdict = HOST_WALLET_POLICY ? await hostWalletRefusal(opts.deploymentId,ref)
+  const verdict = HOST_WALLET_POLICY ? await hostWalletRefusal(opts.deploymentId,ref,opts.forPrivate===true)
     : approvalVerdict({ active: a.active, yanked: v.yanked, approval: v.approval,
                                     slug: a.slug, version: v.version }, opts.forPrivate);
   if (verdict) return deny(403, "not_approved", verdict);
@@ -9462,7 +9462,7 @@ async function renewLeases() {
       const fresh = await readLedgerContract("get", [rec.id]);
       const pinRefusal = placementRefusal(fresh.configCid, _enclaveId);
       if (pinRefusal) { await retireForPlacement(rec, pinRefusal); continue; }
-      const walletRefusal = await hostWalletRefusal(rec.id,fresh.appRef);
+      const walletRefusal = await hostWalletRefusal(rec.id,fresh.appRef,fresh.isPublic===false);
       if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
       const sent = lapsed ? sendClaimTx("claim", [rec.id, _enclaveId]) : sendClaimTx("renew", [rec.id]);
       await sent;
@@ -9770,8 +9770,7 @@ async function ledgerMoveSweep() {
 const YANK_SWEEP_SEC = parseInt(process.env.YANK_SWEEP_SEC || "300", 10);
 let _yankBusy = false;
 async function yankSweep() {
-  // Wallet policy is enforced per host by auditClaims and renewal checks.
-  if(HOST_WALLET_POLICY)return;
+  // Publisher yanks remain enforced alongside wallet policy on every host.
   if (_yankBusy || !APP_CATALOG_ADDRESS) return;
   _yankBusy = true;
   try {
@@ -9824,7 +9823,7 @@ async function auditClaims(ledgerById) {
     // AND the sweep (per-record re-reads were what blew the RPC rate budget)
     const d = ledgerById.get(rec.id.toLowerCase());
     if (!d) continue;                         // not in the page (RPC anomaly): keep serving, the lease is prepaid
-    const walletRefusal = await hostWalletRefusal(rec.id,d.appRef);
+    const walletRefusal = await hostWalletRefusal(rec.id,d.appRef,d.isPublic===false);
     if(walletRefusal) { await retireForPlacement(rec,walletRefusal); continue; }
     const pinRefusal = placementRefusal(d.configCid, _enclaveId);
     if (pinRefusal) {

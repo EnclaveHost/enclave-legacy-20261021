@@ -89,11 +89,12 @@ export function createHostAdmission({hostId,ownershipContract,registry,catalog,r
     return pending;
   };
   return {hostId,ownershipContract,registry,catalog,
-    async refusal({deploymentId,appRef}) {
+    async refusal({deploymentId,appRef,forPrivate=false}) {
       const a=await policy();
       let version;
-      // Only this host owner's policy can give catalog governance veto power.
-      if(a.policy.requireCatalogApproval){
+      // Always enforce platform moderation using fresh agreeing chain reads.
+      // forPrivate must come from the authoritative deployment record at the caller.
+      {
         const m=String(appRef||'').match(/^catalog:\/\/(0x[0-9a-fA-F]{64})\/([0-9]{1,9})$/);
         if(!m)throw Error('catalog app reference required');
         version=await reader.agreed(async(client,blockNumber)=>{
@@ -106,7 +107,7 @@ export function createHostAdmission({hostId,ownershipContract,registry,catalog,r
         });
       }
       if(a.validUntil<=now())throw Error('host policy expired during admission');
-      return hostAdmissionRefusal(a.policy,{hostId,deploymentId,appRef,version});
+      return hostAdmissionRefusal(a.policy,{hostId,deploymentId,appRef,version,forPrivate});
     },
   };
 }
