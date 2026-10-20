@@ -57,7 +57,9 @@ import (
 	"time"
 
 	"enclave.host/isolation/contract"
+	"enclave.host/isolation/m2/shieldconfig"
 	"enclave.host/isolation/m2/vsock"
+	"enclave.host/isolation/m3/vtpmclient"
 )
 
 // Bounds. A domain is untrusted, and the host is trusted only to choose what to load, so everything
@@ -83,11 +85,15 @@ const (
 // every backend ends a domain the same way; this file supplies what reclamation DOES here.
 
 type domain struct {
-	ID     int    `json:"id"`
-	Label  string `json:"label"`
-	AppSha string `json:"appSha256"`
-	Port   uint32 `json:"port"`
-	UID    int    `json:"uid"`
+	SecretDeployment string              `json:"-"`
+	AppConfig        []byte              `json:"-"` // copied only from the measured bundle
+	Ports            []string            `json:"ports,omitempty"`
+	Inference        *contract.Inference `json:"inference,omitempty"`
+	ID               int                 `json:"id"`
+	Label            string              `json:"label"`
+	AppSha           string              `json:"appSha256"`
+	Port             uint32              `json:"port"`
+	UID              int                 `json:"uid"`
 	// FrontUID is the uid the domain's FRONT runs as, never the runtime's (UID): the front is the trusted component in a
 	// domain and the runtime is not (enclave-87's ruling on enclave-bf's finding: a runtime sharing the front's uid could
 	// obtain reports for keys of its choosing and replace the front's listen socket). Reports are answered for this uid
@@ -162,6 +168,7 @@ func (d *domain) state() contract.State { return d.lifecycle().State() }
 type reporter func(rd []byte) (report, certs []byte, err error)
 
 type monitor struct {
+	vtpm    *vtpmclient.Client // guest-owned hardware report channel; nil on unchanged legacy images
 	mu      sync.Mutex
 	doms    map[int]*domain
 	byUID   map[int]*domain // by the FRONT's uid: the only caller a report is ever made for
@@ -205,6 +212,7 @@ func main() {
 	root := flag.String("domains", "/domains", "directory holding one subtree per domain")
 	basePort := flag.Uint("base-port", 40000, "domain N serves on this vsock port + N")
 	baseUID := flag.Int("base-uid", 5000, "domain N runs as this uid + N")
+	vtpmPath := flag.String("vbs-tpm", "", "required guest TPM report device for the measured VBS image")
 	flag.Parse()
 
 	m := newMonitor(*snp, *plat, *root, uint32(*basePort), *baseUID)
@@ -212,6 +220,14 @@ func main() {
 		m.hostPort = uint32(*reportHost)
 		m.report = m.hostReport
 		m.tier, m.format = contract.TierHyperV, contract.FormatHyperV
+	}
+	if *vtpmPath != "" {
+		if m.hostPort == 0 || m.snp {
+			panic("VBS TPM transport requires the Hyper-V app backend")
+		}
+		var err error
+		m.vtpm, err = vtpmclient.Open(*vtpmPath)
+		must(err)
 	}
 	must(os.MkdirAll(m.root, 0o755))
 	must(os.MkdirAll(filepath.Dir(*sock), 0o755))
@@ -451,7 +467,38 @@ func (m *monitor) load(br *bufio.Reader, req request) (*domain, error) {
 	} else if err != contract.ErrNotBundle {
 		return nil, fmt.Errorf("bundle refused: %w", err)
 	}
+	var appConfig []byte
+	if manifest != nil {
+		var err error
+		appConfig, err = manifest.AppConfig()
+		if err != nil {
+			return nil, err
+		}
+	}
 	pol := contract.EffectivePolicy(manifest, contract.Request{CPU: req.CPU, MemMiB: req.MemMiB})
+	// Physical RAM is an availability allocation, separate from the immutable
+	// catalog minimum in the hashed bundle. The launcher may raise that limit.
+	if manifest != nil && req.MemMiB != 0 {
+		if req.MemMiB < pol.MemMiB || req.MemMiB > 1048576 {
+			return nil, fmt.Errorf("memory allocation is below the catalog minimum or outside host bounds")
+		}
+		pol.MemMiB = req.MemMiB
+	}
+	var inference *contract.Inference
+	if manifest != nil {
+		inference = manifest.Inference
+		if inference != nil {
+			if _, err := os.Stat(filepath.Join(m.plat, "shield-nucbox.enabled")); err != nil {
+				return nil, fmt.Errorf("Shield profile is not in this measured image")
+			}
+			if inference.Model != contract.ShieldModel || inference.GPUMilli < 500 || inference.GPUMilli > 1000 {
+				return nil, fmt.Errorf("NucBox Shield requires qwen2.5-0.5b-q8-gguf and 500..1000 GPU milli")
+			}
+			if pol.MemMiB < 8192 || pol.CPUPercent < 400 || manifest.Policy.Vcpus < 4 {
+				return nil, fmt.Errorf("Shield profile requires 8192 MiB and four vCPUs")
+			}
+		}
+	}
 
 	m.mu.Lock()
 	id := m.next
@@ -469,10 +516,17 @@ func (m *monitor) load(br *bufio.Reader, req request) (*domain, error) {
 	if id >= frontUIDOffset {
 		return nil, fmt.Errorf("domain id %d would give its runtime a uid in the fronts' range", id)
 	}
-	d := &domain{ID: id, Boot: m.boot, Label: req.Label, AppSha: hex.EncodeToString(sum[:]), appHash: sum, Mode: mode, HTTP: httpPort, Name: req.Name,
+	secretDeployment := ""
+	if manifest != nil {
+		secretDeployment = manifest.SecretDeployment
+	}
+	d := &domain{SecretDeployment: secretDeployment, AppConfig: appConfig, Inference: inference, ID: id, Boot: m.boot, Label: req.Label, AppSha: hex.EncodeToString(sum[:]), appHash: sum, Mode: mode, HTTP: httpPort, Name: req.Name,
 		Port: m.basePrt + uint32(id), UID: m.baseUID + id, FrontUID: m.baseUID + frontUIDOffset + id, CPU: pol.CPUPercent, MemMiB: pol.MemMiB,
 		dir: filepath.Join(m.root, strconv.Itoa(id)), cgroup: "/sys/fs/cgroup/dom" + strconv.Itoa(id),
 		Probe: req.Probe, exited: make(chan struct{}), inFlight: make(chan struct{}, maxReportsPerDom)}
+	if manifest != nil {
+		d.Ports = append([]string(nil), manifest.Ports...)
+	}
 	if err := m.start(d, artifact); err != nil {
 		return nil, err // start() has already released whatever it managed to take
 	}
@@ -504,9 +558,43 @@ func (m *monitor) start(d *domain, app []byte) error {
 	if err := os.WriteFile(filepath.Join(d.dir, "app.sha256"), []byte(d.AppSha), 0o444); err != nil {
 		return fail(err)
 	}
+	if d.SecretDeployment != "" {
+		if err := os.WriteFile(filepath.Join(d.dir, "secret.id"), []byte(d.SecretDeployment), 0444); err != nil {
+			return fail(err)
+		}
+		// the resolver files its egress needs (writeDomainEtc): /etc/hosts is the FRONT's to fill, never the runtime's.
+		// A public-web domain (its MEASURED config says so) also resolves through the front's DNS stub, and is marked
+		// for domexec (the DNS port floor), secretrun (ENCLAVE_EGRESS) and the front (which checks the mode agrees).
+		publicWeb := shieldconfig.PublicWebMode(string(d.AppConfig))
+		if err := writeDomainEtc(d.dir, d.FrontUID, publicWeb); err != nil {
+			return fail(err)
+		}
+		if publicWeb {
+			if err := os.WriteFile(filepath.Join(d.dir, strings.TrimPrefix(shieldconfig.PublicWebMarker, "/")), []byte("1\n"), 0o444); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	if err := writeAppConfig(d.dir, d.AppConfig); err != nil {
+		return fail(err)
+	}
+	if len(d.Ports) != 0 {
+		if err := os.WriteFile(filepath.Join(d.dir, "app.ports"), []byte(strings.Join(d.Ports, "\n")+"\n"), 0444); err != nil {
+			return fail(err)
+		}
+	}
 	// root-owned and read-only, like the AppID: the domain reads the name it may certify but cannot change it
 	if d.Name != "" {
 		if err := os.WriteFile(filepath.Join(d.dir, "cert.name"), []byte(d.Name+"\n"), 0o444); err != nil {
+			return fail(err)
+		}
+	}
+	if d.Inference != nil {
+		// Derived only from the hashed bundle, never from host flags/environment.
+		if err := os.WriteFile(filepath.Join(d.dir, "shield.profile"), []byte(strconv.Itoa(d.Inference.GPUMilli)+"\n"), 0444); err != nil {
+			return fail(err)
+		}
+		if err := os.Mkdir(filepath.Join(d.dir, "run", "enclave-shield"), 0755); err != nil {
 			return fail(err)
 		}
 	}
@@ -519,7 +607,14 @@ func (m *monitor) start(d *domain, app []byte) error {
 	if err := syscall.Mount("", platAt, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_REC, ""); err != nil {
 		return fail(fmt.Errorf("remount ro %s: %w", platAt, err))
 	}
-	sockAt := filepath.Join(d.dir, "run", "monitor.sock")
+	runAt := filepath.Join(d.dir, "run")
+	if d.Inference != nil {
+		runAt = filepath.Join(runAt, "front")
+		if err := os.Mkdir(runAt, 0700); err != nil {
+			return fail(err)
+		}
+	}
+	sockAt := filepath.Join(runAt, "monitor.sock")
 	if f, err := os.OpenFile(sockAt, os.O_CREATE|os.O_RDONLY, 0o600); err == nil {
 		f.Close()
 	}
@@ -528,7 +623,6 @@ func (m *monitor) start(d *domain, app []byte) error {
 	}
 	// /run is the FRONT's alone (0700, its uid): it creates its listen socket there and reaches the report socket bind-mounted
 	// there, and the runtime (another uid) can do neither - not replace the front's socket, not ask for a report
-	runAt := filepath.Join(d.dir, "run")
 	if err := os.Chown(runAt, d.FrontUID, d.FrontUID); err != nil {
 		return fail(err)
 	}
@@ -640,7 +734,7 @@ func (m *monitor) launch(d *domain, cmd *exec.Cmd, ln *vsock.Listener) error {
 					c.Close()
 					continue
 				}
-				go relay(c, filepath.Join(d.dir, "run", "front.sock"))
+				go relay(c, d.frontPath("front.sock"))
 			}
 		}()
 	}
@@ -751,7 +845,7 @@ func (d *domain) release() {
 				fmt.Printf("MON WARN domain %d did not exit within %s; reclaiming anyway\n", d.ID, exitGrace)
 			}
 		}
-		for _, mp := range []string{filepath.Join(d.dir, "run", "monitor.sock"), filepath.Join(d.dir, "plat")} {
+		for _, mp := range []string{d.frontPath("monitor.sock"), filepath.Join(d.dir, "plat")} {
 			if err := syscall.Unmount(mp, syscall.MNT_DETACH); err != nil &&
 				!errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOENT) {
 				fmt.Printf("MON WARN domain %d unmount %s: %v\n", d.ID, mp, err)
@@ -1381,6 +1475,23 @@ func (m *monitor) hostReport(rd []byte) ([]byte, []byte, error) {
 	if len(resp.Report) == 0 {
 		return nil, nil, errors.New("host report service: empty answer")
 	}
+	if m.vtpm != nil {
+		// rd is composed by oneReport from the authenticated front's binding and
+		// this monitor's own app hash. The host never supplies either report input.
+		hardware, err := m.vtpm.Report(rd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("guest VBS report: %w", err)
+		}
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Report, &envelope); err != nil || envelope == nil {
+			return nil, nil, errors.New("invalid launcher report envelope")
+		}
+		// Supplement outside the launcher's signed doc. Existing judges retain
+		// their existing verdict; only a VBS-aware verifier may use this evidence.
+		envelope["vbsVmReport"], _ = json.Marshal(base64.StdEncoding.EncodeToString(hardware))
+		raw, err := json.Marshal(envelope)
+		return raw, nil, err
+	}
 	return []byte(resp.Report), nil, nil
 }
 
@@ -1526,4 +1637,75 @@ func raisePtraceScopeWith(path string, want int, write func(string, []byte, os.F
 		return fmt.Sprintf("yama ptrace_scope=%d -> %q, not the %d asked: %s", was, strings.TrimSpace(string(raw)), want, yamaRefused), false
 	}
 	return fmt.Sprintf("yama ptrace_scope=%d -> %d", was, now), true
+}
+
+// Shield's broker is reachable by the runtime in /run/enclave-shield. Its
+// report and TLS sockets remain behind a distinct 0700, front-owned directory.
+func (d *domain) frontPath(name string) string {
+	if d.Inference != nil {
+		return filepath.Join(d.dir, "run", "front", name)
+	}
+	return filepath.Join(d.dir, "run", name)
+}
+
+// The monitor owns the domain root. No host-supplied path or environment selects this file.
+// writeDomainEtc gives a SECRET domain the resolver files its outbound HTTPS needs (m2/front shield_egress.go):
+//   - etc/ root's, 0755: no domain uid can add a file to it (a resolv.conf, a second hosts);
+//   - etc/nsswitch.conf root's, 0444, "hosts: files": the only resolver is /etc/hosts (a domain has no DNS, no NIC);
+//   - etc/hosts the FRONT's uid, 0644: once the release is verified the front writes the allowed names there, each on its
+//     own forwarder's loopback address. The runtime (another uid) can read it and cannot change it, so a compromised
+//     runtime cannot point an allowed name anywhere else, and an unlisted name simply does not resolve.
+//
+// A PUBLIC-WEB domain (m2/egress web.go) differs in two root-owned files: nsswitch.conf says "hosts: files dns", and
+// resolv.conf (0444) names the front's DNS stub over TCP. /etc/hosts still comes first, so the configured names keep
+// their forwarders; any other name is resolved by the host through the deployment's own route.
+//
+// Until the front writes it, it names localhost only. A domain without secrets gets no /etc, exactly as before.
+func writeDomainEtc(dir string, frontUID int, publicWeb bool) error {
+	etc := filepath.Join(dir, "etc")
+	if err := os.Mkdir(etc, 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(etc, 0o755); err != nil { // the mode, whatever the umask
+		return err
+	}
+	nsswitch, resolv := "hosts: files\n", ""
+	if publicWeb {
+		nsswitch = "hosts: files dns\n"
+		resolv = shieldconfig.PublicWebResolv
+	}
+	ns := filepath.Join(etc, "nsswitch.conf")
+	if err := os.WriteFile(ns, []byte(nsswitch), 0o444); err != nil {
+		return err
+	}
+	if err := os.Chmod(ns, 0o444); err != nil {
+		return err
+	}
+	if resolv != "" {
+		rc := filepath.Join(etc, "resolv.conf")
+		if err := os.WriteFile(rc, []byte(resolv), 0o444); err != nil {
+			return err
+		}
+		if err := os.Chmod(rc, 0o444); err != nil {
+			return err
+		}
+	}
+	hosts := filepath.Join(etc, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.Chown(hosts, frontUID, frontUID); err != nil {
+		return err
+	}
+	return os.Chmod(hosts, 0o644)
+}
+
+func writeAppConfig(dir string, config []byte) error {
+	if len(config) == 0 {
+		return nil
+	}
+	if len(config) > contract.MaxConfigBytes {
+		return errors.New("app configuration exceeds byte limit")
+	}
+	return os.WriteFile(filepath.Join(dir, "app.config"), config, 0444)
 }

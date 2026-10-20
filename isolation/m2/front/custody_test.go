@@ -308,6 +308,7 @@ const (
 )
 
 type custodyWorldV2 struct {
+	shieldOwner string // optional Shield evidence fixture; report bytes stand in for a monitor, never hardware proof
 	*provWorld
 	flags    []bool
 	keys     []*ecdh.PrivateKey
@@ -420,8 +421,9 @@ func (w *custodyWorldV2) custodianV2(i int, prefix string, R []byte) http.Handle
 			Epoch                                                         uint32
 			Challenges                                                    []struct{ EncKey, Nonce string }
 			Evidence                                                      struct {
-				Format, Abi, TransportKey, Report string
-				Runtime                           json.RawMessage
+				Format, Abi, TransportKey, Report, Tier, AppSha256 string
+				Nonce                                              *string
+				Runtime                                            json.RawMessage
 			}
 			Operator struct {
 				Sig    string
@@ -454,10 +456,14 @@ func (w *custodyWorldV2) custodianV2(i int, prefix string, R []byte) http.Handle
 		bind, err := custody.BindingV2(custody.BindingInputV2{Ctx: w.ctx, ID: w.id, PolicyRev: 11, SecretRev: 6, CommitteeID: w.cid, Epoch: 7,
 			Challenges: chs, RuntimeID: runtimeID, TransportSPKI: spki, RecipientKey: rk32})
 		rep, _ := base64.StdEncoding.DecodeString(req.Evidence.Report)
+		evidenceOK := len(rep) >= 0xe0 && bytes.Equal(rep[0x50:0x70], bind[:]) && bytes.Equal(rep[0x70:0x90], w.appSha) && bytes.Equal(rep[0xc0:0xe0], w.id[:]) && req.Evidence.Format == contract.FormatSNP
+		if w.shieldOwner != "" {
+			input, e := custody.ShieldReleaseInput(bind, w.shieldOwner)
+			evidenceOK = e == nil && len(rep) == 64 && bytes.Equal(rep[:32], input[:]) && bytes.Equal(rep[32:], w.appSha) && req.Evidence.Format == contract.FormatHyperV && req.Evidence.Tier == contract.TierHyperV && req.Evidence.AppSha256 == hex.EncodeToString(w.appSha) && req.Evidence.Nonce == nil
+		}
 		if err != nil || !mine || req.V != 2 || req.ID != "0x"+hex.EncodeToString(w.id[:]) || req.CommitteeID != "0x"+hex.EncodeToString(w.cid[:]) ||
 			req.Epoch != 7 || req.PolicyRev != "11" || req.SecretRev != "6" ||
-			len(rep) < 0xe0 || !bytes.Equal(rep[0x50:0x70], bind[:]) || !bytes.Equal(rep[0x70:0x90], w.appSha) ||
-			!bytes.Equal(rep[0xc0:0xe0], w.id[:]) || req.Evidence.Format != contract.FormatSNP || req.Evidence.Abi != contract.ABI2 ||
+			!evidenceOK || req.Evidence.Abi != contract.ABI2 ||
 			req.Endpoint != "https://api.enclave.host/t/host-a" || req.Operator.Sig != "0x"+strings.Repeat("5a", 65) {
 			rw.WriteHeader(403)
 			io.WriteString(rw, `{"error":"evidence_refused","message":"composition"}`)

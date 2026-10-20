@@ -12,11 +12,14 @@ package contract
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"unicode/utf8"
 )
 
 const ABI = "enclave-domain-abi/1"
@@ -37,15 +40,52 @@ const BundleMagic = "ENCLAVE-BUNDLE/1\n"
 
 const MaxManifestBytes = 64 << 10
 
+const MaxConfigBytes = 32 << 10
+
+// Public app configuration is measured with the artifact. Base64 keeps the bundle
+// canonical across JSON encoders; it is not encryption or a secret channel.
+func (m Manifest) AppConfig() ([]byte, error) {
+	if m.SecretDeployment != "" && (!regexp.MustCompile(`^0x[0-9a-f]{64}$`).MatchString(m.SecretDeployment) || m.ConfigBase64 == "") {
+		return nil, errors.New("secrets require a deployment-bound configuration bundle")
+	}
+	if m.ConfigBase64 == "" {
+		return nil, nil
+	}
+	validWorld := (m.World == WorldHTTP && m.HTTP == 0) || (m.World == WorldCLI && m.HTTP >= 1 && m.HTTP <= MaxHTTPPort)
+	if !validWorld || m.Inference != nil || (len(m.Ports) != 0 && m.SecretDeployment == "") {
+		return nil, errors.New("app configuration requires a CPU HTTP component or single-port command bundle")
+	}
+	if err := ValidatePorts(m.Ports, m.World, m.HTTP); err != nil {
+		return nil, err
+	}
+	if m.SecretDeployment != "" && m.World == WorldCLI && m.HTTP < 1024 {
+		return nil, errors.New("secret command HTTP port must be unprivileged")
+	}
+	if len(m.ConfigBase64) > base64.StdEncoding.EncodedLen(MaxConfigBytes) {
+		return nil, errors.New("app configuration exceeds byte limit")
+	}
+	b, err := base64.StdEncoding.Strict().DecodeString(m.ConfigBase64)
+	if err != nil || base64.StdEncoding.EncodeToString(b) != m.ConfigBase64 || len(b) > MaxConfigBytes || !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
+		return nil, errors.New("invalid app configuration encoding")
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(b, &object) != nil || object == nil {
+		return nil, errors.New("app configuration must be a JSON object")
+	}
+	return b, nil
+}
+
 type Manifest struct {
-	Inference *Inference `json:"inference,omitempty"`
-	ABI       string     `json:"abi"`
-	Label     string     `json:"label,omitempty"`
-	World     string     `json:"world,omitempty"` // WorldHTTP (served by the runtime) or WorldCLI (a command that listens itself)
-	Ports     []string   `json:"ports,omitempty"` // V3: sorted measured tcp:N/udp:N tunnel destinations
-	HTTP      int        `json:"http,omitempty"`  // WorldCLI only: the port the app serves HTTP on inside its domain
-	Artifact  Artifact   `json:"artifact"`
-	Policy    Policy     `json:"policy"`
+	SecretDeployment string     `json:"secretDeployment,omitempty"`
+	ConfigBase64     string     `json:"configBase64,omitempty"`
+	Inference        *Inference `json:"inference,omitempty"`
+	ABI              string     `json:"abi"`
+	Label            string     `json:"label,omitempty"`
+	World            string     `json:"world,omitempty"` // WorldHTTP (served by the runtime) or WorldCLI (a command that listens itself)
+	Ports            []string   `json:"ports,omitempty"` // V3: sorted measured tcp:N/udp:N tunnel destinations
+	HTTP             int        `json:"http,omitempty"`  // WorldCLI only: the port the app serves HTTP on inside its domain
+	Artifact         Artifact   `json:"artifact"`
+	Policy           Policy     `json:"policy"`
 }
 
 // The two worlds a bundle may state. WorldHTTP: a wasi:http proxy component the runtime SERVES (it owns the
@@ -204,6 +244,9 @@ func Parse(b []byte) (Manifest, []byte, error) {
 	sum := sha256.Sum256(p)
 	if m.Artifact.Sha256 != hex.EncodeToString(sum[:]) {
 		return m, nil, errors.New("bundle manifest names a different artifact than it carries")
+	}
+	if _, err := m.AppConfig(); err != nil {
+		return m, nil, err
 	}
 	return m, p, nil
 }

@@ -23,6 +23,10 @@
 //
 // The certificate is served only when the ClientHello names exactly that name; every other handshake (the
 // verifying client that connects by address, the manager's own checks) still gets the self-signed carrier.
+//
+// A direct guest may also certify the names its OWNER committed in the startup package (names.go). Those are the
+// owner's word, not proof of control, so a certificate for one is installed only if it chains to the WebPKI roots
+// measured into this image: then a CA validated the name through its normal DNS authority, whoever asked it to.
 package main
 
 import (
@@ -60,6 +64,8 @@ type certState struct {
 	installed    *tls.Certificate
 	aliases      map[string]*certState
 	aliasesUntil time.Time
+	// roots: when set (owner-committed names), an installed chain must verify to these measured roots for the name
+	roots *x509.CertPool
 }
 
 // nameFromHostData: <first 4 bytes of the deployment id, hex>.<zone>, or "" when HOST_DATA is all zero or no zone.
@@ -108,15 +114,29 @@ func (c *certState) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate
 }
 
 func (c *certState) csr() ([]byte, error) {
-	if c.name == "" {
-		return nil, errors.New("this domain has no deployment name to certify: no SEV-SNP HOST_DATA names one, and no launcher named it at load")
-	}
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: c.name}, DNSNames: []string{c.name}}, c.key)
+	der, err := c.csrDER()
 	if err != nil {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), nil
+}
+
+func (c *certState) csrDER() ([]byte, error) {
+	if c.name == "" {
+		return nil, errors.New("this domain has no deployment name to certify: no SEV-SNP HOST_DATA names one, and no launcher named it at load")
+	}
+	return x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: c.name}, DNSNames: []string{c.name}}, c.key)
+}
+
+// current is the certificate installed for this name, if any.
+func (c *certState) current() *x509.Certificate {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.installed == nil {
+		return nil
+	}
+	return c.installed.Leaf
 }
 
 // install checks a chain and, if it carries THIS key for THIS name and is valid now, serves it from the next
@@ -156,9 +176,18 @@ func (c *certState) install(chain []byte, now time.Time) (*x509.Certificate, err
 	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
 		return nil, fmt.Errorf("the leaf is not valid now (%s .. %s)", leaf.NotBefore.UTC().Format(time.RFC3339), leaf.NotAfter.UTC().Format(time.RFC3339))
 	}
+	inter := x509.NewCertPool()
 	for i, d := range ders[1:] {
-		if _, err := x509.ParseCertificate(d); err != nil {
+		ic, err := x509.ParseCertificate(d)
+		if err != nil {
 			return nil, fmt.Errorf("chain certificate %d does not parse: %w", i+1, err)
+		}
+		inter.AddCert(ic)
+	}
+	if c.roots != nil {
+		if _, err := leaf.Verify(x509.VerifyOptions{DNSName: c.name, Roots: c.roots, Intermediates: inter, CurrentTime: now,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+			return nil, fmt.Errorf("an owner-committed name needs a chain to this image's measured WebPKI roots: %w", err)
 		}
 	}
 	inst := &tls.Certificate{Certificate: ders, PrivateKey: c.key, Leaf: leaf}

@@ -126,7 +126,11 @@ func (p *provisioner) runDirect(ctx context.Context, reader *bootstrap.Reader, m
 	if err != nil {
 		return nil, err
 	}
-	out := &provisioned{envelope: tag}
+	out := &provisioned{envelope: tag, owner: &ownerStartup{auth: auth}}
+	// An owner-selected CA with an EAB: the binding is resolved here, from custody secrets, and kept in this process.
+	if g, e := auth.NameGrant(); e == nil && g.ACME != nil && g.ACME.EAB != nil {
+		out.owner.eabKID, out.owner.eabKey, out.owner.eabErr = eabFrom(secrets, g.ACME.EAB)
+	}
 	if text != "" {
 		resolved, e := appconfig.Resolve(text, secrets)
 		if e != nil {

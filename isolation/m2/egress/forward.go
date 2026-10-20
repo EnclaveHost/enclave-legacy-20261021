@@ -33,6 +33,7 @@ const (
 // Forwarder runs one loopback listener per allowed origin.
 type Forwarder struct {
 	PublicListen string // test override; empty uses PublicSOCKSAddress
+	DNSListen    string // Shield public-web DNS stub; empty uses PublicDNSAddress
 	publicAddr   netip.AddrPort
 	publicSlots  chan struct{}
 	Policy       *Policy
@@ -64,6 +65,9 @@ func (f *Forwarder) HostsFile() string {
 // Start binds every listener and serves until ctx ends. A bind failure is fatal: a guest that could not enforce its
 // allowlist must not start the tenant.
 func (f *Forwarder) Start(ctx context.Context) error {
+	if f.Policy == nil || (f.Policy.PublicHTTPS && f.Policy.PublicWeb) {
+		return errors.New("egress requires one unambiguous policy")
+	}
 	f.addrs = map[string]netip.Addr{}
 	for i, o := range f.Policy.Origins {
 		a := loopbackFor(i)
@@ -84,8 +88,31 @@ func (f *Forwarder) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if f.Policy.PublicWeb {
+		if err := f.startPublicWeb(ctx); err != nil {
+			f.Close()
+			return err
+		}
+	}
 	go func() { <-ctx.Done(); f.Close() }()
 	return nil
+}
+
+func (f *Forwarder) track(l net.Listener) {
+	f.mu.Lock()
+	f.ls = append(f.ls, l)
+	f.mu.Unlock()
+}
+
+// Listeners is every address this forwarder listens on: what the guest's listener audit must find, and nothing else.
+func (f *Forwarder) Listeners() []netip.AddrPort {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]netip.AddrPort, 0, len(f.ls))
+	for _, l := range f.ls {
+		out = append(out, l.Addr().(*net.TCPAddr).AddrPort())
+	}
+	return out
 }
 
 // Addr is where the tenant reaches an origin (what /etc/hosts says), for tests and the guest's self-check.
@@ -269,6 +296,10 @@ func (s *Server) handle(ctx context.Context, g net.Conn) {
 	}
 	g.SetReadDeadline(time.Time{})
 	f := strings.Fields(line)
+	if len(f) == 3 && (f[0] == webProto || f[0] == dnsProto) {
+		s.handleWeb(ctx, cid, g, br, f)
+		return
+	}
 	if len(f) != 3 || f[0] != protoVersion || f[2] != "443" {
 		s.outcome(cid, "refused:"+string(ReasonHeader))
 		io.WriteString(g, "refused\n")

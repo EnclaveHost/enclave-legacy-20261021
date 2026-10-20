@@ -69,6 +69,7 @@ type provisioned struct {
 	config   string // ENCLAVE_CONFIG, resolved; "" = the release carried no config
 	envelope string // the ledger envelope's sha256 (hex): public (it is on chain), stated on the console
 	fwd      *egress.Forwarder
+	owner    *ownerStartup // direct startup only: owner-committed names (names.go)
 }
 
 func (p *provisioner) run(ctx context.Context, hostData, spki []byte, rt *runtimeState, appSha []byte) (*provisioned, error) {

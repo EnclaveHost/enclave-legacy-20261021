@@ -43,6 +43,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -56,7 +57,9 @@ import (
 	"enclave.host/isolation/contract"
 	"enclave.host/isolation/m2/bootstrap"
 	"enclave.host/isolation/m2/domtls"
+	"enclave.host/isolation/m2/egress"
 	"enclave.host/isolation/m2/release"
+	"enclave.host/isolation/m2/shieldconfig"
 	"enclave.host/isolation/m2/vsock"
 )
 
@@ -93,7 +96,9 @@ type doc struct {
 }
 
 type front struct {
-	publicHTTPS  bool // set only by successful attested provisioning
+	shieldFwd    *egress.Forwarder // direct Shield egress lives until the domain exits
+	secrets      *shieldSecrets    // legacy Shield release channel; independent builds never initialize relay pins
+	publicHTTPS  bool              // set only by successful attested provisioning
 	spki, appSha []byte
 	rt           *runtimeState // ABI/2 when non-nil, ABI/1 when the image carries no runtime identity
 	// seccompStatement: where init (dominit, root) records the app runtime's seccomp filter once it is installed; read
@@ -105,8 +110,9 @@ type front struct {
 	boundary         string      // the self-test init produced; relayed verbatim, never composed here
 	tunnels          *portTunnels
 	app              http.Handler
-	certs            *certState // a CA certificate for this domain's own key and deployment name (certs.go)
-	ready            *readiness // GET /.well-known/enclave-ready: the app's port accepts (ready.go)
+	certs            *certState  // a CA certificate for this domain's own key and deployment name (certs.go)
+	names            *ownerNames // direct startup: the owner-committed names (names.go); nil = none
+	ready            *readiness  // GET /.well-known/enclave-ready: the app's port accepts (ready.go)
 	tsmMu            sync.Mutex
 }
 
@@ -129,6 +135,7 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("DOM front: not dumpable; none of its %d threads traced\n", threads)
+	shieldSecretsFD := flag.Int("shield-secrets-fd", 0, "private pipe to the measured secret-aware launcher")
 	port := flag.Uint("port", 443, "vsock port to serve TLS on")
 	listenUnix := flag.String("listen-unix", "", "serve TLS on this unix socket instead of vsock (M3)")
 	reportUnix := flag.String("report-unix", "", "ask the monitor on this unix socket for reports (M3)")
@@ -285,11 +292,44 @@ func main() {
 				return "", err
 			}
 			f.publicHTTPS = prov.fwd.Policy.PublicHTTPS
+			if directBootstrap && prov.owner != nil {
+				if f.names, err = f.startOwnerNames(prov.owner, p.egress, p.roots); err != nil {
+					return "", err
+				}
+			}
 			warmupPath = configuredWarmup(prov.config)
 			return prov.config, nil
 		})
 		if err != nil {
 			die("release: %v", err)
+		}
+	}
+	var shieldPipe io.WriteCloser
+	var shieldEG *shieldEgress
+	if *shieldSecretsFD != 0 {
+		if *shieldSecretsFD != 7 || f.monitor == "" || f.rt == nil {
+			die("invalid Shield secret channel")
+		}
+		shieldPipe = os.NewFile(uintptr(*shieldSecretsFD), "shield-secret-pipe")
+		egressPort := uint32(EgressPort)
+		if directBootstrap {
+			egressPort, _, _ = directPorts()
+		}
+		shieldEG = &shieldEgress{deployment: "/secret.id", config: "/app.config", configUID: 0, hosts: "/etc/hosts", port: 443,
+			upstream:        func() (net.Conn, error) { return vsock.Dial(vsock.CIDHost, egressPort) },
+			audit:           func(want []netip.AddrPort) error { return auditListeners("/proc/net", want) },
+			logf:            func(format string, a ...any) { fmt.Printf(format+"\n", a...) },
+			publicWebMarker: shieldconfig.PublicWebMarker}
+		if !directBootstrap {
+			f.secrets, err = newShieldSecrets(shieldPipe, "/secret.id", shieldEG)
+			must(err)
+		}
+	}
+	// The direct Shield build obtains custody itself, through the owner-committed package.
+	// Other builds retain their existing startup path; no runtime request changes this choice.
+	if *initFD == 0 && f.monitor != "" && hdErr != nil {
+		if err := f.shieldDirectOwner(context.Background(), shieldPipe, shieldEG); err != nil {
+			die("shield startup: %v", err)
 		}
 	}
 	if !directBootstrap && *initFD > 0 && f.certs.name != "" && len(hd) == 32 && !isZero(hd) {
@@ -300,7 +340,11 @@ func main() {
 
 	// "serving" means both halves answer: TLS here, and the app behind it
 	go func() {
-		for deadline := time.Now().Add(120 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		wait := 120 * time.Second
+		if f.secrets != nil {
+			wait = 300 * time.Second
+		}
+		for deadline := time.Now().Add(wait); ; time.Sleep(10 * time.Millisecond) {
 			if c, err := net.DialTimeout("tcp", *upstream, time.Second); err == nil {
 				c.Close()
 				break
@@ -311,6 +355,10 @@ func main() {
 		}
 		fp := sha256.Sum256(spki)
 		fmt.Printf("DOM serving %s spki_sha256=%x ready_ms=%.0f\n", where, fp, monoMs())
+		// in-guest issuance attests a SERVING domain, so its runtime self-test covers the running app (judge.mjs)
+		if f.names != nil && f.names.issuer != nil {
+			go f.names.issuer.run(context.Background(), time.Minute)
+		}
 		if warmupPath != "" {
 			fmt.Println("DOM warmup: started")
 			fmt.Printf("DOM warmup: %s\n", bootWarmup(context.Background(), *upstream, warmupPath, 15*time.Minute))
@@ -332,6 +380,9 @@ func (f *front) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case shieldSecretsPath:
+		f.serveShieldSecrets(w, r)
+		return
 	case attestPath:
 		f.attest(w, r)
 		return
@@ -340,6 +391,9 @@ func (f *front) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case certPath:
 		f.certs.serveInstall(w, r)
+		return
+	case namesPath:
+		f.names.serve(w, r)
 		return
 	case readyPath:
 		f.ready.serve(w, r)
@@ -358,6 +412,26 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nonce must be 32 bytes of hex", http.StatusBadRequest)
 		return
 	}
+	d, err := f.attestDoc(nonce)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	json.NewEncoder(w).Encode(d)
+}
+
+// attestDocJSON is the same document for this domain's own use (acme.go binds a challenge push with it).
+func (f *front) attestDocJSON(nonce []byte) ([]byte, error) {
+	d, err := f.attestDoc(nonce)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(d)
+}
+
+// attestDoc builds the attestation document for a 32-byte nonce; its error text is what the endpoint answers.
+func (f *front) attestDoc(nonce []byte) (*doc, error) {
 	d := doc{Tier: "T0", Format: "none", TransportKey: base64.StdEncoding.EncodeToString(f.spki),
 		AppSha256: hex.EncodeToString(f.appSha), Nonce: hex.EncodeToString(nonce),
 		Reason: "T0 domain: an ordinary KVM guest with no hardware attestation; the host can read its memory"}
@@ -367,8 +441,7 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 	// one that asked for the report does not verify.
 	bind, err := f.bind(nonce)
 	if err != nil {
-		http.Error(w, "binding: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, errors.New("binding: " + err.Error())
 	}
 	if f.rt != nil {
 		d.Abi, d.Runtime = contract.ABI2, &f.rt.ID
@@ -392,9 +465,7 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 			// SVSM holds a different key or its compiled RuntimeID is not the identity this image states,
 			// and serving the document would publish a binding this domain cannot honour at a handshake.
 			if got := reportData0(rep); got != bind {
-				http.Error(w, fmt.Sprintf("the SVSM's binding %x is not this domain's %x", got[:8], bind[:8]),
-					http.StatusInternalServerError)
-				return
+				return nil, fmt.Errorf("the SVSM's binding %x is not this domain's %x", got[:8], bind[:8])
 			}
 		}
 	case f.monitor != "":
@@ -413,8 +484,7 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 		rep, certs, err = f.report(rd)
 	}
 	if err != nil {
-		http.Error(w, "report: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, errors.New("report: " + err.Error())
 	}
 	// The runtime self-test, measured NOW for this document (runtime.go): by the monitor on M3 (the front cannot read
 	// the runtime there), by this front elsewhere. A W+X mapping, or a scan that could not read a process, refuses the
@@ -423,8 +493,7 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 		st, serr := f.selfTest(wx)
 		if serr != nil {
 			fmt.Printf("DOM runtime selftest FAILED at an attestation: the document is refused\n")
-			http.Error(w, "runtime self-test: "+serr.Error(), http.StatusInternalServerError)
-			return
+			return nil, errors.New("runtime self-test: " + serr.Error())
 		}
 		d.RuntimeSelfTest = st
 	}
@@ -439,8 +508,7 @@ func (f *front) attest(w http.ResponseWriter, r *http.Request) {
 		}
 		d.Boundary = boundary
 	}
-	w.Header().Set("content-type", "application/json")
-	json.NewEncoder(w).Encode(d)
+	return &d, nil
 }
 
 // hostData is this domain's SEV-SNP HOST_DATA, read back from a report of its own (bytes 0xC0..0xE0): what the

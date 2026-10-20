@@ -31,6 +31,9 @@ type Manifest struct {
 	ConfigText  string           `json:"configText"`
 	SecretsMode string           `json:"secretsMode"`
 	Custody     *release.Custody `json:"custody,omitempty"`
+	// Names is optional and absent from every package written before it
+	// existed, so those exact bytes keep their meaning (names.go).
+	Names *Names `json:"names,omitempty"`
 }
 type Identity struct{ AppID, RuntimeID [32]byte }
 type commitment struct {
@@ -203,8 +206,16 @@ func (r *Reader) Authorize(ctx context.Context, id [32]byte, raw []byte, loaded 
 	default:
 		return nil, errors.New("explicit public or custody-v2 secrets mode required")
 	}
+	if e := namesField(raw, m.Names, m.SecretsMode); e != nil {
+		return nil, e
+	}
 	st, e := r.read(ctx, id)
 	if e != nil {
+		return nil, &snapshotUnavailable{e}
+	}
+	// an agreed snapshot without a current lease: startup waits (AuthorizeWhenConfirmed) for a just-claimed lease to
+	// become visible, and never starts on it
+	if e = r.leaseCurrent(st); e != nil {
 		return nil, &snapshotUnavailable{e}
 	}
 	if !strings.EqualFold(m.Owner, st.row.owner) || m.AppRef != st.row.appRef {
@@ -275,6 +286,9 @@ func (a *Authorization) Revalidate(ctx context.Context) error {
 		return errors.New("unverified startup authorization")
 	}
 	next, e := a.reader.read(ctx, a.snapshot.row.id)
+	if e == nil {
+		e = a.reader.leaseCurrent(next)
+	}
 	if e != nil {
 		a.valid = false
 		return e

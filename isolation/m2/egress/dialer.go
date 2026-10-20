@@ -1,9 +1,11 @@
 package egress
 
 // The HOST side of controlled egress: a guest's forwarder asks for one (hostname, 443) and the host dials it, or
-// refuses. The host holds no allowlist (that lives in the guest, derived from secrets it cannot see); what the host
-// enforces is that a guest can never reach the host's own network: the FINAL resolved address is judged at dial time,
-// so a CNAME chain or a DNS change that lands on a private address is refused on the address itself.
+// refuses. The host holds no allowlist of its own (that lives in the guest, derived from secrets it cannot see; Allow
+// is an optional narrowing for a host that was told one); what the host enforces is that a guest can never reach the
+// host's own network: the FINAL resolved address is judged at dial time, so a CNAME chain or a DNS change that lands on
+// a private address is refused on the address itself. With SOCKSProxy set, the judged IP literal is what the proxy is
+// asked for, and a proxy that is down is a failed dial, never a direct one (socks.go).
 
 import (
 	"context"
@@ -78,12 +80,23 @@ type Dialer struct {
 	Resolver      Resolver
 	Own           func() []netip.Addr // this host's addresses, read at dial time
 	DialTimeout   time.Duration
-	MaxConcurrent int // per guest
-	MaxPerMinute  int // per guest, dials started
-	dial          func(ctx context.Context, addr string) (net.Conn, error)
-	mu            sync.Mutex
-	active        map[uint32]int
-	window        map[uint32][]time.Time
+	MaxConcurrent int                                // per guest
+	MaxPerMinute  int                                // per guest, dials started
+	SOCKSProxy    string                             // optional trusted loopback TUNA entry; failure never falls back to direct
+	RouteFor      func(cid uint32) (AppRoute, error) // when configured, no shared/default route may be used
+	// Allow is an OPTIONAL host-side list (shield-egress -allow): when set, a name it does not allow is refused before
+	// anything is resolved or dialed. It never widens anything: the guest's own allowlist, derived from the owner's
+	// resolved config, still decides what the guest asks for, and every rule below still applies to what it allows.
+	Allow func(host string) bool
+	// BlobService is the loopback address of the host's cache for public, pinned content (windows/node/blob-cache.mjs,
+	// docs/design/shield-blob-cache.md). When set, a public-web guest's by-name request for BlobHost:80 is dialed there
+	// instead of through its route - under the same per-guest caps. "" = off: the name is then refused like any other
+	// that does not resolve. Nothing else changes.
+	BlobService string
+	dial        func(ctx context.Context, addr string) (net.Conn, error)
+	mu          sync.Mutex
+	active      map[uint32]int
+	window      map[uint32][]time.Time
 }
 
 var ErrRefused = errors.New("egress refused")
@@ -94,18 +107,20 @@ var ErrRefused = errors.New("egress refused")
 type Reason string
 
 const (
-	ReasonPort            Reason = "port"              // not 443
-	ReasonName            Reason = "name"              // not a plain DNS name: an IP literal, a single label, ...
-	ReasonRate            Reason = "rate"              // the guest is over its dial rate
-	ReasonConcurrency     Reason = "concurrency"       // the guest is at its connection limit
-	ReasonResolve         Reason = "resolve"           // the name did not resolve
-	ReasonNonPublicAnswer Reason = "non-public-answer" // an answer is loopback, private, link-local, this host, ...
-	ReasonNonPublicPeer   Reason = "non-public-peer"   // the socket's actual peer is not public
-	ReasonConnect         Reason = "connect"           // no judged address accepted the connection
-	ReasonAdmit           Reason = "admit"             // (server) the stream is from a guest the host's manager did not launch
-	ReasonEmpty           Reason = "empty"             // (server) the stream closed before any header byte
-	ReasonHeader          Reason = "header"            // (server) a malformed or unfinished egress-v1 header
-	ReasonInternal        Reason = "internal"          // anything else
+	ReasonPort             Reason = "port"               // not 443 (egress-v1), or not a web port (0, 25) for egress-web-v1
+	ReasonName             Reason = "name"               // not a plain DNS name: an IP literal, a single label, ...
+	ReasonRate             Reason = "rate"               // the guest is over its dial rate
+	ReasonConcurrency      Reason = "concurrency"        // the guest is at its connection limit
+	ReasonResolve          Reason = "resolve"            // the name did not resolve
+	ReasonNonPublicAnswer  Reason = "non-public-answer"  // an answer is loopback, private, link-local, this host, ...
+	ReasonNonPublicPeer    Reason = "non-public-peer"    // the socket's actual peer is not public
+	ReasonNonPublicAddress Reason = "non-public-address" // (egress-web-v1) the guest named a non-public IP literal
+	ReasonConnect          Reason = "connect"            // no judged address accepted the connection
+	ReasonNotAllowed       Reason = "not-allowed"        // the host was given a list for this guest (Dialer.Allow), and the name is not on it
+	ReasonAdmit            Reason = "admit"              // (server) the stream is from a guest the host's manager did not launch
+	ReasonEmpty            Reason = "empty"              // (server) the stream closed before any header byte
+	ReasonHeader           Reason = "header"             // (server) a malformed or unfinished egress-v1 header
+	ReasonInternal         Reason = "internal"           // anything else
 )
 
 // DialError is every error Dial returns. It holds a Reason and nothing else, so no caller can log a destination or
@@ -152,19 +167,36 @@ func (d *Dialer) Dial(ctx context.Context, cid uint32, host string, port int) (n
 	if _, err := ParseOrigin("https://" + host + "/"); err != nil {
 		return nil, nil, refused(ReasonName) // an IP literal, a single label, …: never by name here
 	}
+	if d.Allow != nil && !d.Allow(host) {
+		return nil, nil, refused(ReasonNotAllowed) // before the rate window: a name the host refuses costs the guest nothing
+	}
 	release, err := d.take(cid)
 	if err != nil {
 		return nil, nil, err
 	}
-	ok := false
-	defer func() {
-		if !ok {
-			release()
+	c, err := d.dialName(ctx, cid, host, port)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return c, release, nil
+}
+
+// dialName resolves a name (through the guest's own route when RouteFor is set) and dials a judged address of it.
+func (d *Dialer) dialName(ctx context.Context, cid uint32, host string, port int) (net.Conn, error) {
+	if d.RouteFor != nil {
+		route, err := d.RouteFor(cid)
+		if err != nil || len(route.Proxies) == 0 || len(route.DNS) == 0 {
+			return nil, refused(ReasonAdmit)
 		}
-	}()
+		return d.dialAppRoute(ctx, route, host, port)
+	}
+	if d.Resolver == nil {
+		return nil, refused(ReasonResolve)
+	}
 	addrs, err := d.Resolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
-		return nil, nil, refused(ReasonResolve)
+		return nil, refused(ReasonResolve)
 	}
 	var own []netip.Addr
 	if d.Own != nil {
@@ -174,10 +206,34 @@ func (d *Dialer) Dial(ctx context.Context, cid uint32, host string, port int) (n
 	// dialing its public sibling (a rebinding setup mixes the two)
 	for _, a := range addrs {
 		if RefuseAddr(a, own) != "" {
-			return nil, nil, refused(ReasonNonPublicAnswer)
+			return nil, refused(ReasonNonPublicAnswer)
 		}
 	}
+	return d.dialAddrs(ctx, cid, addrs, port)
+}
+
+// dialAddrs dials the first of `addrs` (already judged public by the caller) that accepts: through the guest's route,
+// the SOCKS entry, or directly, in that order of precedence; never a direct dial when a route or entry is configured.
+func (d *Dialer) dialAddrs(ctx context.Context, cid uint32, addrs []netip.Addr, port int) (net.Conn, error) {
+	if d.RouteFor != nil {
+		route, err := d.RouteFor(cid)
+		if err != nil || len(route.Proxies) == 0 {
+			return nil, refused(ReasonAdmit)
+		}
+		return d.dialAppRouteAddrs(ctx, route, addrs, port)
+	}
+	var own []netip.Addr
+	if d.Own != nil {
+		own = d.Own()
+	}
 	dial := d.dial
+	proxy := d.SOCKSProxy
+	proxied := proxy != ""
+	if proxied {
+		dial = func(ctx context.Context, addr string) (net.Conn, error) {
+			return dialSOCKS(ctx, proxy, addr, d.timeout())
+		}
+	}
 	if dial == nil {
 		nd := &net.Dialer{Timeout: d.timeout()}
 		dial = func(ctx context.Context, addr string) (net.Conn, error) { return nd.DialContext(ctx, "tcp", addr) }
@@ -188,15 +244,18 @@ func (d *Dialer) Dial(ctx context.Context, cid uint32, host string, port int) (n
 		if err != nil {
 			continue // the raw error names the address; it is dropped, not logged (DialError)
 		}
-		// and the address the socket actually reached is judged once more
-		if ra, err := netip.ParseAddrPort(c.RemoteAddr().String()); err != nil || RefuseAddr(ra.Addr(), own) != "" {
-			c.Close()
-			return nil, nil, refused(ReasonNonPublicPeer)
+		// Direct sockets expose the destination peer. For SOCKS the peer is the
+		// explicitly configured loopback entry; dialSOCKS sends only the already
+		// judged IP literal, never a hostname that a provider could resolve again.
+		if !proxied {
+			if ra, err := netip.ParseAddrPort(c.RemoteAddr().String()); err != nil || RefuseAddr(ra.Addr(), own) != "" {
+				c.Close()
+				return nil, refused(ReasonNonPublicPeer)
+			}
 		}
-		ok = true
-		return c, release, nil
+		return c, nil
 	}
-	return nil, nil, &DialError{Reason: ReasonConnect}
+	return nil, &DialError{Reason: ReasonConnect}
 }
 
 func (d *Dialer) timeout() time.Duration {
@@ -236,4 +295,11 @@ func (d *Dialer) take(cid uint32) (func(), error) {
 			d.mu.Unlock()
 		})
 	}, nil
+}
+
+// fixedAnswers prevents a second resolution between policy checks and dialing.
+type fixedAnswers []netip.Addr
+
+func (a fixedAnswers) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return []netip.Addr(a), nil
 }
