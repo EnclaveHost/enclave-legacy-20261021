@@ -1,0 +1,199 @@
+{
+  "format": "enclave-custodian-shield-candidate/1",
+  "verifiedAt": "2026-10-20T03:39:26.623386+00:00",
+  "sourceCommit": "ee8beb38a0adb5dba5fcee15b39f54b9015296cb",
+  "files": {
+    "vmlinuz": {
+      "sha256": "1a3a02d5a982946e6cec2590171ba742e5528c647790a9ed9127879b76a124e7",
+      "bytes": 17232384,
+      "equalAcrossBuilds": true
+    },
+    "initramfs.cpio.gz": {
+      "sha256": "6395206cc280a72143f4fb48ffb0f7a1b50b110c18d69c7d8f335536b0291d13",
+      "bytes": 280649316,
+      "equalAcrossBuilds": true
+    },
+    "cmdline": {
+      "sha256": "17a9bc3bc93234905381927cbbcf17522b85a3a2596f9a4b320966259d604827",
+      "bytes": 101,
+      "equalAcrossBuilds": true
+    },
+    "manifest.json": {
+      "sha256": "7057f31515c2e406423f8534dfad54dec2fa372ae942b3315bfd3dbf37395478",
+      "bytes": 4555,
+      "equalAcrossBuilds": true
+    }
+  },
+  "manifest": {
+    "role": "enclave-custodian-v2",
+    "commit": "ee8beb38a0adb5dba5fcee15b39f54b9015296cb",
+    "vault": "0x56b81b3970a8ac2c52f9874bd2758ede30758228",
+    "hostOwnership": "0xf5e9e6c02449001f6e8e95e5d87413f2cb6790ea",
+    "base": {
+      "dir": "metal-wallet-control-image",
+      "initramfsSha256": "1fbfd960b5cc12bb94c565fb9abf95458e31ed5f3fb5917709b5a786497b8df5",
+      "kernelSha256": "1a3a02d5a982946e6cec2590171ba742e5528c647790a9ed9127879b76a124e7"
+    },
+    "independentOwners": null,
+    "independentAdmission": "owner-permits",
+    "independentPolicy": "owner-permits",
+    "transport": "direct",
+    "shieldRecipients": {
+      "format": "enclave-custody-shield-operator/1",
+      "acceptTier": "windows-tpm-host/hv-node/T0-hv/hostExcluded:false",
+      "ekRootPins": [
+        "67bd2472a546751caca5f358a78f80727531671338960a9bcfdfbe6a34d0c6a1"
+      ],
+      "limits": {
+        "sessionLifeSec": 600,
+        "maxSessions": 256,
+        "maxPendingChallenges": 64,
+        "maxAttestBytes": 8388608,
+        "maxConcurrentAttests": 2
+      }
+    },
+    "trustedProxies": [
+      "10.0.2.2"
+    ],
+    "bundleInputs": {
+      "repo": [
+        "availability/evidence.mjs",
+        "custody/chain.mjs",
+        "custody/custodian.mjs",
+        "custody/hpke.mjs",
+        "custody/protocol.mjs",
+        "custody/rules.mjs",
+        "custody/threshold.mjs",
+        "custody/v2/admission.mjs",
+        "custody/v2/capacity.mjs",
+        "custody/v2/chain.mjs",
+        "custody/v2/custodian.mjs",
+        "custody/v2/cvm-gsup.mjs",
+        "custody/v2/daemon.mjs",
+        "custody/v2/digests.mjs",
+        "custody/v2/governance.mjs",
+        "custody/v2/host-config.mjs",
+        "custody/v2/http.mjs",
+        "custody/v2/independent-genesis.mjs",
+        "custody/v2/independent-runtime.mjs",
+        "custody/v2/measured.mjs",
+        "custody/v2/member.mjs",
+        "custody/v2/process-plan.mjs",
+        "custody/v2/protocol.mjs",
+        "custody/v2/quorum.mjs",
+        "custody/v2/shield-evidence.mjs",
+        "custody/v2/shield-operator.mjs",
+        "custody/v2/shield-rules.mjs",
+        "custody/verifiers.mjs",
+        "isolation/contract/runtime.mjs",
+        "network/rpc-identity.mjs",
+        "relay/avf-verify.mjs",
+        "relay/hvnode-core.mjs",
+        "relay/hvnode-verify.mjs",
+        "relay/shield-host-session.mjs",
+        "relay/snp-verify.mjs",
+        "relay/vbs-app-core.mjs",
+        "relay/vbs-credential.mjs",
+        "relay/vbs-policy.mjs",
+        "relay/vbs-tcglog-core.mjs",
+        "relay/vbs-tcglog.mjs",
+        "relay/vbs-tpm.mjs",
+        "relay/vbs-verify.mjs",
+        "relay/vbs-vm-report-core.mjs",
+        "relay/vbs-vm-report.mjs",
+        "verifier/collateral-cache.mjs",
+        "verifier/collateral.mjs",
+        "verifier/consumer.mjs",
+        "verifier/der.mjs",
+        "verifier/envelope.mjs",
+        "verifier/metal-box.mjs",
+        "verifier/snp.mjs",
+        "verifier/tls-binding.mjs",
+        "windows/node/hvnode-evidence.mjs",
+        "windows/node/shield-verdict.mjs"
+      ],
+      "packages": [
+        "@noble/ciphers@1.3.0",
+        "@noble/curves@1.9.1",
+        "@noble/hashes@1.8.0",
+        "@scure/base@1.2.6",
+        "@scure/bip32@1.7.0",
+        "@scure/bip39@1.6.0",
+        "abitype@1.2.3",
+        "isows@1.0.7",
+        "ox@0.14.29",
+        "viem@2.53.1",
+        "ws@8.21.1"
+      ]
+    },
+    "bundler": "esbuild@0.28.1",
+    "dkgBuild": {
+      "rustc": "rustc 1.99.0-nightly (84b36a78a 2026-08-06)",
+      "cargo": "cargo 1.99.0-nightly (c79e8f894 2026-08-04)",
+      "target": "x86_64-unknown-linux-musl",
+      "lockSha256": "da2a8d3b8bb5d89d82fabb01d29a58aad38ec82ff35ca4063e22d6082d628ce2"
+    },
+    "files": {
+      "/opt/metal/gsup.mjs": "995bd665dfa47758765362738a978ebdb8c7f5fa1d2b7fdbbf815542511b6505",
+      "/opt/custodian/custodian.mjs": "dee79db50e42cc32d2222de3bd0bc842e51d8411cb9d7f03df49b193752546c6",
+      "/opt/custodian/snpkey": "1d0541fe2514298466ca602df527c89be0caac8c7cb9811b324127872a4c9bf2",
+      "/opt/custodian/dkg": "806bef3be486dd28d05ac5e364ec75e68e6b071a927fab226ea4e2d6b1cd2d09"
+    },
+    "kernel": {
+      "sha256": "1a3a02d5a982946e6cec2590171ba742e5528c647790a9ed9127879b76a124e7"
+    },
+    "initramfs": {
+      "sha256": "6395206cc280a72143f4fb48ffb0f7a1b50b110c18d69c7d8f335536b0291d13",
+      "bytes": 280649316
+    },
+    "cmdline": "console=ttyS0 root=/dev/ram0 rootfstype=ramfs quiet metal.mode=snp metal.isolation=snp-guest-per-app",
+    "vcpus": 2,
+    "measurement": "a583f4f91b6c04d6c1f8391b2a1ab0c372133f1381e07860dea37ec55b84e0ca5c9e97eaf10178918f5baf6ffed3cb5e",
+    "measurementSha256": "0x62cf88014861665d27a7f25325ea2f83fb7e7a115c95035410233aad46ab1d80",
+    "ovmfSha256": "142589cc4882f29a419af34dde03ccda91faf313bd2c09b3a8b53c137df4f8a9"
+  },
+  "reproducible": true,
+  "resources": [
+    {
+      "label": "coordinator-b1",
+      "logSHA256": "e0cd10a5ab2cc87fa79b7024599b0b715bb13f0585498bc3fb69bf46af283b04",
+      "peakBytes": 2060521472,
+      "minimumMemAvailableKiB": 18367480,
+      "memoryLimitMiB": 2048,
+      "swapLimitBytes": 0,
+      "oomKills": 0,
+      "exit": 0
+    },
+    {
+      "label": "coordinator-b2",
+      "logSHA256": "ee764ffbb7c90069dcc34451b039f21596b649e430c0266487012d94772444f8",
+      "peakBytes": 1908334592,
+      "minimumMemAvailableKiB": 18076068,
+      "memoryLimitMiB": 2048,
+      "swapLimitBytes": 0,
+      "oomKills": 0,
+      "exit": 0
+    }
+  ],
+  "hardwareActivated": false,
+  "limits": [
+    "One builder and toolchain; no independent third-party reproduction.",
+    "SNP lifecycle tests use real local contracts and cryptography with simulated hardware attestation.",
+    "No hardware activation, owner code approval, committee formation or production secret migration.",
+    "Trusted proxy 10.0.2.2 is measured but still requires observation on the actual guest transport.",
+    "AMD TPM root selection and T0-hv host trust are explicit; owners must admit Shield rules.",
+    "Outstanding CLI/editor feature work is separate; this artifact does not prove complete feature parity."
+  ],
+  "provenance": {
+    "rootLockSHA256": "9ada1611f431d9cc804af46bea54a5aca9e92b44bee40000ee7e995e25d69f20",
+    "bundleInputCount": 500,
+    "nodePackagesMatchLock": true,
+    "buildSourceClean": true,
+    "recordSHA256": "a6c9c7db15cd3210e1bcae7a04c106a6b69c5a97d0e2854f64f5de946bf196d4"
+  },
+  "compatibility": {
+    "snpExistingLifecycle": "passed",
+    "independentLifecycle": "passed",
+    "hardwareAttestation": "simulated"
+  }
+}
