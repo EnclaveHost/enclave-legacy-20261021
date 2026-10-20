@@ -3493,6 +3493,23 @@ const chainClient = createPublicClient({ chain: base, transport: rpcTransport() 
 // SESSION_API_TUNNEL_NAMES adds tunnel names beyond the one PUBLIC_URL's /t/<name> path already names.
 // Pinned hosts use only their exact factory and ledger. Legacy hosts add the book's factory to SESSIONS_FACTORIES.
 const SESSION_API_HOSTS = envList(process.env.SESSION_API_HOSTS);
+// MANAGEMENT_GATEWAY=1 with MANAGEMENT_GATEWAY_TOKEN: owners may also sign for this host's independent management gateway
+// (network/management-gateway.mjs, docs/network/independent-management.md). Its base is DERIVED from this host's registry
+// id (keccak256 of PUBLIC_URL, as registerOnChain registers it), never configured, and it is accepted ONLY on a request
+// that arrives on loopback carrying the gateway's shared token: no other ingress (the relay tunnel, PUBLIC_URL) can use a
+// management-base signature to bypass the gateway's agreed-RPC authorization. The relay and PUBLIC_URL bases are
+// unchanged. Kept inline so the image needs no network/ module.
+const MANAGEMENT_GATEWAY = /^(1|true|on)$/i.test(process.env.MANAGEMENT_GATEWAY || "");
+const MANAGEMENT_GATEWAY_TOKEN = String(process.env.MANAGEMENT_GATEWAY_TOKEN || "").trim().toLowerCase();
+if (MANAGEMENT_GATEWAY && !/^[0-9a-f]{64,128}$/.test(MANAGEMENT_GATEWAY_TOKEN))
+  console.error("[management] MANAGEMENT_GATEWAY=1 needs MANAGEMENT_GATEWAY_TOKEN (32-64 bytes of hex, shared with the gateway); the management base stays disabled");
+const managementBaseOf = (publicUrl) => `enclave-management.invalid/${keccak256(stringToBytes(publicUrl))}`;
+function managementBasesFor(req) {
+  if (!MANAGEMENT_GATEWAY || !PUBLIC_URL || !/^[0-9a-f]{64,128}$/.test(MANAGEMENT_GATEWAY_TOKEN)) return [];
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(String(req.socket && req.socket.remoteAddress || ""))) return [];
+  const t = Buffer.from(String(req.headers["x-enclave-management-gateway"] || "")), want = Buffer.from(MANAGEMENT_GATEWAY_TOKEN);
+  return t.length === want.length && timingSafeEqual(t, want) ? [managementBaseOf(PUBLIC_URL)] : [];
+}
 const sessionApi = createSessionApiAuth({
   authorityPins: CONTRACT_PINS,
   pc: chainClient,
@@ -5262,7 +5279,7 @@ function ownerAuth(scope, { refuseSessions = null } = {}) {
     if (isSessionHeader(h)) {
       if (refuseSessions) return fail(res, 403, "session_not_supported", refuseSessions);
       try {
-        req.walletSession = await sessionApi.verify({ header: h, method: req.method, path: req.originalUrl,
+        req.walletSession = await sessionApi.verify({ header: h, method: req.method, path: req.originalUrl, bases: managementBasesFor(req),
           body: req.rawBody, scope, fresh: req.method !== "GET" });
       } catch (e) { return sessionFail(res, e); }
       return next();
@@ -7581,7 +7598,7 @@ app.get("/v1/deployments/:id/attestation", async (req, res) => {
   let isOwner = false;
   if (isSessionHeader(req.headers.authorization)) {
     let s;
-    try { s = await sessionApi.verify({ header: req.headers.authorization, method: req.method, path: req.originalUrl,
+    try { s = await sessionApi.verify({ header: req.headers.authorization, method: req.method, path: req.originalUrl, bases: managementBasesFor(req),
       body: req.rawBody, scope: null }); }
     catch (e) { return sessionFail(res, e); }
     isOwner = hasScope(s.actions, "api.status")

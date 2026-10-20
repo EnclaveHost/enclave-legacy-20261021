@@ -5,21 +5,24 @@ import {DurableState} from './durable-state.mjs';
 import {verifyProviderRecord,validateQualification,qualificationMessage,eligibleProviders} from './provider-directory.mjs';
 import {verifyNetworkPolicy,defaultNetworkPolicy} from './network-policy.mjs';
 import {recordHash,verifyRoute} from './route-record.mjs';
+import {verifyManagementRecord,managementRecordHash,operatorFloor,withOperatorFloor} from './management-record.mjs';
 
 const ID=/^0x[0-9a-f]{64}$/;
 const READ_CONTEXT=Symbol('verified directory context');
 const routeContext=(state,id)=>({publication:state.publications[id]??null,policy:state.policies[id]??null,providers:state.providers});
 const equal=(a,b)=>recordHash(a)===recordHash(b);
-const empty=()=>({version:1,providers:{},policies:{},publications:{}});
+const empty=()=>({version:1,providers:{},policies:{},publications:{},management:{}});
 export class PublicDirectory {
-  constructor({directory,checkers,hostOperator,leaseOf,verifyOwner,now=Date.now,maxRecords=4096}) {
+  // importManagement: replicate host-management records from peer snapshots (directory replicas set it; an app client's
+  // private directory does not need every host's endpoint and leaves it off).
+  constructor({directory,checkers,hostOperator,leaseOf,verifyOwner,now=Date.now,maxRecords=4096,importManagement=false}) {
     if(!Array.isArray(checkers)||!checkers.length)throw Error('explicit checker trust required');
-    Object.assign(this,{hostOperator,leaseOf,verifyOwner,now,maxRecords});
+    Object.assign(this,{hostOperator,leaseOf,verifyOwner,now,maxRecords,importManagement});
     this.checkers=checkers.map(x=>x.toLowerCase());
     this.state=new DurableState(directory);this.floors=new DurableState(directory+'/route-floors');
     this.tail=Promise.resolve();this.routeRead=null;this.providerChecks=new WeakMap();
   }
-  async read(){const s=await this.state.get('public-records');if(s&&s.version!==1)throw Error('unsupported directory state');return s||empty();}
+  async read(){const s=await this.state.get('public-records');if(s&&s.version!==1)throw Error('unsupported directory state');if(s&&!s.management)s.management={};return s||empty();}
   // Serialize verification with acceptance so concurrent older submissions cannot
   // overwrite newer records. Damaged state fails closed rather than resetting floors.
   accept(kind,envelope){
@@ -81,6 +84,27 @@ export class PublicDirectory {
       // Diagnostic host status is deliberately not replicated; the route itself
       // has all the signed fields required for independent verification.
       const {status,...publicPart}=envelope;s.publications[id]=publicPart;
+    }else if(kind==='management'){
+      // A host's management endpoint (management-record.mjs). The directory admits it only from the registry's active
+      // operator for that runner; clients independently require the deployment's current lease runnerOperator.
+      const r=await verifyManagementRecord(envelope,{now});
+      const operator=await this.hostOperator(r.runner);
+      if(!operator||operator.toLowerCase()!==r.operator)throw Error('management record is not signed by the runner\'s registry operator');
+      const old=s.management[r.runner];
+      s.managementFloors ||= {};
+      let floors=s.managementFloors[r.runner]||null;
+      // Seed the previous format's current record before accepting a new operator.
+      // A former operator's sequence must never veto the current registry owner.
+      if(old&&!operatorFloor(floors,old.record.operator))floors=withOperatorFloor(floors,old.record.operator,{sequence:old.record.sequence,hash:managementRecordHash(old.record)});
+      const floor=operatorFloor(floors,r.operator),hash=managementRecordHash(r);
+      if(floor){
+        if(floor.sequence>r.sequence)throw Error('stale management record');
+        if(floor.sequence===r.sequence&&floor.hash!==hash)throw Error('management record equivocation');
+      }
+      if(old?.record.operator===r.operator&&equal(old,envelope))return false;
+      if(!old&&Object.keys(s.management).length>=this.maxRecords)throw Error('management capacity reached');
+      s.managementFloors[r.runner]=withOperatorFloor(floors,r.operator,{sequence:r.sequence,hash});
+      s.management[r.runner]=envelope;
     }else throw Error('unsupported public record');
     await this.state.set('public-records',s);return true;
   }
@@ -161,7 +185,9 @@ export class PublicDirectory {
     const s=await this.read();
     return {version:1,providers:Object.values(s.providers).filter(e=>e.record.record.expiresAt>this.now()),
       policies:Object.values(s.policies).map(e=>e.envelope),
-      publications:Object.values(s.publications).filter(e=>e.bundle.record.expiresAt>this.now())};
+      publications:Object.values(s.publications).filter(e=>e.bundle.record.expiresAt>this.now()),
+      // unexpired withdrawals travel too, so a replica's stale endpoint cannot outlive the host's withdrawal
+      management:Object.values(s.management).filter(e=>e.record.expiresAt>this.now())};
   }
   async import(snapshot){
     if(snapshot?.version!==1||!['providers','policies','publications'].every(k=>Array.isArray(snapshot[k])&&snapshot[k].length<=this.maxRecords))throw Error('invalid public snapshot');
@@ -178,6 +204,10 @@ export class PublicDirectory {
     }
     for(const p of snapshot.policies){const old=current.policies[p?.policy?.deploymentId];if(!old||!equal(old.envelope,p))await put('policy',p);}
     for(const p of snapshot.publications){const old=current.publications[p?.bundle?.record?.deploymentId];if(!old||!equal(old,p))await put('route',p);}
+    // Optional: snapshots from replicas without management records simply omit the list.
+    if(this.importManagement&&Array.isArray(snapshot.management))for(const p of snapshot.management.slice(0,this.maxRecords)){
+      const old=current.management[p?.record?.runner];if(!old||!equal(old,p))await put('management',p);
+    }
     return results;
   }
 }

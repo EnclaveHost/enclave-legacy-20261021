@@ -31,7 +31,7 @@ export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
       }
       if(req.method!=='POST')return send(405,{error:'GET or POST required'});
       const policy=p.match(/^\/v1\/network\/policy\/(0x[0-9a-f]{64})$/);
-      const kind=({'/v1/network/providers':'provider','/v1/network/qualifications':'qualification','/v1/network/routes':'route'})[p]||(policy?'policy':null);
+      const kind=({'/v1/network/providers':'provider','/v1/network/qualifications':'qualification','/v1/network/routes':'route','/v1/network/management':'management'})[p]||(policy?'policy':null);
       if(!kind){req.resume();return send(404,{error:'not a public record endpoint'});}
       let size=0;const chunks=[];
       for await(const chunk of req){size+=chunk.length;if(size>65536){send(413,{error:'record too large'});req.destroy();return;}chunks.push(chunk);}
@@ -44,9 +44,10 @@ export function createDirectoryServer(directory,{maxInFlight=32,log=()=>{}}={}){
   });
 }
 
-export async function runDirectory(config){
+// reader: an injected chain reader with the LeaseReader interface (refresh, registryEntries, bookAddress); tests only.
+export async function runDirectory(config,{reader:injected}={}){
   const log=m=>console.log(new Date().toISOString(),m);
-  const reader=new LeaseReader({rpc:config.rpc,addressBook:config.addressBook,authorityPins:config.authorityPins,includeHostPayout:true});
+  const reader=injected||new LeaseReader({rpc:config.rpc,addressBook:config.addressBook,authorityPins:config.authorityPins,includeHostPayout:true});
   const leases=new Map(),operators=new Map();let registry=null,registryAt=0,refreshLeases=null;
   const leaseOf=async id=>{
     const cached=leases.get(id);if(cached&&cached.at+15000>Date.now())return cached.row;
@@ -68,7 +69,9 @@ export async function runDirectory(config){
     const [h]=await reader.registryEntries(registry,[id]);const operator=h?.active?h.operator:null;
     operators.set(id,{at:Date.now(),operator});return operator;
   };
-  const directory=new PublicDirectory({directory:config.stateDir,checkers:config.checkers,leaseOf,hostOperator,
+  // Replicas also carry hosts' management endpoint records (network/management-record.mjs), admitted only from the
+  // registry operator of each runner, and copy them from peers.
+  const directory=new PublicDirectory({directory:config.stateDir,checkers:config.checkers,leaseOf,hostOperator,importManagement:true,
     verifyOwner:(owner,message,signature)=>verifyOwnerSignature({reader,owner,message,signature,addressBook:config.addressBook,
       sessionVaultFactory:reader.authorityPins?.sessionVaultFactory})});
   await directory.read(); // corruption must refuse startup, not forget replay floors
