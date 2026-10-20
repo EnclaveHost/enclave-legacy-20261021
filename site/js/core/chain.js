@@ -84,7 +84,7 @@ export async function depSchemaRev(){
 
 /* ---- EnclaveAppCatalog ---- */
 export const CAT_SEL = {
-  appCount:"b55ca2c3", getAppsPage:"a0483de1", getVersionsPage:"2eb7c1f0", owner:"8da5cb5b",
+  getApp:"42c71f1d", appCount:"b55ca2c3", getAppsPage:"a0483de1", getVersionsPage:"2eb7c1f0", owner:"8da5cb5b",
   publishVersion:"47910c23",   // rev >= 5: publishVersion(...,uint32[4] res,string ports,string config,uint256 feePerSec6)
   publishVersionV4:"ffd9de8f", // rev-4 catalogs: same without the fee arg (kept until the cutover)
   publishVersionV2:"adbf439a", // rev-2 catalogs: same without the config arg (kept until the cutover)
@@ -558,6 +558,9 @@ export async function catVersionConfigCid(appId, index){
 export async function catMaxFeePerSec6(){
   if ((await catSchemaRev()) < 5) return 0n;
   return hexBig(await ethCall("0x" + CAT_SEL.maxFeePerSec6));
+}
+export async function catGetApp(appId){
+  return decodeStruct(await ethCall(encCall(CAT_SEL.getApp, [{t:"bytes32",v:appId}])), APP_SCHEMA);
 }
 export async function catGetAppsPage(start, n){
   return decodeStructArray(await ethCall(encCall(CAT_SEL.getAppsPage, [{t:"uint",v:start},{t:"uint",v:n}])), APP_SCHEMA);

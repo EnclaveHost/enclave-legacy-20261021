@@ -1,4 +1,4 @@
-import {catalogAdmissionNotice} from "./catalog-policy.js";
+import {catalogAdmissionNotice,catalogAdmissionRefusal} from "./catalog-policy.js";
 import {directUploadHeaders} from "./upload-auth.js";
 /* ============================================================
    App store · on-chain catalog (EnclaveAppCatalog on Base) + IPFS CIDs
@@ -197,20 +197,20 @@ export async function loadCatalog(force, opts){
 }
 
 /* ---- version selection helpers ---- */
-// All immutable releases remain inspectable. Moderation controls still require
-// the publisher or catalog owner, and hosts decide which releases to accept.
+// Publishers and the catalog owner retain moderation history; public listings
+// respect delisting, publisher yanks and catalog rejection.
 export const appPrivileged = (app) => {
   const me = (Enclave.address || "").toLowerCase();
   return !!me && (app.publisher.toLowerCase() === me || me === STORE.owner);
 };
-export const verVisible = (_app, v) => !!v;
+export const verVisible = (app, v) => !!v && (appPrivileged(app) || (app.active === true && !v.yanked && Number(v.approval) !== APPROVAL.rejected));
 // indices into app.versions the viewer may see - callers keep the REAL index
 // (catalog:// refs and card-action idx are positions in the on-chain list)
 export const visibleVerIdxs = (app) =>
   app.versions.reduce((idxs, v, i) => (verVisible(app, v) && idxs.push(i), idxs), []);
 export function defaultIdx(app){         // prefer approved releases; explicit selection can name every version
   const vs = app.versions;
-  for (let i = vs.length - 1; i >= 0; i--) if (!vs[i].yanked && Number(vs[i].approval) === APPROVAL.approved) return i;
+  for (let i = vs.length - 1; i >= 0; i--) if (verVisible(app, vs[i]) && !vs[i].yanked && Number(vs[i].approval) === APPROVAL.approved) return i;
   for (let i = vs.length - 1; i >= 0; i--) if (!vs[i].yanked && verVisible(app, vs[i])) return i;
   for (let i = vs.length - 1; i >= 0; i--) if (verVisible(app, vs[i])) return i;
   return -1;
@@ -440,8 +440,8 @@ export async function putConfig(text){
 }
 
 export function looksFriendly(s){ return s.includes(":") && !s.startsWith("ipfs://"); }
-// Resolve explicit releases; catalog moderation remains visible and host-local.
-export function resolveAppRef(input){
+// Resolve catalog releases subject to mandatory platform moderation.
+export function resolveAppRef(input, opts = {}){
   input = (input || "").trim();
   if (!input) return { reference: "", error: "Pick an app: slug:version from the Apps catalog." };
   if (input.startsWith("ipfs://") || /^(baf[a-z0-9]{10,}|Qm[1-9A-HJ-NP-Za-km-z]{20,})$/.test(input))
@@ -463,7 +463,10 @@ export function resolveAppRef(input){
   const vi = apps[0].versions.findIndex(x => x.version === version);
   const v = vi >= 0 ? apps[0].versions[vi] : null;
   if (!v) return { reference: input, label: input, error: "'" + slug + "' has no live version '" + version + "'." };
-  REF_CACHE[input] = catalogRef(apps[0].appId, vi);
+  // Selection may include pending development releases; execution checks visibility.
+  const refusal = catalogAdmissionRefusal(apps[0], v, {forPrivate:opts.allowPending===true});
+  if (refusal) return { reference: input, label: input, error: refusal };
+  if (Number(v.approval) === APPROVAL.approved) REF_CACHE[input] = catalogRef(apps[0].appId, vi);
   PORTS_CACHE[input] = v.ports || "";
   SPECS_CACHE[input] = specOf(v);         // raw specs; floors are computed at read time
   // The version's default config template (store media stripped: _media never

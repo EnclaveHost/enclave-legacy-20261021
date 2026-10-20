@@ -13,27 +13,18 @@ async function seedCatalog(page){
   return {result,visible:m.visibleVerIdxs(app),recommended:m.defaultIdx(app),missing:m.resolveAppRef('independent-app:missing')};
  },appId);
 }
-test('explicit catalog releases remain visible and deployable with host-local admission notices',async({page,context})=>{
- await seedStorage(context,page);
- await page.goto('/apps?app='+appId);
+test('public catalog refuses direct access to delisted releases',async({page,context})=>{
+ await seedStorage(context,page);await page.goto('/apps?app='+appId);
  await page.waitForSelector('#appDetailView',{state:'attached'}).catch(()=>{});
  const result=await seedCatalog(page);
- expect(result.visible).toEqual([0,1,2]);expect(result.recommended).toBe(0);
- expect(result.result.reference).toBe('catalog://'+appId+'/1');
- expect(result.result.error).toBeUndefined();expect(result.result.notice).toContain('delisted, yanked, rejected');expect(result.missing.error).toContain('no live version');
- const detail=page.locator('c-app-detail');
- await expect(detail).toContainText('Independent app');
- await expect(detail.locator('[data-act="deploy"]')).toBeEnabled();
- await expect(detail.locator('[data-act="reject"]')).toHaveCount(0);
- await detail.locator('[data-act="deploy"]').dispatchEvent('click');
- await expect(page.locator('#quickDeploy .qd-catalog')).toContainText('Each host decides');
- await expect(page.locator('#quickDeploy .qd-catalog')).toContainText('rejected');
+ expect(result.visible).toEqual([]);expect(result.recommended).toBe(-1);
+ expect(result.result.error).toContain('delisted');
+ await expect(page.locator('c-app-detail')).toHaveCount(0);
+ await expect(page.locator('#appDetailView')).toContainText('isn’t in the catalog');
 });
-test('All releases exposes delisted apps without changing the approved recommendation tab',async({page,context})=>{
+test('public store has no moderation-bypass All releases tab',async({page,context})=>{
  await seedStorage(context,page);await page.goto('/apps');await seedCatalog(page);
- await page.locator('[data-filter="all"]').dispatchEvent('click');
- await expect(page.locator('c-app-card')).toHaveCount(1);
- await expect(page.locator('c-app-card')).toContainText('Independent app');
+ await expect(page.locator('[data-filter="all"]')).toHaveCount(0);
  await page.locator('[data-filter="approved"]').dispatchEvent('click');
  await expect(page.locator('c-app-card')).toHaveCount(0);
 });

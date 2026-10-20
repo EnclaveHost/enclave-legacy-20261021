@@ -1217,29 +1217,26 @@ test("--unsigned and --signer refuse to guess which wallet they are acting as", 
 });
 
 
-test("explicit deploy and upgrade leave rejected, yanked and delisted admission to the host", async () => {
-  S.versionCount = 2; S.catalogActive = false;
+test("explicit deploy and upgrade enforce platform moderation before spending", async () => {
+  S.versionCount = 2;
   try {
-    for (const status of [{approval:0}, {approval:2}, {approval:1,yanked:true}]) {
-      S.v2 = {memMb:64,cpuGflops:2,...status}; S.txs.length = 0;
-      const deployed = await run(["deploy", "hello-world:2", "--fund", "2", "--no-wait"]);
-      assert.equal(deployed.code,0,deployed.err);
-      assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/1`);
-      assert.match(deployed.out,/Catalog status: delisted/);
-      assert.match(deployed.out,/Each host decides/);
-      S.txs.length = 0;
-      const upgraded = await run(["upgrade",ID,"2"]);
-      assert.equal(upgraded.code,0,upgraded.err);
-      assert.equal(S.txs.find(t=>t.functionName==="setAppRef").args[1],`catalog://${APP_ID}/1`);
+    for (const status of [{active:false,approval:1}, {approval:2}, {approval:1,yanked:true}, {approval:0}]) {
+      S.catalogActive=status.active!==false;S.v2={memMb:64,cpuGflops:2,...status};
+      for (const args of [["deploy","hello-world:2","--fund","2","--no-wait"],["upgrade",ID,"2"]]) {
+        S.txs.length=0;const r=await run(args);assert.notEqual(r.code,0,r.out);assert.equal(S.txs.length,0);
+      }
+      if(status.approval!==0){
+        S.txs.length=0;const r=await run(["deploy","hello-world:2","--private","--fund","2","--no-wait"]);
+        assert.notEqual(r.code,0);assert.equal(S.txs.length,0);
+      }
     }
-    S.catalogActive = true; S.txs.length = 0;
-    const implicit = await run(["deploy","hello-world","--fund","2","--no-wait"]);
-    assert.equal(implicit.code,0,implicit.err);
-    assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/0`,"implicit selection remains an approved recommendation");
-    S.txs.length = 0;
-    const missing = await run(["deploy","hello-world:missing","--fund","2","--no-wait"]);
-    assert.notEqual(missing.code,0); assert.equal(S.txs.length,0);
-  } finally {S.catalogActive = true; S.versionCount = 1; S.v2 = null; S.txs.length = 0;}
+    S.catalogActive=true;S.v2={memMb:64,cpuGflops:2,approval:0};S.txs.length=0;
+    const dev=await run(["deploy","hello-world:2","--private","--fund","2","--no-wait"]);
+    assert.equal(dev.code,0,dev.err);assert.equal(S.txs.find(t=>t.functionName==="create").args[5],false);
+    S.txs.length=0;
+    const implicit=await run(["deploy","hello-world","--fund","2","--no-wait"]);
+    assert.equal(implicit.code,0,implicit.err);assert.equal(S.txs.find(t=>t.functionName==="create").args[0],`catalog://${APP_ID}/0`);
+  } finally {S.catalogActive=true;S.versionCount=1;S.v2=null;S.txs.length=0;}
 });
 
 /* Explicit authority pins: mutable discovery cannot redirect an operation. */
@@ -1310,7 +1307,7 @@ test('chain-only wallet deployment creates and funds without API, upload gateway
   S.rpcCalls.length = 0; S.apiCalls.length = 0; S.txs.length = 0; S.pinnedWasm = 0; S.pinnedJson.length = 0;
   const previous = { depRev: S.depRev, catRev: S.catRev, versionCount: S.versionCount, v2: S.v2, book: S.book };
   S.depRev = 15n; S.catRev = 5n; S.versionCount = 2;
-  S.v2 = { approval: 2, yanked: true, config: '{"wasi":"0.3"}' }; S.book = 'fail';
+  S.v2 = { approval: 1, yanked: false, config: '{"wasi":"0.3"}' }; S.book = 'fail';
   try {
     const r = await run(['deploy', 'hello-world:2', '--chain-only', '--contract-pins', writeAuthorityPins(),
       '--cpu', '0.1', '--gpu', '0', '--max-rate', '1', '--fund', '2', '--isolation', 'snp-guest-per-app', '--config', '{"hello":"world"}', '--json'],

@@ -31,7 +31,7 @@
 //       ENCLAVE_VISIBLE_WAIT  seconds deploy waits for a new record to reach every reader (default 60)
 //       ENCLAVE_SESSION   an exported session (enclave session new --env): the session-aware commands act through it
 //       ENCLAVE_SESSION_DIR  where session keys live (default ~/.config/enclave/sessions)
-import {catalogAdmissionNotice} from "../site/js/core/catalog-policy.js";
+import {catalogAdmissionNotice,catalogAdmissionRefusal} from "../site/js/core/catalog-policy.js";
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
@@ -799,19 +799,18 @@ async function chainDeployments(owner) { // owner=null -> all
 
 // [publisher/]slug[:version] -> { ref: catalog://<appId>/<idx>, ver, app } with
 // an exact immutable version. Default selection prefers approved releases;
-// an explicit version leaves admission to each host. The ref names the
+// explicit versions still obey platform moderation. The ref names the
 // on-chain VERSION RECORD — the authority for the wasm, config, and ports the
 // publisher recorded. CIDs are refused: a CID names bytes, not a version
 // (several versions can share bytes and differ entirely in approved config).
-// An explicit version selects the immutable release regardless of catalog moderation.
-// Hosts enforce their owning wallets' admission policy; the CLI reports status.
-async function resolveAppRef(input) {
+// Hosts enforce platform moderation plus their owning wallets' additional restrictions.
+async function resolveAppRef(input, {forPrivate=false}={}) {
   if (/^ipfs:\/\//i.test(input) || /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z0-9]{20,})$/.test(input))
     throw new Error(`CIDs can't deploy: a CID names bytes, not a version. Deploy a [publisher/]slug:version from the catalog (enclave apps)`);
   const m = input.match(/^(?:([0-9a-zA-Z.]+|0x[0-9a-fA-F]{40})\/)?([a-z0-9][a-z0-9-]*)(?::(.+))?$/);
   if (!m) throw new Error(`"${input}" is not an app reference ([publisher/]slug[:version])`);
   const [, pubFilter, slug, verLabel] = m;
-  let apps = (await catalogApps()).filter((a) => a.slug === slug && (verLabel !== undefined || a.active));
+  let apps = (await catalogApps()).filter((a) => a.slug === slug && a.active);
   if (pubFilter) apps = apps.filter((a) => a.publisher.toLowerCase() === pubFilter.toLowerCase());
   if (!apps.length) throw new Error(`no active catalog app with slug "${slug}"${pubFilter ? ` by ${pubFilter}` : ""}`);
   if (apps.length > 1 && !pubFilter)
@@ -827,6 +826,8 @@ async function resolveAppRef(input) {
     if (vi < 0) throw new Error(`app "${slug}" has no approved version yet`);
   }
   const ver = versions[vi];
+  const refusal = catalogAdmissionRefusal(app, ver, {forPrivate});
+  if (refusal) throw new Error(refusal);
   return { ref: `catalog://${app.appId}/${vi}`, ver, app, notice: catalogAdmissionNotice(app, ver) };
 }
 let _appsCache = null;
@@ -1830,6 +1831,8 @@ async function cmdUpgrade(rest, { resize = false } = {}) {
   }
   const ver = versions[vi];
   if (vi === curIdx && !wantShares) return say(`${short(id)} already runs ${app.slug}:${ver.version} (version index ${vi}); nothing to do`);
+  const refusal = catalogAdmissionRefusal(app, ver, {forPrivate: d.isPublic === false});
+  if (refusal) throw new Error(refusal);
   const notice = catalogAdmissionNotice(app, ver);
   if (notice) say(`! ${notice}`);
   // the record's shares (bought at create, or re-bought here) must cover the
@@ -1998,7 +2001,7 @@ async function cmdDeploy(rest) {
     say("chain-only: hosts decide admission; this submits your resource request and spend ceiling without API discovery or a readiness claim");
   }
   if (sess) await sessionDeployPreflight(sess, f);
-  const { ref, ver, app, notice } = await resolveAppRef(sess ? sessionAppInput(sess, f._[0]) : f._[0]);
+  const { ref, ver, app, notice } = await resolveAppRef(sess ? sessionAppInput(sess, f._[0]) : f._[0], {forPrivate: !!f.private});
   if (sess) sessionRequireApp(sess, app.appId, "deploy.create", app.slug);
   if (notice) say(`! ${notice}`);
 
@@ -2770,7 +2773,7 @@ async function cmdPublish(rest) {
     say(`  enclave deploy ${f.slug}:${version} --fund 2`);
     return;
   }
-  say(`approval is pending. Each host decides whether to run this release. For owner-only access:`);
+  say(`approval is pending. Only PRIVATE deployments are allowed for testing. For owner-only access:`);
   say(`  enclave deploy ${f.slug}:${version} --private --fund 2`);
   say(`for public access on a host that accepts this release:`);
   say(`  enclave deploy ${f.slug}:${version} --fund 2`);

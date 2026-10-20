@@ -1,4 +1,4 @@
-import {catalogStatus} from "../../js/core/catalog-policy.js";
+import {catalogStatus,catalogAdmissionRefusal} from "../../js/core/catalog-policy.js";
 /* ============================================================
    <c-deployments> - the "My Apps" panel: the signed-in
    customer's deployments, each with status, spend, its app origin,
@@ -21,7 +21,7 @@ import { $$, esc, hlJson, fmtDur, statusCls, copyText, showToast, lsGet, lsSet }
 import { APP_DOMAIN, DEPLOYMENTS_ADDRESS } from "../../js/core/config.js";
 import { Enclave } from "../../js/core/api.js";
 import { openStateOf, probeAppTls } from "../../js/core/app-tls.js";
-import { pad32, encUint, encCall, hexBig, DEP_SEL, depPrices6, rate6Of, depMaxGpuMilli, depGet, depSchemaRev, depFeeOf, depCapOf, depRefundableOf, depCall, catVersionFee, catGetVersion, waitReceipt } from "../../js/core/chain.js";
+import { pad32, encUint, encCall, hexBig, DEP_SEL, depPrices6, rate6Of, depMaxGpuMilli, depGet, depSchemaRev, depFeeOf, depCapOf, depRefundableOf, depCall, catVersionFee, catGetApp, catGetVersion, waitReceipt } from "../../js/core/chain.js";
 import { authenticate, asHostOwner, connectWallet, refreshWallet, saveSession, ensureBaseChain, sendTx as walletSendTx, personalSign } from "../../js/core/wallet.js";
 // Every ledger call this panel sends goes through here. A row the wallet's SessionVault holds is acted on by this
 // browser's session (no wallet prompt; a prod version/config change becomes the owner's Promote signature); every
@@ -1249,7 +1249,10 @@ class Deployments extends EnclaveElement {
     if (!d) return fail("[x] couldn’t read this deployment from the ledger - try again shortly");
     const cr = parseCatalogRef(d.appRef);
     if (!cr) return fail("[x] this deployment doesn’t reference a catalog version (" + (d.appRef || "no appRef") + ") - only catalog deployments can switch versions");
-    const app = STORE.byId[cr.appId] || (sharesOnly ? { slug: 'app', versions: [] } : null);
+    let app = STORE.byId[cr.appId] || (sharesOnly ? { slug: 'app', versions: [] } : null);
+    try { const current = await catGetApp(cr.appId); if (app) app = {...app,active:current?.active}; }
+    catch { return fail('[x] Could not verify current app moderation. Close and reopen to retry.'); }
+
     if (!app || !app.versions) return fail("[x] the catalog doesn’t list this deployment’s app (delisted?) - nothing to switch to");
     let currentVersion = null;
     if (sharesOnly) {
@@ -1349,7 +1352,7 @@ class Deployments extends EnclaveElement {
       .map(r => ({ ...r,
         shareFit: r.mins.gpuPct * 10 <= bought.gpuMilli && cpuNeedOf(r) * 10 <= bought.cpuMilli,
         feeFit: (verFees[r.i] || 0n) <= snapFee }))
-      .map(r => ({ ...r, fits: (r.shareFit || resizable) && r.feeFit }))
+      .map(r => ({ ...r, fits: (r.shareFit || resizable) && r.feeFit && !catalogAdmissionRefusal(app,r.v,{forPrivate:d.isPublic===false}) }))
       .reverse();
     const others = rows.filter(r => r.i !== cr.index);
     // Version may suggest a newer fitting release. Shares always keeps the
@@ -1373,7 +1376,7 @@ class Deployments extends EnclaveElement {
                                                  + (hw ? " on " + hw.name : "") : "")
       +       (r.shareFit && !r.feeFit && r.i !== cr.index ? " · charges $" + (Number(verFees[r.i]) * 3600 / 1e6).toFixed(2) + "/hr publisher fee (above this deployment’s snapshot)" : "")
       +     '</option>').join("")
-      +   '</select><p class="enc-shares-note">Each host decides which releases it accepts. Catalog status does not guarantee a host will run the selected release.</p>')
+      +   '</select><p class="enc-shares-note">Platform moderation and host admission apply to the selected release.</p>')
       +   (sharesOnly ? '' : '<button class="btn btn-sm btn-primary eu-go" type="button">Change version</button>')
       + '</div>'
       + (capEditable

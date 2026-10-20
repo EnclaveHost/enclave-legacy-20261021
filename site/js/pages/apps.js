@@ -80,9 +80,7 @@ function renderApps(){
   const myApp = (a) => !!me && a.publisher.toLowerCase() === me;
   syncModTabs(me, isOwner);
   let apps;
-  if (STORE.filter === "all"){
-    apps = STORE.apps.filter(a => a.versions.length);
-  } else if (STORE.filter === "delisted"){
+  if (STORE.filter === "delisted"){
     // moderation view: the catalog owner sees EVERY delisted app; a publisher
     // sees only their own - their one path back (relist, or republish the slug).
     apps = STORE.apps.filter(a => a.versions.length && !a.active && (isOwner || myApp(a)));
@@ -1686,8 +1684,8 @@ function renderDetail(appId){
   if (!catConfigured()){ host.innerHTML = '<div class="store-note">The on-chain catalog isn’t wired up on this deployment yet.</div>'; return; }
   if (!STORE.loaded){ host.innerHTML = '<div class="loading" role="status">reading catalog from Base…</div>'; return; }
   const app = STORE.byId[appId] || (STORE.apps || []).find(a => a.appId === appId);
-  // Direct links retain access to every published release, including delisted apps.
-  if (!app || !visibleVerIdxs(app).length){ host.innerHTML = '<div class="store-note">That app isn’t in the catalog. <a href="apps">← all apps</a></div>'; document.title = "Apps · Enclave"; return; }
+  // Moderated history remains visible to its publisher and the catalog administrator.
+  if (!app || !visibleVerIdxs(app).length || !(appApproved(app) || appVerified(app) || appPrivileged(app))){ host.innerHTML = '<div class="store-note">That app isn’t in the catalog. <a href="apps">← all apps</a></div>'; document.title = "Apps · Enclave"; return; }
   document.title = app.name + " · Enclave";
   let el = host.querySelector("c-app-detail");
   if (!el){ host.innerHTML = ""; el = document.createElement("c-app-detail"); host.appendChild(el); }
