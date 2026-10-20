@@ -156,6 +156,7 @@ shared pre-authorization and authorization pools, and behind a shared NAT or pro
 | Operation | Request | Scope | Body | Response bound | Mutation |
 | --- | --- | --- | --- | --- | --- |
 | `status` | `GET /v1/deployments/<id>` | `api.status` | none | 1 MiB | no |
+| `gpu` | `GET …/gpu` | `api.status` | none | 1 MiB | no |
 | `logs` | `GET …/logs[?tail=1..2000]` | `api.logs` | none | 8 MiB, streamed | no |
 | `attestation` | `GET …/attestation[?nonce=<64 hex>]` | `api.status` | none | 4 MiB | no |
 | `appToken` | `POST …/app-token` | `api.appAccess` | none | 8 KiB | no |

@@ -107,6 +107,7 @@ async function rig(t,{scope=['api.status','api.logs','api.restart','api.appAcces
       const why=await supervisorAuth.refusal(s,{id,owner:vault});if(why)throw Object.assign(Error(why),{status:403});}
     catch(e){res.writeHead(e.status||401,{'content-type':'application/json'});return res.end(JSON.stringify({code:'unauthorized',message:e.message}));}
     if(route.op==='status'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({id,status:'running'}));}
+    if(route.op==='gpu'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({ok:true,role:'gpu',mpsActive:true,smTotal:120,tenants:[{pct:25,status:'running',smGranted:30}]}));}
     if(route.op==='attestation'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({deploymentId:id,cpu:{format:'fixture-not-snp'}}));}
     if(route.op==='appToken'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({token:'app-origin-token',tokenType:'Cookie',deployment:id,expiresAt:new Date(Date.now()+3600e3).toISOString()}));}
     if(route.op==='cpuProfile'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({state:'complete',seconds:5,format:'gperftools',bytes:4,data:Buffer.from('prof').toString('base64')}));}
@@ -177,6 +178,22 @@ test('owner status, streamed logs and attestation reach the current runner with 
   const att=await c.attestation({nonce:'ab'.repeat(32)});assert.equal(att.json.cpu.format,'fixture-not-snp');
   assert(r.calls.length>0&&r.calls.every(u=>u.startsWith(r.dirOrigin+'/v1/network/records')),JSON.stringify(r.calls));
   assert.deepEqual(r.hits,[`GET /v1/deployments/${id}`,`GET /v1/deployments/${id}/logs?tail=50`,`GET /v1/deployments/${id}/attestation?nonce=${'ab'.repeat(32)}`]);
+});
+
+test('GPU status uses the current runner and status scope without exposing the host-wide route',async t=>{
+  const r=await rig(t,{scope:['api.status']});await r.publish();
+  const got=await r.client().gpu();
+  assert.equal(got.json.smTotal,120);assert.equal(got.json.tenants[0].smGranted,30);
+  assert.equal(got.authenticated,'host-management-record');
+  assert.deepEqual(r.hits,[`GET /v1/deployments/${id}/gpu`]);
+  assert.equal((await r.raw('GET','/v1/gpu')).status,404);
+  assert.equal((await r.raw('GET',`/v1/deployments/${id}/gpu?all=1`)).status,404);
+  r.hostLease.owner=getAddress('0x'+'66'.repeat(20));
+  await assert.rejects(r.client().gpu(),e=>e.status===403);
+  assert.equal(r.hits.length,1,'ownership change is refused before forwarding');
+  const noStatus=await rig(t,{scope:['api.logs']});await noStatus.publish();
+  await assert.rejects(noStatus.client().gpu(),e=>e.status===403);
+  assert.deepEqual(noStatus.hits,[],'logs permission does not authorize GPU status');
 });
 
 test('restart is attempted exactly once, and a possibly delivered restart is never resent',async t=>{
@@ -539,10 +556,11 @@ test('the actual supervisor serves every management operation behind the gateway
   const probe=await rig(t,{runner:supervisorRunner});
   const keyHash=probe.world.state.vaults[vault.toLowerCase()].sessions[sid].keyHash;
   const sup=await startActualSupervisor(t,{chain:supervisorChain(keyHash,ALL_SCOPES),deployment:{id,owner:vault},pins:supervisorPins,publicUrl:SUPERVISOR_URL,
-    env:{MANAGEMENT_GATEWAY:'1',MANAGEMENT_GATEWAY_TOKEN:TOKEN}});
+    env:{MANAGEMENT_GATEWAY:'1',MANAGEMENT_GATEWAY_TOKEN:TOKEN,GPU_COUNT:'0'}});
   const r=await rig(t,{runner:supervisorRunner,upstream:`http://127.0.0.1:${sup.port}`,session:probe.session,gateway:{upstreamToken:TOKEN}});
   await r.publish();const c=r.client();
   const status=await c.status();assert.equal(status.json.id,id);assert.equal(status.json.status,'running');
+  await assert.rejects(c.gpu(),e=>{assert.equal(e.status,404,e.message);assert.equal(e.code,'no_gpu',e.message);return true;},'the actual CPU-only supervisor runs the authenticated GPU handler');
   const logs=(await collect((await c.logs({tail:20})).body)).toString();assert.match(logs,/booted\nserving/);
   const token=await c.appToken();assert.equal(token.deployment,id);assert.match(token.token,/^[A-Za-z0-9._-]+$/);
   assert.equal((await c.cpuProfile()).data.toString(),'prof');

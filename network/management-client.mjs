@@ -110,6 +110,8 @@ export class ManagementClient {
   }
 
   status() { return this._json('status'); }
+  /** Host-reported GPU capacity for the current lease holder; not an attestation or a capacity reservation. */
+  gpu() { return this._json('gpu'); }
   attestation({nonce} = {}) { return this._json('attestation', {nonce}); }
   /** Exactly one attempt. A failure after the request may have been written carries outcomeUnknown: check status(). */
   restart() { return this._mutate('restart'); }

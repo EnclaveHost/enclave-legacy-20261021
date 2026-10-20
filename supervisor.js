@@ -5979,7 +5979,7 @@ app.get("/availability", async (_req, res) => {
 // that emptiness as the box's truth. The response now carries the serving
 // backend's ledger AND the device-measured count beside the worker view, so
 // no caller can mistake one container's empty ledger for an empty card.
-app.get("/v1/gpu", async (_req, res) => {
+async function gpuStatus(_req, res) {
   shieldedCapacity();
   if (_shieldedAdopted) return res.json({
     ok: true, role: "shielded", ...(_shieldedPool ? { pool: shieldedPoolCapacity() } : {}), cards: gpuCards.filter(c => c.shielded).map(c => ({
@@ -6009,6 +6009,13 @@ app.get("/v1/gpu", async (_req, res) => {
   } catch (e) {
     res.status(503).json({ ok: false, error: `worker manager unreachable: ${e.message}` });
   }
+}
+app.get("/v1/gpu", gpuStatus);
+// The independent management gateway exposes this read only for a deployment's authorized session and current runner.
+// Keep the same device/manager data as the legacy host endpoint; it remains host-reported information.
+app.get("/v1/deployments/:id/gpu", ownerAuth("api.status"), async (req, res) => {
+  if (!(await mayAct(req, res, deployments.get(req.params.id)))) return;
+  return gpuStatus(req, res);
 });
 
 // ============================================================================

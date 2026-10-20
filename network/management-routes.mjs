@@ -5,6 +5,7 @@
 // mutation: whether a lost or malformed answer leaves the outcome unknown (the operation may have changed host state).
 export const MANAGEMENT_OPERATIONS = Object.freeze({
   status:      {method: 'GET',  suffix: '',             scope: 'api.status',    maxBodyBytes: 0,  timeoutMs: 30000,  maxResponseBytes: 1 << 20, mutation: false},
+  gpu:         {method: 'GET',  suffix: '/gpu',         scope: 'api.status',    maxBodyBytes: 0,  timeoutMs: 30000,  maxResponseBytes: 1 << 20, mutation: false},
   logs:        {method: 'GET',  suffix: '/logs',        scope: 'api.logs',      maxBodyBytes: 0,  timeoutMs: 60000,  maxResponseBytes: 8 << 20, mutation: false},
   attestation: {method: 'GET',  suffix: '/attestation', scope: 'api.status',    maxBodyBytes: 0,  timeoutMs: 60000,  maxResponseBytes: 4 << 20, mutation: false},
   // A restart re-provisions in place; the supervisor answers only once the relaunch finished (or failed).
@@ -17,7 +18,7 @@ export const MANAGEMENT_OPERATIONS = Object.freeze({
   // Start (1..60 s) or stop a capture. Signalling the app can leave the capture in an uncertain state.
   cpuProfileControl: {method: 'POST', suffix: '/cpu-profile', scope: 'api.logs', maxBodyBytes: 64, timeoutMs: 30000, maxResponseBytes: 1 << 16, mutation: true},
 });
-const TARGET = /^\/v1\/deployments\/(0x[0-9a-f]{64})(\/logs|\/attestation|\/restart|\/app-token|\/cpu-profile)?(?:\?([^#]*))?$/;
+const TARGET = /^\/v1\/deployments\/(0x[0-9a-f]{64})(\/logs|\/attestation|\/restart|\/app-token|\/cpu-profile|\/gpu)?(?:\?([^#]*))?$/;
 const BY_REQUEST = new Map(Object.entries(MANAGEMENT_OPERATIONS).map(([op, o]) => [`${o.method} ${o.suffix}`, op]));
 
 /** The exact request target for an operation. Throws on anything outside the table. */
