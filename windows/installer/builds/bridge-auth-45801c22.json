@@ -1,0 +1,54 @@
+{
+  "commit": "45801c22be3a317d687f30efe92b6f0b47124a86",
+  "sourceArchiveSha256": "79077a4bb7805b835268ed99de92f851ee00027bd03e8e52d58fa7bcd21b0477",
+  "sourceCount": 18,
+  "rustc": "rustc 1.100.0-nightly (bba531001 2026-09-20)",
+  "cargo": "cargo 1.100.0-nightly (495c385d0 2026-09-16)",
+  "command": "cargo build --release --locked --offline -j 1 --bin shielded-bridge --bin bridge-auth-check",
+  "durationSeconds": 43,
+  "binaries": [
+    {
+      "name": "shielded-bridge.exe",
+      "bytes": 269824,
+      "sha256": "03bf48b04218ceba55d53a63b4285a26f9232aa7cc8af22150138e1412f7e11b"
+    },
+    {
+      "name": "bridge-auth-check.exe",
+      "bytes": 318464,
+      "sha256": "a81c6f393e47cf93df4a5ef58d5e48be6ab2a3c725556a3d338a63ade2d55665"
+    }
+  ],
+  "activated": false,
+  "verifiedAt": "2026-10-20T04:39:01.339722+00:00",
+  "sourceFiles": {
+    "windows/vbslike/host/Cargo.lock": "5c0ee1b7f9d70d1b9d6973dea54e8d8f9b9563117d1a8f97a8172ce29c96ad3b",
+    "windows/vbslike/host/Cargo.toml": "17dec81a9f96def75973b5d9720b7ea0f7b77e6eff9e735bb2406c6b1e0618bf",
+    "windows/vbslike/host/src/bin/bridge-auth-check.rs": "8097e7314233f82dd4508d8bde713367e8af0e1b3e193558a510bd42842d69b2",
+    "windows/vbslike/host/src/bin/bridge-drain-check.rs": "616c62a73baa9371c47cec5a753e669175559aff031957a50fd7f620e8343e65",
+    "windows/vbslike/host/src/bin/shielded-bridge.rs": "c073adc569decfdcf3826277b8592b25f7c2db8e55f3f12eff2d6f9091d208ee",
+    "windows/vbslike/host/src/contract.rs": "b63f6eeb68eaaf07e67150e3d2fd51e85749d67adcdaa9a814d9b7e65ed6cf88",
+    "windows/vbslike/host/src/hcs.rs": "e2940ce2c202577edf61ef88cc698e429fbb7b6bedbe17d976b5a34f215dfc47",
+    "windows/vbslike/host/src/hvdial.rs": "8406703e0c59538e14361862b54d8bdd23cb4d65a29cdfadb8993b89f18297ed",
+    "windows/vbslike/host/src/hvsock.rs": "9871ed337042b0c8e2a489d6323c96aef2b38ffff610f86a6bdf6a6989fd2b5c",
+    "windows/vbslike/host/src/isoprobe.rs": "fe5bdf78e7e16f5235e01dd016f3a9dee3c7122cf82a3e3d0fdf9012bff68a27",
+    "windows/vbslike/host/src/lab.rs": "03f53d95e9102568e6dfebc1e34d96981f2d5b55dd2a79a62b78f326398f4a97",
+    "windows/vbslike/host/src/launcher.rs": "d2fe773323fa190e13f929482c4591cd4ddea2a94f6c69624521e5b9b5307946",
+    "windows/vbslike/host/src/main.rs": "595793efd8211d7404e38b6704bf09012adc62e10a5d5b44208519748114a9d4",
+    "windows/vbslike/host/src/probe.rs": "262c9acadefeef03c9abb255d5f4a8a9c9381a01f27c6f17bd7c7c280a61c8ad",
+    "windows/vbslike/host/src/reap.rs": "71c50be4a1943420a7d498dc0a2cf7cf61382be7d59be3791ed9f427f0535f6e",
+    "windows/vbslike/host/src/report.rs": "4014ec9b50ae42c5996f0bc995c146c36283e7ceb78ae8f482226052b8cf20e5",
+    "windows/vbslike/host/src/util.rs": "97d20f583e39831234ed52fc7aa78805d41d93ead123f96313307add88faca06",
+    "windows/vbslike/host/src/wmiserve.rs": "fba5744486392597dc2804f50632a28e92223018cb68a2293863cb252586a230"
+  },
+  "format": "enclave-windows-native-build/1",
+  "sourceDirectory": "windows/vbslike/host",
+  "nativeVerification": {
+    "checks": 5,
+    "passed": 5,
+    "scope": "Actual Hyper-V socket loopback with throwaway credentials; legacy invocation, authenticated invocation, malformed input, EOF and invalid lifetime. No VM, registry or production task changes."
+  },
+  "limits": [
+    "Built on one native Windows toolchain; independent binary reproduction not established.",
+    "No guest partition started; hardware startup and custody release remain unverified."
+  ]
+}

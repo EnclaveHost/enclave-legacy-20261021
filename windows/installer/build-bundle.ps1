@@ -29,11 +29,10 @@ $Binaries = [ordered]@{
   # GOOS=windows CGO_ENABLED=0 go build -trimpath ./cmd/shield-egress, from isolation/m2 - the 1dad2bb50 build
   # reproduced byte for byte first)
   "bin\shield-egress.exe"   = @("vbs-like\releases\egress-bytes-20261013\shield-egress.exe",  "ab08c73dfa09c6f1feb80a22a4c11694d5dea7003b20a14cce58df3b8f447e02")
-  # bridge-slots-20261014: cargo build --release --locked --bin shielded-bridge of windows/vbslike/host at 87ce2b2fd
-  # (persistent streams: no write timeout; each end half-closes; an errored stream says how, a big one its bytes;
-  # 64 slots for a persistent bridge, and a half-closed stream idle 120 s toward the guest is shut - 8 slots leaked to
-  # Sia hosts' idle mux connections cut sia-s3 off entirely)
-  "bin\shielded-bridge.exe" = @("vbs-like\releases\bridge-slots-20261014\shielded-bridge.exe", "87caf7e9486eb4c55c141982f5858936ff56070bbcaec7d019876ece0208824a")
+  # Native build of windows/vbslike/host at 45801c22, including --worker-auth-stdin for direct startup and custody.
+  # Preserves the legacy egress/GPU invocation and persistent-stream handling.
+  # Source hashes, compiler, exact build command and native loopback results: builds/bridge-auth-45801c22.json.
+  "bin\shielded-bridge.exe" = @("vbs-like\releases\bridge-auth-45801c22\shielded-bridge.exe", "03bf48b04218ceba55d53a63b4285a26f9232aa7cc8af22150138e1412f7e11b")
   "bin\tpmattest.exe"       = @("vbs-like\hvnode\bin\tpmattest.exe",                       "ebc30d9fa54cf70043900165ce12631224075b3301653eaf8527342d18de6982")
   "bin\wasmtime.exe"        = @("vbs\apps\wasmtime-v49.0.0-x86_64-windows\wasmtime.exe",   "cbe3e2ddc1d449a029b1f581b84688b94fc7e5758cdfe24241609a92b16a5cc2")
   "guest\runtime.bin"       = @("vbs-like\releases\public-web-20261005\runtime.bin",        "5fbfb947884367f1af2b76b4deb8a6ebaad00a5c90577ae7d8c4db95f9ddfa5d")
