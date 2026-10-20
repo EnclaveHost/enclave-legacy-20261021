@@ -1,0 +1,58 @@
+{
+  "verifiedAt": "2026-10-20T03:10:42.809728+00:00",
+  "artifacts": [
+    {
+      "name": "shield-direct-guest",
+      "cid": "bafybeicfku6twal6ziola575onunood22xqwbkhb5gvmneloxlmko5spoq",
+      "sha256": "c7084346a908465404fdf6de332a76b3c2ca844101eb9e8071aa8a1468f197ec",
+      "bytes": 77056796,
+      "carSha256": "84cfe061341244e0da01f4f82ed4272239e4e841e035d6cdab267dad901af017",
+      "carBytes": 77083268
+    },
+    {
+      "name": "shield-direct-build-inputs",
+      "cid": "bafybeicplixeqjgodnefrsupfjlxygqbeffltl3n5jakojqbvylt3ltj7m",
+      "sha256": "5bb131dea929d6efbe3bcaa2b3113f49b8cfeccc37a65527729091ecb67a1bef",
+      "bytes": 133516433,
+      "carSha256": "ff13ea3729630c1637ca81f6727087ab6f0fa188ee5701b88fd3ff31774ae30e",
+      "carBytes": 133562229
+    }
+  ],
+  "replicas": [
+    {
+      "region": "us-west",
+      "origin": "http://134.199.235.187:8189",
+      "carBlocksAndReconstructedBytesVerified": true,
+      "retrievedWithoutEnclaveDomain": true
+    },
+    {
+      "region": "eu-central",
+      "origin": "http://134.209.248.172:8189",
+      "carBlocksAndReconstructedBytesVerified": true,
+      "retrievedWithoutEnclaveDomain": true
+    },
+    {
+      "region": "ap-southeast",
+      "origin": "http://165.245.191.129:8189",
+      "carBlocksAndReconstructedBytesVerified": true,
+      "retrievedWithoutEnclaveDomain": true
+    },
+    {
+      "region": "ca-east",
+      "origin": "http://146.190.246.39:8189",
+      "carBlocksAndReconstructedBytesVerified": true,
+      "retrievedWithoutEnclaveDomain": true
+    }
+  ],
+  "windowsRetrieval": {
+    "source": "http://134.199.235.187:8189",
+    "cid": "bafybeicfku6twal6ziola575onunood22xqwbkhb5gvmneloxlmko5spoq",
+    "bytes": 77056796,
+    "sha256": "c7084346a908465404fdf6de332a76b3c2ca844101eb9e8071aa8a1468f197ec",
+    "stagedOnly": true
+  },
+  "operatorDiversityProven": false,
+  "independentBuilderReproductionProven": false,
+  "hardwareBootValidated": false,
+  "guestActivated": false
+}

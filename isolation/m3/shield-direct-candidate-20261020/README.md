@@ -33,8 +33,21 @@ and its SHA-256 `5bb131dea929d6efbe3bcaa2b3113f49b8cfeccc37a65527729091ecb67a1be
 The archive's INPUTS.json pins 781 files, and rebuild.sh refuses mismatched
 compiled initrd or image bytes. The tested compiler/static-libc toolchain is
 specified but not bundled; upstream firmware/runtime binaries were not rebuilt
-from source. This is still one-builder reproduction. Independent publication,
-retrieval and another operator's rebuild remain unproven.
+from source. This is still one-builder reproduction; another operator's rebuild remains
+unproven.
+
+`publication.json` records public distribution of the candidate and portable
+inputs. Each object has a UnixFS CID, raw-byte SHA-256 and CAR SHA-256. Four
+existing providers serve both forms at `/ipfs/<CID>` and
+`/ipfs/<CID>?format=car`. Fresh downloads from each provider's numeric address
+verified every CAR block and reconstructed the exact original bytes, without
+Nan, Enclave DNS or this workstation serving as the source. HTTP is transport
+only: recipients must verify the published CID and pinned hashes.
+
+The Windows host separately fetched the 77,056,796-byte candidate from a public
+replica and verified its SHA-256 before staging it. No VM or image pointer was
+changed. These are all existing Enclave-operated providers; this establishes
+public retrieval and replica copies, not independent operator diversity.
 
 Before activation: validate separate legacy/direct/GPU selection; boot a fresh
 hardware partition; test volatile report input across VMGS reuse; verify the
