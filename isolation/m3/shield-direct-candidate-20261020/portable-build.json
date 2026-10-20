@@ -1,0 +1,14 @@
+{
+  "archive": "shield-direct-build-inputs-c7084346.tar.gz",
+  "sha256": "5bb131dea929d6efbe3bcaa2b3113f49b8cfeccc37a65527729091ecb67a1bef",
+  "bytes": 133516433,
+  "inputManifestSha256": "a365cfc0bf6702c5e5c955de2e5f1d9f482f7106be61dc3054f1bb11de3a2361",
+  "files": 782,
+  "guestSourceCommit": "0ed5a8ba",
+  "candidateSha256": "c7084346a908465404fdf6de332a76b3c2ca844101eb9e8071aa8a1468f197ec",
+  "rebuiltWithBundledModulesAndRelocatedInputs": true,
+  "independentBuilderReproduction": false,
+  "upstreamBinaryInputsRebuiltFromSource": false,
+  "hardwareActivated": false,
+  "validationLog": "work/shield-direct-build-0ed5a8ba/portable-check.log"
+}

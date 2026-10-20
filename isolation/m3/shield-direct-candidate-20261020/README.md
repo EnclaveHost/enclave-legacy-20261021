@@ -25,10 +25,16 @@ This proves assembly repeatability on one builder, not independent compiler
 reproduction or actual guest security. The debug twin is a rejection fixture,
 never a serving candidate.
 
-The build was prepared in `work/shield-direct-build-0ed5a8ba` in the coordinator
-workspace. The manifest hashes its compile, packaging and image assembly
-scripts. Those scripts still depend on the local pinned artifact inventory;
-a portable, independently retrievable build-input bundle remains required.
+A portable build-input archive now includes the public pinned artifacts, guest
+source, required Go modules and relocatable build scripts. Rebuilding with the
+bundled modules and relocated inputs produced this exact candidate with network
+downloads disabled. `portable-build.json` records the 133,516,433-byte archive
+and its SHA-256 `5bb131dea929d6efbe3bcaa2b3113f49b8cfeccc37a65527729091ecb67a1bef`.
+The archive's INPUTS.json pins 781 files, and rebuild.sh refuses mismatched
+compiled initrd or image bytes. The tested compiler/static-libc toolchain is
+specified but not bundled; upstream firmware/runtime binaries were not rebuilt
+from source. This is still one-builder reproduction. Independent publication,
+retrieval and another operator's rebuild remain unproven.
 
 Before activation: validate separate legacy/direct/GPU selection; boot a fresh
 hardware partition; test volatile report input across VMGS reuse; verify the
