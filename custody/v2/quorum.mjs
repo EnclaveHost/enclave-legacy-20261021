@@ -1,28 +1,27 @@
 // A configured majority must agree on the same fresh block and complete result.
 // One unavailable or dissenting peer cannot veto the other three of four peers.
 import { bytesToHex } from 'viem';
+import { rpcEndpoint } from '../../network/rpc-identity.mjs';
 const fail = (code, message) => Object.assign(new Error(message), {code, status:503});
 const fingerprint = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? `n${v}` : v instanceof Uint8Array ? `x${bytesToHex(v)}` : v);
 const hashPattern = /^0x[0-9a-fA-F]{64}$/;
 export const MAX_RPCS = 16;
 // Policy bounds: finite, and small enough that a misconfiguration cannot silently disable freshness or block forever.
 const POLICY = { confirmations: [0, 1000], timeoutMs: [1, 300_000], maxAgeSec: [0, 7 * 86400], maxFutureSec: [0, 3600] };
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
- * The vote identity of an RPC URL: one public host is ONE vote however it is spelled - case, a trailing dot, a port,
- * path, query or key do not make a second one. Local test chains (loopback) are distinguished by port only, and
- * loopback aliases on one port count once. Distinct identities are distinct configured endpoints, not proof that
- * separate organizations operate them. Public RPCs require HTTPS; HTTP is allowed only for loopback test chains.
+ * The vote identity of an RPC URL: network/rpc-identity.mjs, the rule every quorum reader shares. One public host is
+ * ONE vote however it is spelled - case, trailing dots, a port, path, query or key do not make a second one, and an
+ * IPv4 address written in IPv6 form (::ffff:a.b.c.d, 64:ff9b::a.b.c.d) is that IPv4 address. Local test chains
+ * (loopback) are distinguished by port only, and loopback aliases on one port count once. Distinct identities are
+ * distinct configured endpoints, not proof that separate organizations operate them; no name is resolved. Public RPCs
+ * require HTTPS; HTTP is allowed only for loopback test chains. Errors never echo the URL.
  */
 export function rpcIdentity(url) {
-  let u;
-  try { u = new URL(String(url)); } catch { throw Error('chain: invalid RPC URL'); }
-  const host = u.hostname.toLowerCase().replace(/\.$/, '');
-  if (!(u.protocol === 'https:' || u.protocol === 'http:' && LOOPBACK.has(host)) || u.username || u.password || u.hash)
-    throw Error('chain: RPC URL requires HTTPS (HTTP only on loopback), without credentials or fragments');
-  if (!host) throw Error('chain: invalid RPC URL');
-  return LOOPBACK.has(host) ? `loopback:${u.port || (u.protocol === 'https:' ? '443' : '80')}` : `host:${host}`;
+  try { return rpcEndpoint(url).identity; }
+  catch (e) {
+    throw Error(e.code === 'scheme' || e.code === 'secret' ? 'chain: RPC URL requires HTTPS (HTTP only on loopback), without credentials or fragments' : 'chain: invalid RPC URL');
+  }
 }
 /** Distinct configured RPC URLs (as createChainReaderV2 receives them): 1-16, each a different rpcIdentity. */
 export function checkRpcUrls(rpcs) {

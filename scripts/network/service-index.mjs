@@ -36,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createPublicClient, createWalletClient, http, keccak256, encodeFunctionData, defineChain } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import * as si from '../../network/service-index.mjs';
+import { rpcEndpoint } from '../../network/rpc-identity.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const SOURCE = path.join(ROOT, 'contracts', 'EnclaveServiceIndex.sol');
@@ -77,13 +78,11 @@ export const peersFor = (rpcs, chainId) => {
   if (!Array.isArray(rpcs) || rpcs.length < 2 || rpcs.length > 16) throw new Error('two to sixteen independently chosen --rpc endpoints are required');
   const seen = new Set();
   return rpcs.map((u) => {
-    let parsed; try { parsed = new URL(u); } catch { throw new Error('invalid RPC URL'); }
-    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-    if (!(parsed.protocol === 'https:' || loopback && parsed.protocol === 'http:') || parsed.username || parsed.password || parsed.hash)
-      throw new Error('RPCs require HTTPS (HTTP only on loopback), without credentials or fragments');
-    // Different paths, keys or ports on one public host cannot create extra votes.
-    // Local test chains use distinct loopback ports; aliases for the same port still count once.
-    const identity = loopback ? `loopback:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}` : parsed.hostname.toLowerCase().replace(/\.$/, '');
+    // network/rpc-identity.mjs: different paths, keys, ports, case, trailing dots or IPv6 spellings of one public host
+    // cannot create extra votes; local test chains use distinct loopback ports, and aliases on one port count once
+    let identity;
+    try { ({ identity } = rpcEndpoint(u)); }
+    catch (e) { throw new Error(e.code === 'url' || e.code === 'host' ? 'invalid RPC URL' : 'RPCs require HTTPS (HTTP only on loopback), without credentials or fragments'); }
     if (seen.has(identity)) throw new Error('RPC peers must use distinct public hosts or distinct loopback test ports');
     seen.add(identity);
     return { label: si.rpcLabel(u), client: createPublicClient({ chain: chainOf(chainId, u), transport: http(u, { timeout: 8000, retryCount: 0 }) }) };

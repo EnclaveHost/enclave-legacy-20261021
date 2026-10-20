@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { keccak256 } from 'viem';
 import { directoryOrigins } from './directory-client.mjs';
 import { validateNetworkAuthorities } from './network-authorities.mjs';
+import { rpcEndpoint, rpcLabel as safeRpcLabel, redactUrls } from './rpc-identity.mjs';
 
 export const SERVICE_KINDS = Object.freeze({ directory: 1, checker: 2, storage: 3, dns: 4, replica: 5 });
 export const KIND_NAMES = Object.freeze(Object.fromEntries(Object.entries(SERVICE_KINDS).map(([k, v]) => [v, k])));
@@ -132,7 +133,8 @@ export function validateAdInput({ slot, kind, endpoints, ttlSec, descriptor = '0
 
 // ---- agreeing reads ----------------------------------------------------------------------------------------------------
 const stable = (v) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x));
-const errText = (e) => String(e?.shortMessage || e?.message || e).slice(0, 300);
+// an RPC library's error can name the URL it called, API key and all: evidence keeps only a safe label of it
+const errText = (e) => redactUrls(String(e?.shortMessage || e?.message || e)).slice(0, 300);
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const MAX_TS_SEC = BigInt(Math.floor(Number.MAX_SAFE_INTEGER / 1000));
 /** A block header an RPC returned for block `b`, checked: that exact number, a 32-byte hash, a whole-second timestamp. */
@@ -157,15 +159,16 @@ const timed = (p, ms, what) => {
     .finally(() => clearTimeout(t));
 };
 /**
- * The vote identity of an RPC transport URL, the same rule as scripts/network/service-index.mjs peersFor: a public
- * hostname (lowercase, no trailing dot) regardless of path, query, key or port - one public host is one vote however it
- * is addressed - and, for local test chains only, the loopback PORT (127.0.0.1, localhost and [::1] on one port are one
- * vote). Distinct identities are distinct configured endpoints, NOT proof of independent operators or organizations.
+ * The vote identity of an RPC transport URL: network/rpc-identity.mjs, the rule every quorum reader shares (and
+ * scripts/network/service-index.mjs peersFor). A public host is one vote regardless of case, trailing dots, path,
+ * query, key or port, and an IPv4 address written in IPv6 form is that IPv4 address. Local test chains count by
+ * loopback PORT (127.0.0.1, localhost, [::1] and [::ffff:127.0.0.1] on one port are one vote). -> 'host:<host>' |
+ * 'loopback:<port>', or null for a URL that is not a usable RPC URL (not https, or plain http off loopback;
+ * credentials; a fragment; a malformed host). Distinct identities are distinct configured endpoints, NOT proof of
+ * independent operators or organizations.
  */
 export function rpcIdentity(url) {
-  let u; try { u = new URL(String(url)); } catch { return null; }
-  const host = u.hostname.toLowerCase().replace(/\.$/, '');
-  return ['localhost', '127.0.0.1', '[::1]'].includes(host) ? `loopback:${u.port || (u.protocol === 'https:' ? '443' : '80')}` : `host:${host}`;
+  try { return rpcEndpoint(url).identity; } catch { return null; }
 }
 const CLIENT_METHODS = ['getChainId', 'getBlockNumber', 'getBlock'];
 /**
@@ -188,12 +191,17 @@ export function peerList({ peers, clients, methods = [] }) {
   });
   if (new Set(out.map((p) => p.label)).size !== out.length) throw new Error('RPC labels must be distinct');
   if (new Set(out.map((p) => p.client)).size !== out.length) throw new Error('RPC peers must be distinct clients: one client cannot vote twice');
-  const ids = out.map((p) => rpcIdentity(p.client.transport?.url)).filter(Boolean);
+  // an exposed URL that is not a usable RPC URL is refused, never ignored as if the client had none
+  const ids = out.flatMap((p, i) => {
+    const url = p.client.transport?.url;
+    if (url === undefined || url === null) return [];
+    try { return [rpcEndpoint(url).identity]; } catch (e) { throw new Error(`RPC #${i + 1} exposes an unusable RPC URL: ${e.message}`); }
+  });
   if (new Set(ids).size !== ids.length) throw new Error('RPC peers must use distinct public hosts or distinct loopback test ports: one endpoint cannot vote twice');
   return out;
 }
-/** An RPC URL as evidence may name it: its origin only (a path or query can carry an API key). */
-export const rpcLabel = (url) => { try { return new URL(url).origin; } catch { return 'rpc'; } };
+/** An RPC URL as evidence may name it: scheme, canonical host and port only (a path or query can carry an API key). */
+export const rpcLabel = (url) => safeRpcLabel(url);
 
 /**
  * One whole snapshot read at ONE fixed block, accepted once two RPCs return it byte for byte - LeaseReader.agreed's
@@ -455,7 +463,7 @@ export function resolveProviderBootstrap(cfg) {
   if (mode !== 'explicit') throw new Error('bootstrap must be "legacy" or "explicit"');
   if ('addressBook' in cfg) throw new Error('explicit bootstrap uses authorityPins only: remove addressBook');
   if (!Array.isArray(cfg.rpc) || cfg.rpc.length < 2) throw new Error('explicit bootstrap needs two or more RPCs');
-  const hosts = cfg.rpc.map((r) => { const u = new URL(r); if (u.protocol !== 'https:' || u.username || u.password) throw new Error(`RPC ${r} must be https`); return u.hostname; });
+  const hosts = cfg.rpc.map((r) => { const e = rpcEndpoint(r, { loopbackPorts: false }); if (e.url.protocol !== 'https:') throw new Error('explicit bootstrap RPCs must be https'); return e.identity; });
   if (new Set(hosts).size !== hosts.length) throw new Error('explicit bootstrap RPCs must be on distinct hosts');
   const pins = validateNetworkAuthorities(cfg.authorityPins);
   for (const k of ['connectivity', 'sessionVaultFactory']) if (!(k in pins)) throw new Error(`explicit bootstrap needs authorityPins.${k} (zero to disable)`);
@@ -471,7 +479,6 @@ export function resolveProviderBootstrap(cfg) {
 }
 
 // ---- the checker's bootstrap ---------------------------------------------------------------------------------------
-const loopbackHost = (h) => h === '127.0.0.1' || h === 'localhost' || h === '[::1]';
 /**
  * A qualification checker (scripts/network/wg-qualify.mjs --independent) with every authority and probe target named by
  * its operator -> { directories, pins, rpc, chainId, outbound, dns, smtp, smtpDomain }:
@@ -487,7 +494,7 @@ export function resolveCheckerBootstrap({ directories, pins, rpc = [], chainId =
   const authority = validateNetworkAuthorities(pins);
   if (!('connectivity' in authority)) throw new Error('independent checker: authorityPins.connectivity required (zero to disable on-chain attestations)');
   if (!Array.isArray(rpc) || rpc.length < 2) throw new Error('independent checker: two or more --rpc required');
-  const origins = rpc.map((r) => { const u = new URL(r); if (!(u.protocol === 'https:' || (u.protocol === 'http:' && loopbackHost(u.hostname))) || u.username || u.password) throw new Error(`RPC ${u.origin} must be https`); return u.origin; });
+  const origins = rpc.map((r) => rpcEndpoint(r).identity);
   if (new Set(origins).size !== origins.length) throw new Error('independent checker: RPCs must be distinct origins');
   if (!Number.isSafeInteger(chainId) || chainId <= 0) throw new Error('chain id required');
   const o = new URL(String(outbound || 'missing:'));

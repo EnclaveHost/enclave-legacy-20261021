@@ -6,6 +6,7 @@ import {canonical} from './route-record.mjs';
 import {readConnectivity} from './connectivity-chain.mjs';
 import {guardedFetch} from './guarded-fetch.mjs';
 import {validateNetworkAuthorities} from './network-authorities.mjs';
+import {rpcEndpoint,redactUrls} from './rpc-identity.mjs';
 const fields=[['id','bytes32'],['owner','address'],['appRef','string'],['ports','string'],['configCid','string'],['gpuMilli','uint16'],['cpuMilli','uint16'],['appPort','uint32'],['isPublic','bool'],['active','bool'],['createdAt','uint64'],['rate','uint256'],['balance6','uint256'],['spent6','uint256'],['runner','bytes32'],['runnerOperator','address'],['leaseUntil','uint64']];
 const bookABI=[{type:'function',name:'addr',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'address'}]}];
 const deploymentABI=[{type:'function',name:'get',stateMutability:'view',inputs:[{type:'bytes32'}],outputs:[{type:'tuple',components:fields.map(([name,type])=>({name,type}))}]}];
@@ -20,42 +21,14 @@ function timed(promise,ms) {
   let timer;
   return Promise.race([promise,new Promise((_r,reject)=>{timer=setTimeout(()=>reject(new Error('chain request timed out')),ms);})]).finally(()=>clearTimeout(timer));
 }
-const errText=e=>String(e?.shortMessage||e?.message||e).slice(0,400);
-// The vote identity of an RPC URL (the rule of service-index.mjs rpcIdentity, kept here so this module does not depend
-// on that one): its public host, lowercase and without a trailing dot, whatever the path, query, key or port, since one
-// public host is one vote however it is addressed; for a local test chain, its loopback port (any loopback name or
-// scheme on one port is one vote). HTTPS for every public host; plain HTTP only on loopback (a local chain such as
-// Anvil), as service-index and the custody rig allow. No credentials or fragment. Throws without echoing the URL, which may hold an API key. Distinct identities are distinct
-// configured endpoints, NOT proof of independent operators.
-//   Address literals are compared as addresses. URL itself canonicalizes every IPv4 spelling (127.1, 0x8.8.8.8,
-// 134744072) and IPv6 case and zero compression. On top of that, an IPv4 address written in IPv6 form is folded back to
-// it: an IPv4-mapped address (::ffff:0:0/96, RFC 4291) IS that IPv4 host to the local stack, so [::ffff:8.8.8.8] is
-// one vote with 8.8.8.8 and [::ffff:127.0.0.1] is the loopback listener 127.0.0.1; the NAT64 well-known prefix
-// (64:ff9b::/96, RFC 6052) reaches that same IPv4 host through a translator, so it shares the vote, but its traffic
-// leaves this machine and it is never loopback. Other embeddings (the deprecated IPv4-compatible ::/96, SIIT
-// ::ffff:0:0:0/96) are left as distinct IPv6 addresses. No name is resolved: two names, or a name and an address, may
-// reach one machine, and nothing here can tell (nor would distinct hosts prove distinct operators).
-const loopbackHosts=new Set(['localhost','127.0.0.1','[::1]']);
-// URL writes the embedded IPv4 address as its two final 16-bit pieces, compressing zeros: [::ffff:808:808],
-// [::ffff:0:1], [64:ff9b::808:808], [64:ff9b::1], [64:ff9b::].
-const mappedRe=/^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/,nat64Re=/^\[64:ff9b::(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})?\]$/;
-const dotted=(hi='0',lo='0')=>{const a=parseInt(hi,16),b=parseInt(lo,16);return [a>>8,a&255,b>>8,b&255].join('.');};
-// -> {host: the vote host, loopback: whether plain HTTP may reach it on this machine}
-function rpcHost(hostname) {
-  const host=hostname.toLowerCase().replace(/\.$/,'');
-  let m=mappedRe.exec(host);
-  if(m){const v4=dotted(m[1],m[2]);return {host:v4,loopback:loopbackHosts.has(v4)};}
-  m=nat64Re.exec(host);
-  if(m)return {host:dotted(m[1],m[2]),loopback:false};
-  return {host,loopback:loopbackHosts.has(host)};
-}
+// an RPC library's error can name the URL it called, API key and all: only a safe label of it is kept
+const errText=e=>redactUrls(String(e?.shortMessage||e?.message||e)).slice(0,400);
+// The vote identity of an RPC URL: network/rpc-identity.mjs, the rule every quorum reader shares (one public host is
+// one vote however its URL is spelled; loopback by port; IPv4 written as IPv6 folded; https, plain http only on
+// loopback; no credentials or fragment; no DNS, and distinct hosts are not proof of independent operators). Throws an
+// error that does not echo the URL, which may hold an API key.
 export function rpcIdentity(raw) {
-  let u;try{u=new URL(String(raw));}catch{throw new Error('invalid RPC URL');}
-  const {host,loopback}=rpcHost(u.hostname);
-  if(!host)throw new Error('invalid RPC URL');
-  if(!(u.protocol==='https:'||(loopback&&u.protocol==='http:')))throw new Error('RPC URLs must be HTTPS (plain HTTP only on loopback)');
-  if(u.username||u.password||u.hash||String(raw).includes('#'))throw new Error('RPC URLs may not carry credentials or a fragment');
-  return loopback?`loopback:${u.port||(u.protocol==='https:'?'443':'80')}`:`host:${host}`;
+  return rpcEndpoint(raw).identity;
 }
 const maxClients=16,clientMethods=['getChainId','getBlockNumber','getBlock'];
 // Why a client set cannot read a quorum, or null. Two to sixteen DISTINCT objects (one object twice is one RPC counted
