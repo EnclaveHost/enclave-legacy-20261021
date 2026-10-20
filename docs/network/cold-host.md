@@ -15,7 +15,7 @@ These are the operator's explicit choices. No Enclave service supplies them.
 | Release pin | A 64-hex domain release ID the operator reviewed (for example by rebuilding with `isolation/m4/domain-release.sh`). The pin is the trust decision; the download source is not. |
 | Firmware approval | `isolation/m4/verifying-firmware.txt` in the operator's own checkout. A release whose `firmware.fd` is not listed there is refused at download, build and launch. |
 | Verifier code | The same checkout's `isolation/` tree: `m4/release-manifest.py`, the image builder and launcher, and the `m2/client.mjs` judge guestd runs on every guest. |
-| Chip collateral | `-vcek` (this chip's VCEK, DER), `-chain` (AMD chain; the repository fixture by default) and `-min-tcb` (the operator's TCB floor). Guestd refuses to start without all three. |
+| Chip collateral | `-vcek` (this chip's VCEK, DER), `-chain` (AMD chain; the repository fixture by default) and `-min-tcb` (the operator's TCB floor). Guestd refuses to start without all three. On a host that has never run a guest, produce them with [cold-host-collateral.md](cold-host-collateral.md): the read-only `isolation/m2/sev-inventory.c` firmware inventory, then `isolation/m2/host-collateral.mjs prepare`. |
 | Component sources | `-gateway`: a JSON array of one to eight HTTP(S) gateway origins. Every block is verified against its CID; the list decides availability only. |
 | Pool budget | `-guest-mem-mib` and `-guest-cpus` together (otherwise every create is refused), and `-guest-host-floor-mib` for a live memory floor. |
 | Pairing key | `guestd -gen-key FILE` once. The same private file is given to this host's supervisor as `GUESTD_KEY_FILE`; it is never published. |
@@ -133,8 +133,13 @@ authenticated manager verdict, SPKI-checked HTTP probe, egress log and transacti
 receipts. All storage replicas and this host are Enclave-operated. Production
 runtimes, custody and operator independence were not demonstrated by this run.
 
-Obtaining collateral on a host that has never run a guest is not yet automated
-(`isolation/m2/vcek-prep.mjs` needs a guest report). The source tests
+Collateral for a host that has never run a guest is prepared without a guest
+report by [cold-host-collateral.md](cold-host-collateral.md): a read-only
+firmware inventory (`SNP_PLATFORM_STATUS`, `SEV_GET_ID2`), then a VCEK verified
+against AMD's pinned chain. On one existing Turin host, the corrected
+inventory and fresh KDS collateral were verified against an existing guest's
+report. A boot on a host that has never run a guest is still pending. The
+source tests
 (`test/pinned-host-runtime.test.mjs`, `isolation/m4/guestd/cpu_release_test.go`)
 exercise the launcher, builder and fetcher with fixtures in addition to the
 separate hardware check described above.
